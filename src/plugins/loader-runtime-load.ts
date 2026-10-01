@@ -157,8 +157,13 @@ async function acquireRegistryResources(
     const failures: unknown[] = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : result.value.errors,
     );
+    // Owner-backed markers classify live custody themselves; opaque failures stay conservative.
     let retained = results.some(
-      (result) => result.status === "rejected" || (result.value.retainedErrors?.length ?? 0) > 0,
+      (result) =>
+        result.status === "rejected" ||
+        result.value.retainedErrors?.some(
+          (error) => !(error instanceof PluginRuntimeCloseRetainedError),
+        ),
     );
     for (const instance of instances) {
       releasePluginCacheInstance(instance, cache);
@@ -166,7 +171,10 @@ async function acquireRegistryResources(
     try {
       const retired = await retirePluginCache(cache);
       failures.push(...retired.failures.map((failure) => failure.error));
-      retained ||= retired.failures.some((failure) => failure.retained);
+      retained ||= retired.failures.some(
+        (failure) =>
+          failure.retained && !(failure.error instanceof PluginRuntimeCloseRetainedError),
+      );
     } catch (reason) {
       failures.push(reason);
       retained = true;
