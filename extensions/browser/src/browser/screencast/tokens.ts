@@ -15,7 +15,6 @@ export type BrowserScreencastTokenParams = {
   isRequesterCurrent?: () => boolean;
   releaseRequester?: () => void;
   assertCurrent: () => void;
-  checkNavigationAllowed: (url: string) => Promise<void>;
 };
 
 const tokens = createOneTimeTicketStore<BrowserScreencastTokenParams>({

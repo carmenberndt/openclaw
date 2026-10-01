@@ -631,7 +631,7 @@ describe("registerPolicyDoctorChecks", () => {
   it("reports private-network SSRF settings denied by policy", async () => {
     const cfg = configWithPolicy({
       browser: {
-        ssrfPolicy: {
+        cdpPolicy: {
           dangerouslyAllowPrivateNetwork: true,
         },
       },
@@ -657,7 +657,7 @@ describe("registerPolicyDoctorChecks", () => {
       expect.objectContaining({
         checkId: "policy/network-private-access-enabled",
         severity: "error",
-        ocPath: "oc://openclaw.config/browser/ssrfPolicy/dangerouslyAllowPrivateNetwork",
+        ocPath: "oc://openclaw.config/browser/cdpPolicy/dangerouslyAllowPrivateNetwork",
         requirement: "oc://policy.jsonc/network/privateNetwork/allow",
       }),
       expect.objectContaining({

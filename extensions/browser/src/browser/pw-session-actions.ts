@@ -2,7 +2,7 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { racePromiseWithAbortSignal } from "openclaw/plugin-sdk/time-runtime";
-import type { Browser, Page, Response } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import { isSelectableCdpBrowserTarget } from "./cdp-target-filter.js";
 import {
   appendCdpPath,
@@ -16,23 +16,13 @@ import { AX_REF_PATTERN, normalizeCdpWsUrl } from "./cdp.js";
 import { DEFAULT_BROWSER_ACTION_TIMEOUT_MS } from "./constants.js";
 import { resolveBrowserEngine } from "./engines/registry.js";
 import type { BrowserEngineId } from "./engines/types.js";
+import { parseBrowserNavigationUrl } from "./navigation-guard.js";
 import {
-  withBrowserNavigationPolicy,
-  assertBrowserNavigationAllowed,
-  type BrowserNavigationPolicyOptions,
-} from "./navigation-guard.js";
-import {
-  clearBlockedPageRef,
-  clearBlockedPageRefsForCdpUrl,
-  clearBlockedTarget,
   closeConnectionScopedPageBrowser,
-  clearBlockedTargetsForCdpUrl,
   connectBrowser,
   evictStalePlaywrightBrowserConnection,
   getAllPages,
   getPageForTargetId,
-  isBlockedPageRef,
-  isBlockedTarget,
   isRecoverablePlaywrightDisconnectError,
   pageTargetInfo,
   retirePlaywrightBrowserConnectionExact,
@@ -45,11 +35,6 @@ import {
   retainedClosingByCdpUrl,
   type BrowserObservedState,
 } from "./pw-session-contracts.js";
-import {
-  assertPageNavigationCompletedSafely,
-  gotoPageWithNavigationGuard,
-  isPolicyDenyNavigationError,
-} from "./pw-session-navigation.js";
 import { isConnectionScopedPage } from "./pw-session-page-target.js";
 import type { PlaywrightOwnedPage } from "./pw-session-page.types.js";
 import {
@@ -132,8 +117,6 @@ export async function closePlaywrightBrowserConnection(opts?: { cdpUrl?: string 
     ...connectingByCdpUrl.keys(),
     ...retainedClosingByCdpUrl.keys(),
   ]);
-  clearBlockedTargetsForCdpUrl();
-  clearBlockedPageRefsForCdpUrl();
   const results = await Promise.allSettled(
     [...cdpUrls].map(
       async (cdpUrl) => await retirePlaywrightBrowserConnectionExact({ cdpUrl }).close(),
@@ -352,13 +335,7 @@ async function readPagesViaPlaywright(
               throw new Error("Browser target enumeration was unavailable.");
             }
             return new Set(
-              result.targetInfos
-                .filter(
-                  (info) =>
-                    isSelectableCdpBrowserTarget(info) &&
-                    !isBlockedTarget(opts.cdpUrl, info.targetId),
-                )
-                .map((info) => info.targetId),
+              result.targetInfos.filter(isSelectableCdpBrowserTarget).map((info) => info.targetId),
             );
           } finally {
             signal.removeEventListener("abort", detach);
@@ -375,9 +352,8 @@ async function readPagesViaPlaywright(
             throw new Error("Browser disconnected during page enumeration.");
           }
           const pages = await getAllPages(browser);
-          const candidatePages = pages.filter((page) => !isBlockedPageRef(opts.cdpUrl, page));
           const pageResults = await Promise.all(
-            candidatePages.map(async (page) => {
+            pages.map(async (page) => {
               let targetInfo: Awaited<ReturnType<typeof pageTargetInfo>>;
               try {
                 targetInfo = await pageTargetInfo(page);
@@ -392,9 +368,6 @@ async function readPagesViaPlaywright(
               }
               if (!targetInfo) {
                 return { status: "unresolved" as const };
-              }
-              if (isBlockedTarget(opts.cdpUrl, targetInfo.targetId)) {
-                return { status: "blocked" as const };
               }
               return {
                 status: "available" as const,
@@ -419,8 +392,7 @@ async function readPagesViaPlaywright(
             nativeTargetIds = await readNativeTargetIds();
           }
           const remainingTargetIds = nativeTargetIds ? new Set(nativeTargetIds) : undefined;
-          // Keep page order and native snapshot identities. A quarantined Page reference
-          // cannot identify a missing native target without exposing its metadata.
+          // Preserve page order while joining each Page to the native target snapshot.
           const resolvedPages = pageResults.flatMap((result) =>
             result.status === "available" &&
             (!remainingTargetIds || remainingTargetIds.delete(result.page.targetId))
@@ -500,37 +472,28 @@ export async function listPagesViaPlaywright(opts: {
 }
 
 /** Create a page and hand its exact cleanup operation to the adopting owner. */
-export async function createPageViaPlaywright(
-  opts: {
-    cdpUrl: string;
-    engine?: BrowserEngineId;
-    url: string;
-    cdpPolicy?: SsrFPolicy;
-    signal?: AbortSignal;
-    /** Caller authority is checked at each effect boundary, independently of cancellation. */
-    assertCurrent?: () => void;
-    /** Own an empty context; never reuse profile cookies for a session-scoped dashboard. */
-    isolatedContext?: true;
-  } & BrowserNavigationPolicyOptions,
-): Promise<PlaywrightOwnedPage> {
+export async function createPageViaPlaywright(opts: {
+  cdpUrl: string;
+  engine?: BrowserEngineId;
+  url: string;
+  cdpPolicy?: SsrFPolicy;
+  signal?: AbortSignal;
+  /** Caller authority is checked at each effect boundary, independently of cancellation. */
+  assertCurrent?: () => void;
+  /** Own an empty context; never reuse profile cookies for a session-scoped dashboard. */
+  isolatedContext?: true;
+}): Promise<PlaywrightOwnedPage> {
   const assertCurrent = () => {
     opts.signal?.throwIfAborted();
     opts.assertCurrent?.();
   };
   assertCurrent();
   const targetUrl = opts.url.trim() || "about:blank";
-  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
-    browserProxyMode: opts.browserProxyMode,
-  });
-  await assertBrowserNavigationAllowed({
-    url: targetUrl,
-    ...navigationPolicy,
-    signal: opts.signal,
-  });
+  parseBrowserNavigationUrl(targetUrl);
   assertCurrent();
   const { browser, engine } = await connectBrowser(
     opts.cdpUrl,
-    opts.cdpPolicy ?? opts.ssrfPolicy,
+    opts.cdpPolicy,
     undefined,
     opts.engine,
   );
@@ -560,43 +523,19 @@ export async function createPageViaPlaywright(
       await page?.close();
     }
   };
-  let navigationClosedBlockedTarget = false;
   try {
     assertCurrent();
     ensureContextState(context);
     page = await context.newPage();
     assertCurrent();
     ensurePageState(page);
-    clearBlockedPageRef(opts.cdpUrl, page);
     const createdTargetId = (await pageTargetInfo(page).catch(() => null))?.targetId ?? null;
     assertCurrent();
-    clearBlockedTarget(opts.cdpUrl, createdTargetId ?? undefined);
 
     if (targetUrl !== "about:blank") {
-      let response: Response | null;
-      try {
-        response = await gotoPageWithNavigationGuard({
-          cdpUrl: opts.cdpUrl,
-          page,
-          url: targetUrl,
-          timeoutMs: 30_000,
-          ...navigationPolicy,
-          targetId: createdTargetId ?? undefined,
-          assertPageCurrent: assertCurrent,
-        });
-      } catch (error) {
-        // Guarded navigation already owns close/quarantine for a policy denial.
-        navigationClosedBlockedTarget = isPolicyDenyNavigationError(error);
-        throw error;
-      }
       assertCurrent();
-      await assertPageNavigationCompletedSafely({
-        cdpUrl: opts.cdpUrl,
-        page,
-        response,
-        ...navigationPolicy,
-        targetId: createdTargetId ?? undefined,
-      });
+      await page.goto(targetUrl, { timeout: 30_000 });
+      assertCurrent();
     }
 
     const tid = createdTargetId ?? (await pageTargetInfo(page).catch(() => null))?.targetId ?? null;
@@ -617,9 +556,7 @@ export async function createPageViaPlaywright(
         browser.isConnected() && !retainedPage.isClosed() && context.pages().includes(retainedPage),
     };
   } catch (error) {
-    if (opts.isolatedContext || !navigationClosedBlockedTarget) {
-      await close().catch(() => {});
-    }
+    await close().catch(() => {});
     throw error;
   }
 }

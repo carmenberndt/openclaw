@@ -118,8 +118,8 @@ export const OpenClawSchemaShape = {
       defaultProfile: z.string().optional(),
       /** Default snapshot options (applied by the browser tool/CLI when unset). */
       snapshotDefaults: BrowserSnapshotDefaultsSchema,
-      /** SSRF policy for browser navigation/open-tab operations. */
-      ssrfPolicy: SsrFPolicyConfigSchema.optional(),
+      /** Endpoint policy for CDP control connections; does not restrict page navigation. */
+      cdpPolicy: SsrFPolicyConfigSchema.optional(),
       profiles: z
         .record(
           z.string().regex(/^[a-z0-9-]+$/, "Profile names must be alphanumeric with hyphens only"),

@@ -16,7 +16,6 @@ import {
   resolveAgentModelFallbackValues,
   resolveAgentModelPrimaryValue,
 } from "openclaw/plugin-sdk/provider-onboard";
-import { isPrivateNetworkOptInEnabled } from "openclaw/plugin-sdk/ssrf-policy";
 import { filterStringRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
@@ -288,7 +287,9 @@ function shouldAllowPrivateImageEndpoint(req: {
   if (req.provider === MOCK_OPENAI_PROVIDER_ID) {
     return true;
   }
-  if (isPrivateNetworkOptInEnabled(req.cfg?.browser?.ssrfPolicy)) {
+  // Image endpoints keep an explicit opt-in; an undefined caller override would
+  // let generic custom-provider origin trust relax their strict default.
+  if (req.cfg?.models?.providers?.openai?.request?.allowPrivateNetwork === true) {
     return true;
   }
   const baseUrl = resolveConfiguredOpenAIImageBaseUrl(req.cfg, req.model);

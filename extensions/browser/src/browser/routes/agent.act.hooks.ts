@@ -3,6 +3,7 @@ import {
   normalizeOptionalString,
   readStringValue,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import { evaluateChromeMcpScript, uploadChromeMcpFile } from "../chrome-mcp.js";
 import { resolveExistingUploadPaths } from "../paths.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
@@ -39,7 +40,6 @@ export function registerBrowserAgentActHookRoutes(
       res,
       ctx,
       targetId,
-      enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, cdpUrl, tab, signal, assertCurrent }) => {
         const resolvedResult = await resolveExistingUploadPaths({ requestedPaths: paths });
         if (!resolvedResult.ok) {
@@ -86,7 +86,7 @@ export function registerBrowserAgentActHookRoutes(
           targetId: tab.targetId,
           paths: resolvedPaths,
           timeoutMs,
-          ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+          ssrfPolicy: resolveCdpControlPolicy(profileCtx.profile, ctx.state().resolved.cdpPolicy),
           ...(assertCurrent ? { assertCurrent } : {}),
         };
         if (inputRef || element) {
@@ -122,7 +122,6 @@ export function registerBrowserAgentActHookRoutes(
       res,
       ctx,
       targetId,
-      enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, cdpUrl, tab, signal, assertCurrent }) => {
         if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
           if (dialogId) {

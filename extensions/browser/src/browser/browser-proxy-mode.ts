@@ -1,6 +1,3 @@
-import type { ResolvedBrowserConfig, ResolvedBrowserProfile } from "./config.js";
-import type { BrowserNavigationProxyMode } from "./navigation-guard.js";
-
 const PROXY_ROUTING_CHROME_ARGS = new Set([
   "--proxy-auto-detect",
   "--proxy-pac-url",
@@ -28,10 +25,6 @@ export function hasChromeProxyControlArg(args: readonly string[]): boolean {
   return args.some((arg) => PROXY_CONTROL_CHROME_ARGS.has(chromeArgName(arg)));
 }
 
-function hasExplicitChromeProxyRoutingArg(args: readonly string[]): boolean {
-  return args.some((arg) => PROXY_ROUTING_CHROME_ARGS.has(chromeArgName(arg)));
-}
-
 /** Remove inherited proxy env so launched Chrome follows only configured args. */
 export function omitChromeProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...env };
@@ -39,19 +32,4 @@ export function omitChromeProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     delete next[key];
   }
   return next;
-}
-
-export function resolveBrowserNavigationProxyMode(params: {
-  resolved: Pick<ResolvedBrowserConfig, "extraArgs">;
-  profile: Pick<ResolvedBrowserProfile, "attachOnly" | "cdpIsLoopback" | "driver">;
-}): BrowserNavigationProxyMode {
-  if (
-    params.profile.driver === "openclaw" &&
-    params.profile.cdpIsLoopback &&
-    !params.profile.attachOnly &&
-    hasExplicitChromeProxyRoutingArg(params.resolved.extraArgs)
-  ) {
-    return "explicit-browser-proxy";
-  }
-  return "direct";
 }

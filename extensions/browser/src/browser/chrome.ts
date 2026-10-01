@@ -56,7 +56,6 @@ import {
 import {
   decorateOpenClawProfile,
   ensureProfileCleanExit,
-  ensureProfileNetworkPredictionDisabled,
   isProfileDecorated,
   usesOpenClawMockKeychain,
 } from "./chrome.profile-decoration.js";
@@ -1143,12 +1142,6 @@ export async function launchOpenClawChrome(
   }
 
   try {
-    ensureProfileNetworkPredictionDisabled(userDataDir);
-  } catch (err) {
-    log.warn(`openclaw browser network-prediction prefs failed: ${String(err)}`);
-  }
-
-  try {
     ensureProfileCleanExit(userDataDir);
   } catch (err) {
     log.warn(`openclaw browser clean-exit prefs failed: ${String(err)}`);
@@ -1517,7 +1510,7 @@ export async function stopOwnedOpenClawChrome(
   const gracefulCloseRequested = await requestGracefulChromeClose(
     { pid, cdpPort: profile.cdpPort },
     timeoutMs,
-    resolved.ssrfPolicy,
+    resolved.cdpPolicy,
     () => {
       const current = readOwnedManagedChromeIdentity({ pid, exe, profile, userDataDir });
       return current !== null && sameManagedChromeIdentity(identity, current);

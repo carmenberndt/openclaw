@@ -56,7 +56,7 @@ async function withContentPage(
       resolved: resolveBrowserConfig({
         defaultProfile: "content",
         evaluateEnabled: false,
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
         profiles: { content: { cdpUrl, color: "#123456", attachOnly: true } },
       }),
       profiles: new Map(),

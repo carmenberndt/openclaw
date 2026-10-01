@@ -154,7 +154,7 @@ export function createProfileAvailability({
     });
 
   const getCdpReachabilityPolicy = () =>
-    resolveCdpReachabilityPolicy(profile, state().resolved.ssrfPolicy);
+    resolveCdpReachabilityPolicy(profile, state().resolved.cdpPolicy);
   const observeExternalBrowserMode = async (
     diagnostic: ChromeCdpDiagnostic,
     timeoutMs: number,

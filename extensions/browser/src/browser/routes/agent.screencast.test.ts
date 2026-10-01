@@ -26,7 +26,7 @@ function setup(options: { existingSession?: boolean; url?: string; listedUrl?: s
   const profile = makeBrowserProfile(options.existingSession ? { driver: "existing-session" } : {});
   const state = makeBrowserServerState({
     profile,
-    resolvedOverrides: { ssrfPolicy: { allowPrivateNetwork: false } },
+    resolvedOverrides: { cdpPolicy: { dangerouslyAllowPrivateNetwork: false } },
   });
   const runtime = getOrCreateProfileRuntime(state, profile);
   const tab = {
@@ -167,27 +167,30 @@ describe("browser screencast mint route", () => {
     });
   });
 
-  it("keeps default bounds and checks current navigation policy after config changes", async () => {
-    const { request, state, runtime } = setup();
-    state.resolved.ssrfPolicy = { allowPrivateNetwork: true };
+  it("keeps default bounds and rejects a superseded capture generation", async () => {
+    const { request, runtime } = setup();
     const response = await request();
     const token = consumeBrowserScreencastToken((response.body as { token: string }).token)!;
 
     expect(token).toMatchObject({ maxWidth: 1280, maxHeight: 1280, quality: 70 });
-    await expect(token.checkNavigationAllowed("http://127.0.0.1/")).resolves.toBeUndefined();
-    state.resolved.ssrfPolicy = { allowPrivateNetwork: false };
-    await expect(token.checkNavigationAllowed("http://127.0.0.1/")).rejects.toThrow();
     getProfileLifecycle(runtime).generation += 1;
     expect(() => token.assertCurrent()).toThrow("superseded");
   });
 
-  it("blocks minting for a disallowed current tab through the shared route guard", async () => {
+  it("mints a capture token for a private current page", async () => {
     const { request } = setup({ url: "http://127.0.0.1/private" });
     const response = await request();
 
-    expect(response.statusCode).toBe(400);
-    expect(response.body).toMatchObject({ reason: "navigation_blocked" });
-    expect(response.body).not.toHaveProperty("token");
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      token: expect.any(String),
+      url: "http://127.0.0.1/private",
+    });
+    expect(consumeBrowserScreencastToken((response.body as { token: string }).token)).toMatchObject(
+      {
+        targetId: "resolved-tab",
+      },
+    );
   });
 
   it.each(["runtime retirement", "profile removal"] as const)(
@@ -207,11 +210,14 @@ describe("browser screencast mint route", () => {
     },
   );
 
-  it("redacts a newly blocked listed URL in the mint response", async () => {
+  it("returns the current private page URL in the mint response", async () => {
     const { request } = setup({ listedUrl: "http://127.0.0.1/private" });
     const response = await request();
 
     expect(response.statusCode).toBe(200);
-    expect(response.body).toMatchObject({ token: expect.any(String), url: undefined });
+    expect(response.body).toMatchObject({
+      token: expect.any(String),
+      url: "http://127.0.0.1/private",
+    });
   });
 });

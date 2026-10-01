@@ -64,7 +64,7 @@ function createAttachOnlyLoopbackProfile(cdpUrl: string) {
     }),
     resolvedOverrides: {
       defaultProfile: "manual-cdp",
-      ssrfPolicy: {},
+      cdpPolicy: {},
     },
   });
   const ctx = createBrowserRouteContext({ getState: () => state });
@@ -405,7 +405,7 @@ describe("browser server-context ensureBrowserAvailable", () => {
     const { launchOpenClawChrome, stopOpenClawChrome, isChromeCdpReady, profile, state } =
       setupEnsureBrowserAvailableHarness();
     const isChromeReachable = vi.mocked(chromeModule.isChromeReachable);
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
 
     isChromeReachable.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     isChromeCdpReady.mockResolvedValueOnce(true);
@@ -481,7 +481,7 @@ describe("browser server-context ensureBrowserAvailable", () => {
       expectedRemoteHttpTimeoutMs,
       expectedRemoteWsTimeoutMs,
       {
-        allowPrivateNetwork: true,
+        dangerouslyAllowPrivateNetwork: true,
         allowedHostnames: ["browserless"],
       },
       { signal: expect.any(AbortSignal) },
@@ -492,7 +492,7 @@ describe("browser server-context ensureBrowserAvailable", () => {
       expectedRemoteHttpTimeoutMs,
       expectedRemoteWsTimeoutMs,
       {
-        allowPrivateNetwork: true,
+        dangerouslyAllowPrivateNetwork: true,
         allowedHostnames: ["browserless"],
       },
       { signal: expect.any(AbortSignal) },
@@ -592,7 +592,7 @@ describe("browser server-context ensureBrowserAvailable", () => {
       },
       resolvedOverrides: {
         defaultProfile: "remote",
-        ssrfPolicy: {},
+        cdpPolicy: {},
       },
     });
     const ctx = createBrowserRouteContext({ getState: () => state });

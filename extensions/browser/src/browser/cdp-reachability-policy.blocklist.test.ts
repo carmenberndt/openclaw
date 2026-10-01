@@ -16,10 +16,10 @@ const privateAccessWithBlocklist = {
 
 function assertConfiguredTransportAllowed(
   endpoint: Pick<BrowserProfileConfig, "cdpUrl" | "mcpArgs">,
-  ssrfPolicy?: BrowserConfig["ssrfPolicy"],
+  cdpPolicy?: BrowserConfig["cdpPolicy"],
 ): void {
   const config = resolveBrowserConfig({
-    ssrfPolicy,
+    cdpPolicy,
     profiles: { "chrome-mcp": { driver: "existing-session", ...endpoint } },
   });
   const profile = resolveProfile(config, "chrome-mcp");
@@ -28,7 +28,7 @@ function assertConfiguredTransportAllowed(
   }
   assertChromeMcpCdpTransportAllowed(
     profile,
-    resolveCdpReachabilityPolicy(profile, config.ssrfPolicy),
+    resolveCdpReachabilityPolicy(profile, config.cdpPolicy),
   );
 }
 
@@ -149,13 +149,13 @@ describe("assertChromeMcpCdpTransportAllowed blocklist scoping", () => {
   });
 
   it.each([
-    { name: "default policy", ssrfPolicy: undefined },
-    { name: "explicit strict policy", ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } },
-  ])("keeps explicit endpoints guarded under $name", ({ ssrfPolicy }) => {
+    { name: "default policy", cdpPolicy: undefined },
+    { name: "explicit strict policy", cdpPolicy: { dangerouslyAllowPrivateNetwork: false } },
+  ])("keeps explicit endpoints guarded under $name", ({ cdpPolicy }) => {
     expect(() =>
       assertConfiguredTransportAllowed(
         { mcpArgs: ["--browserUrl", trustedHttpEndpoint] },
-        ssrfPolicy,
+        cdpPolicy,
       ),
     ).toThrow(/cannot carry that pinned transport/i);
   });

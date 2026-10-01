@@ -175,7 +175,7 @@ When `mcpArgs` does not set a connection option, OpenClaw forwards a configured
 
 Explicit endpoint arguments in `mcpArgs` override `cdpUrl`; adding
 `--autoConnect` alongside an endpoint does not hide it. OpenClaw uses the selected
-endpoint for CDP control and checks Browser CDP policy before starting Chrome MCP.
+endpoint for CDP control and checks `browser.cdpPolicy` before starting Chrome MCP.
 A matching `blockedHostnames` entry denies attachment even when private-network
 access is trusted. Unrelated blocklist entries do not prevent attachment, and
 the default strict-policy restrictions still apply.

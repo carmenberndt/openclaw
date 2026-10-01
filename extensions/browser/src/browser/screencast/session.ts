@@ -21,7 +21,7 @@ class BrowserScreencastSession {
   private captureDrain: Promise<void> = Promise.resolve();
   closed = false;
   private navigationEpoch = 0;
-  private checkedUrl?: string;
+  private captureUrl?: string;
   private metadata?: { url: string; title: string };
   private stopPromise?: Promise<void>;
 
@@ -103,7 +103,7 @@ class BrowserScreencastSession {
       page.on("close", this.onTargetClosed);
       page.on("framenavigated", this.onNavigation);
       page.on("load", this.onLoad);
-      await this.checkNavigation(page.url());
+      await this.restartCapture(page.url());
     } catch {
       await this.close(4004, "target_closed");
     }
@@ -121,7 +121,7 @@ class BrowserScreencastSession {
 
   private readonly onNavigation = (frame: Frame): void => {
     if (frame === this.page?.mainFrame()) {
-      void this.checkNavigation(this.page.url());
+      void this.restartCapture(this.page.url());
     }
   };
 
@@ -129,17 +129,9 @@ class BrowserScreencastSession {
     void this.updateMetadata(this.navigationEpoch);
   };
 
-  private async checkNavigation(url: string): Promise<void> {
+  private async restartCapture(url: string): Promise<void> {
     const retired = this.retireCapture();
     const epoch = this.navigationEpoch;
-    try {
-      await this.params.checkNavigationAllowed(url);
-    } catch {
-      if (epoch === this.navigationEpoch) {
-        void this.close(4003, "navigation_blocked");
-      }
-      return;
-    }
     const page = this.page;
     const current = () => this.isCurrent() && epoch === this.navigationEpoch && page?.url() === url;
     if (!page || !current()) {
@@ -159,7 +151,7 @@ class BrowserScreencastSession {
       this.frameListener = (frame) => this.onFrame(cdp, frame);
       cdp.on("close", this.onCdpClosed);
       cdp.on("Page.screencastFrame", this.frameListener);
-      this.checkedUrl = url;
+      this.captureUrl = url;
       await this.updateMetadata(epoch);
       if (!current() || this.cdp !== cdp) {
         return;
@@ -180,12 +172,12 @@ class BrowserScreencastSession {
 
   private async updateMetadata(epoch: number): Promise<void> {
     const page = this.page;
-    const url = this.checkedUrl;
+    const url = this.captureUrl;
     if (!page || url === undefined || page.url() !== url) {
       return;
     }
     const title = await page.title().catch(() => "");
-    if (!this.isCurrent() || epoch !== this.navigationEpoch || this.checkedUrl !== page.url()) {
+    if (!this.isCurrent() || epoch !== this.navigationEpoch || this.captureUrl !== page.url()) {
       return;
     }
     this.metadata = { url, title };
@@ -199,8 +191,8 @@ class BrowserScreencastSession {
     if (
       !this.isCurrent() ||
       !this.metadata ||
-      this.metadata.url !== this.checkedUrl ||
-      this.page?.url() !== this.checkedUrl
+      this.metadata.url !== this.captureUrl ||
+      this.page?.url() !== this.captureUrl
     ) {
       return;
     }
@@ -242,10 +234,10 @@ class BrowserScreencastSession {
     if (this.cdp !== cdp || !page || !this.isCurrent()) {
       return;
     }
-    const url = this.checkedUrl;
+    const url = this.captureUrl;
     const pageUrl = page.url();
     if (pageUrl !== url) {
-      void this.checkNavigation(pageUrl);
+      void this.restartCapture(pageUrl);
       return;
     }
     if (url === undefined) {
@@ -296,8 +288,9 @@ class BrowserScreencastSession {
   }
 
   private retireCapture(): Promise<void> {
-    // Encoded frames belong to a CDP session, so revoke it before navigation checks yield.
-    this.checkedUrl = undefined;
+    // Encoded frames belong to a CDP session. Retire it before a new URL is published
+    // so delayed pixels cannot inherit metadata from the replacement document.
+    this.captureUrl = undefined;
     this.navigationEpoch += 1;
     const cdp = this.cdp;
     this.cdp = undefined;

@@ -1,8 +1,6 @@
 import { parseFiniteNumber } from "openclaw/plugin-sdk/number-runtime";
-import type { SsrFPolicy } from "openclaw/plugin-sdk/security-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { Frame, Page } from "playwright-core";
-import { getPageForTargetId, assertPageNavigationCompletedSafely } from "./pw-session.js";
 import type { SnapshotUrlEntry } from "./snapshot-urls.js";
 
 export function resolveSnapshotTimeoutMs(timeoutMs: number | undefined): number {
@@ -39,27 +37,6 @@ export async function collectSnapshotUrls(page: Page | Frame): Promise<SnapshotU
         return entry;
       })
     : [];
-}
-
-export async function prepareSnapshotPageViaPlaywright(opts: {
-  cdpUrl: string;
-  targetId?: string;
-  ssrfPolicy?: SsrFPolicy;
-}): Promise<Page> {
-  const page = await getPageForTargetId({
-    cdpUrl: opts.cdpUrl,
-    targetId: opts.targetId,
-  });
-  if (opts.ssrfPolicy) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page,
-      response: null,
-      ssrfPolicy: opts.ssrfPolicy,
-      targetId: opts.targetId,
-    });
-  }
-  return page;
 }
 
 export async function withSnapshotFrameGuard<T>(opts: {

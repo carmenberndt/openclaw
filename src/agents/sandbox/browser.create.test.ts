@@ -286,7 +286,7 @@ describe("ensureSandboxBrowser create args", () => {
   });
 
   it.each([
-    { policy: "SSRF", change: { ssrfPolicy: { allowedHostnames: ["example.com"] } } },
+    { policy: "SSRF", change: { cdpPolicy: { allowedHostnames: ["example.com"] } } },
     { policy: "evaluate", change: { evaluateEnabled: false } },
   ])("recreates a reusable bridge when its $policy policy changes", async ({ change }) => {
     bridgeMocks.startBrowserBridgeServer.mockImplementation(async (params) => ({
@@ -306,7 +306,7 @@ describe("ensureSandboxBrowser create args", () => {
       agentWorkspaceDir: harness.testWorkspaceDir,
       cfg: buildConfig(false),
       evaluateEnabled: true,
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+      cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
     };
 
     await ensureTestSandboxBrowser(common);

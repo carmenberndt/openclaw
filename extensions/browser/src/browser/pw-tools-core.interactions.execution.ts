@@ -3,24 +3,18 @@ import type { Frame, Page } from "playwright-core";
 import {
   ACT_MAX_BATCH_ACTIONS,
   ACT_MAX_BATCH_DEPTH,
-  BROWSER_ACTION_NAVIGATION_GRACE_MS,
+  BROWSER_ACTION_DOWNLOAD_GRACE_MS,
+  browserActMayStartDownload,
 } from "./act-policy.js";
 import type { BrowserBatchAbort, BrowserBatchActionResult } from "./client-actions-types.js";
 import type { BrowserActRequest } from "./client-actions.types.js";
 import type { BrowserDownloadResult } from "./download-types.js";
-import {
-  assertBrowserNavigationResultAllowed,
-  type BrowserNavigationPolicyOptions,
-} from "./navigation-guard.js";
 import { pageTargetInfo } from "./pw-session-connection.js";
 import {
   beginActionDownloadCaptureOnPage,
   createObservedDialogAbortSignalForPage,
   getPageForTargetId,
   isBrowserObservedDialogBlockedError,
-  isPolicyDenyNavigationError,
-  quarantineBlockedNavigationTarget,
-  wasBrowserNavigationSourcePreservedAfterPolicyDenial,
 } from "./pw-session.js";
 import {
   clickCoordsViaPlaywright,
@@ -39,24 +33,21 @@ import { waitForViaPlaywright } from "./pw-tools-core.interactions.content.js";
 import {
   assertInteractionCurrent,
   BrowserInteractionAuthorityError,
-  type GuardedInteractionOptions,
-  hasInteractionNavigationPolicy,
-  interactionNavigationPolicy,
+  type AbortableInteractionOptions,
 } from "./pw-tools-core.interactions.navigation.js";
 import { closePageViaPlaywright, resizeViewportViaPlaywright } from "./pw-tools-core.snapshot.js";
 
 const ACT_DOWNLOAD_MAX_DRAIN_MS = 1_000;
 
 async function executeSingleAction(
-  action: BrowserActRequest,
-  cdpUrl: string,
-  targetId?: string,
-  evaluateEnabled?: boolean,
-  navigationPolicy: BrowserNavigationPolicyOptions = {},
-  depth = 0,
-  signal?: AbortSignal,
-  assertCurrent?: GuardedInteractionOptions["assertCurrent"],
+  opts: AbortableInteractionOptions & {
+    action: BrowserActRequest;
+    evaluateEnabled?: boolean;
+    depth?: number;
+  },
 ): Promise<unknown> {
+  const { action, cdpUrl, targetId, evaluateEnabled, ssrfPolicy, signal, assertCurrent } = opts;
+  const depth = opts.depth ?? 0;
   if (depth > ACT_MAX_BATCH_DEPTH) {
     throw new Error(`Batch nesting depth exceeds maximum of ${ACT_MAX_BATCH_DEPTH}`);
   }
@@ -64,7 +55,7 @@ async function executeSingleAction(
   const interaction = {
     cdpUrl,
     targetId: effectiveTargetId,
-    ...navigationPolicy,
+    ssrfPolicy,
     signal,
     assertCurrent,
   };
@@ -152,28 +143,8 @@ async function executeSingleAction(
   return undefined;
 }
 
-function actionUsesNavigationRequestGuard(action: BrowserActRequest): boolean {
-  if (action.kind === "batch") {
-    return action.actions.some(actionUsesNavigationRequestGuard);
-  }
-  return action.kind === "wait"
-    ? Boolean(action.fn)
-    : action.kind !== "close" && action.kind !== "resize";
-}
-
-function actionNeedsStandaloneDownloadGrace(
-  action: BrowserActRequest,
-  navigationPolicy: BrowserNavigationPolicyOptions,
-): boolean {
-  // Guarded interactions already hold a 250 ms event window while policy is
-  // active. Policy-free internal callers need that window from download capture.
-  return (
-    actionUsesNavigationRequestGuard(action) && !hasInteractionNavigationPolicy(navigationPolicy)
-  );
-}
-
 export async function executeActViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     action: BrowserActRequest;
     evaluateEnabled?: boolean;
   },
@@ -186,7 +157,6 @@ export async function executeActViaPlaywright(
   downloads?: BrowserDownloadResult[];
   targetId?: string;
 }> {
-  const navigationPolicy = interactionNavigationPolicy(opts);
   const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
@@ -196,27 +166,16 @@ export async function executeActViaPlaywright(
     const targetId = (await pageTargetInfo(page).catch(() => null))?.targetId;
     return { ...payload, ...(targetId ? { targetId } : {}) };
   };
-  // Any DOM action can synchronously trigger a download. Capturing all actions
-  // keeps reporting and final-URL policy aligned with the actual file write.
-  const downloadCapture = beginActionDownloadCaptureOnPage(page, {
-    beforeSave: async (download) => {
-      if (!download.url) {
-        throw new Error("Action download URL is unavailable");
-      }
-      await assertBrowserNavigationResultAllowed({
-        url: download.url,
-        ...navigationPolicy,
-      });
-    },
-  });
-  const downloadGraceMs = actionNeedsStandaloneDownloadGrace(opts.action, navigationPolicy)
-    ? BROWSER_ACTION_NAVIGATION_GRACE_MS
+  // Any DOM action can trigger a download. Capture it through the native Page event.
+  const downloadCapture = beginActionDownloadCaptureOnPage(page);
+  const downloadGraceMs = browserActMayStartDownload(opts.action)
+    ? BROWSER_ACTION_DOWNLOAD_GRACE_MS
     : 0;
   const drainDownloads = async (firstEventGraceMs = downloadGraceMs) =>
     await downloadCapture.drain({
       firstEventGraceMs,
       maxWaitMs: ACT_DOWNLOAD_MAX_DRAIN_MS,
-      quietMs: BROWSER_ACTION_NAVIGATION_GRACE_MS,
+      quietMs: BROWSER_ACTION_DOWNLOAD_GRACE_MS,
     });
   const dialogAbort = createObservedDialogAbortSignalForPage({
     page,
@@ -228,7 +187,7 @@ export async function executeActViaPlaywright(
         cdpUrl: opts.cdpUrl,
         targetId: opts.targetId,
         page,
-        ...navigationPolicy,
+        ssrfPolicy: opts.ssrfPolicy,
         actions: opts.action.actions,
         stopOnError: opts.action.stopOnError,
         evaluateEnabled: opts.evaluateEnabled,
@@ -242,16 +201,7 @@ export async function executeActViaPlaywright(
         ...(newDownloads ? { downloads: newDownloads } : {}),
       });
     }
-    const result = await executeSingleAction(
-      opts.action,
-      opts.cdpUrl,
-      opts.targetId,
-      opts.evaluateEnabled,
-      navigationPolicy,
-      0,
-      dialogAbort.signal,
-      opts.assertCurrent,
-    );
+    const result = await executeSingleAction({ ...opts, signal: dialogAbort.signal });
     const newDownloads = await drainDownloads();
     return await withOperationTarget({
       ...(opts.action.kind === "evaluate" ? { result } : {}),
@@ -260,13 +210,9 @@ export async function executeActViaPlaywright(
   } catch (err) {
     let failure = err;
     try {
-      const failureGraceMs =
-        dialogAbort.signal.aborted && actionUsesNavigationRequestGuard(opts.action)
-          ? BROWSER_ACTION_NAVIGATION_GRACE_MS
-          : downloadGraceMs;
-      await drainDownloads(failureGraceMs);
+      await drainDownloads();
     } catch (downloadErr) {
-      // A download policy/save failure is the action's network-to-file result;
+      // A download save failure is the action's network-to-file result;
       // preserve it even when the initiating interaction also failed.
       failure = downloadErr;
     }
@@ -274,16 +220,6 @@ export async function executeActViaPlaywright(
       return await withOperationTarget({
         blockedByDialog: true,
         browserState: failure.browserState,
-      });
-    }
-    if (
-      isPolicyDenyNavigationError(failure) &&
-      !wasBrowserNavigationSourcePreservedAfterPolicyDenial(failure)
-    ) {
-      await quarantineBlockedNavigationTarget({
-        cdpUrl: opts.cdpUrl,
-        page,
-        targetId: opts.targetId,
       });
     }
     throw failure;
@@ -294,7 +230,7 @@ export async function executeActViaPlaywright(
 }
 
 async function batchViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     actions: BrowserActRequest[];
     stopOnError?: boolean;
     evaluateEnabled?: boolean;
@@ -302,7 +238,6 @@ async function batchViaPlaywright(
     page?: Page;
   },
 ): Promise<{ results: BrowserBatchActionResult[]; aborted?: BrowserBatchAbort }> {
-  const navigationPolicy = interactionNavigationPolicy(opts);
   const depth = opts.depth ?? 0;
   if (depth > ACT_MAX_BATCH_DEPTH) {
     throw new Error(`Batch nesting depth exceeds maximum of ${ACT_MAX_BATCH_DEPTH}`);
@@ -355,25 +290,13 @@ async function batchViaPlaywright(
       navigationsAtLastDispatch = mainFrameNavigations;
       let result: BrowserBatchActionResult;
       try {
-        await executeSingleAction(
-          action,
-          opts.cdpUrl,
-          opts.targetId,
-          opts.evaluateEnabled,
-          navigationPolicy,
-          depth,
-          opts.signal,
-          opts.assertCurrent,
-        );
+        await executeSingleAction({ ...opts, action, depth });
         result = { ok: true };
       } catch (err) {
         if (
           isBrowserObservedDialogBlockedError(err) ||
           err instanceof BrowserInteractionAuthorityError
         ) {
-          throw err;
-        }
-        if (isPolicyDenyNavigationError(err)) {
           throw err;
         }
         result = { ok: false, error: formatErrorMessage(err) };

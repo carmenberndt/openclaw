@@ -6,6 +6,7 @@ import {
 } from "openclaw/plugin-sdk/media-runtime";
 import { resolveBrowserNavigationTimeoutMs } from "../act-policy.js";
 import type { CdpDocumentIdentities } from "../cdp-page-session.js";
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import {
   captureScreenshot,
   getDocumentIdentitiesViaCdp,
@@ -22,10 +23,7 @@ import { collectChromeMcpSnapshotUrls, withChromeMcpLabels } from "../chrome-mcp
 import { buildChromeMcpRouteSnapshot } from "../chrome-mcp.snapshot-result.js";
 import { flattenChromeMcpSnapshotToAriaResult } from "../chrome-mcp.snapshot.js";
 import { DEFAULT_BROWSER_SCREENSHOT_TIMEOUT_MS } from "../constants.js";
-import {
-  assertBrowserNavigationAllowed,
-  assertBrowserNavigationResultAllowed,
-} from "../navigation-guard.js";
+import { parseBrowserNavigationUrl } from "../navigation-guard.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
 import { getLoadedPwAiModule, getPwAiModule } from "../pw-ai-module.js";
 import { finalizeRoleSnapshot } from "../pw-role-snapshot.js";
@@ -46,7 +44,6 @@ import {
 import { appendSnapshotUrls } from "../snapshot-urls.js";
 import { normalizeBrowserTimerDelayMs } from "../timer-delay.js";
 import {
-  browserNavigationPolicyForProfile,
   handleRouteError,
   readBody,
   requirePwAi,
@@ -155,8 +152,7 @@ export function registerBrowserAgentSnapshotRoutes(
       targetId,
       run: async ({ profileCtx, tab, cdpUrl, signal, assertCurrent }) => {
         if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
-          const ssrfPolicyOpts = browserNavigationPolicyForProfile(ctx, profileCtx);
-          await assertBrowserNavigationAllowed({ url, ...ssrfPolicyOpts });
+          parseBrowserNavigationUrl(url);
           const result = await navigateChromeMcpPage({
             profileName: profileCtx.profile.name,
             profile: profileCtx.profile,
@@ -165,7 +161,6 @@ export function registerBrowserAgentSnapshotRoutes(
             timeoutMs,
             signal,
           });
-          await assertBrowserNavigationResultAllowed({ url: result.url, ...ssrfPolicyOpts });
           return res.json({ ok: true, targetId: tab.targetId, ...result });
         }
         const pw = await requirePwAi(res, "navigate");
@@ -190,7 +185,7 @@ export function registerBrowserAgentSnapshotRoutes(
                   relayReference: resolveRelayTarget.reference,
                 }
               : {}),
-            ...browserNavigationPolicyForProfile(ctx, profileCtx),
+            ssrfPolicy: resolveCdpControlPolicy(profileCtx.profile, ctx.state().resolved.cdpPolicy),
           });
           const currentTargetId = await resolveOperationTargetOutcome({
             actedOnTargetId: tab.targetId,
@@ -222,7 +217,6 @@ export function registerBrowserAgentSnapshotRoutes(
       profileCtx,
       targetId,
       feature: "pdf",
-      enforceCurrentUrlAllowed: true,
       run: async ({ cdpUrl, tab, pw }) => {
         const pdf = await pw.pdfViaPlaywright({
           cdpUrl,
@@ -271,7 +265,6 @@ export function registerBrowserAgentSnapshotRoutes(
       res,
       ctx,
       targetId,
-      enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, tab, cdpUrl, signal }) => {
         const jsonScreenshot = (image: Awaited<ReturnType<typeof saveBrowserScreenshot>>) => {
           const { imagePath, imageType: _imageType, ...details } = image;
@@ -285,13 +278,6 @@ export function registerBrowserAgentSnapshotRoutes(
             timeoutMs,
             signal,
           };
-          const ssrfPolicyOpts = browserNavigationPolicyForProfile(ctx, profileCtx);
-          if (ssrfPolicyOpts.ssrfPolicy) {
-            await assertBrowserNavigationResultAllowed({
-              url: tab.url,
-              ...ssrfPolicyOpts,
-            });
-          }
           if (element) {
             return jsonError(res, 400, EXISTING_SESSION_LIMITS.snapshot.screenshotElement);
           }
@@ -342,7 +328,10 @@ export function registerBrowserAgentSnapshotRoutes(
               ? await pw.snapshotRoleViaPlaywright({
                   cdpUrl,
                   targetId: tab.targetId,
-                  ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+                  ssrfPolicy: resolveCdpControlPolicy(
+                    profileCtx.profile,
+                    ctx.state().resolved.cdpPolicy,
+                  ),
                   timeoutMs,
                   signal,
                 })
@@ -414,13 +403,6 @@ export function registerBrowserAgentSnapshotRoutes(
             signal,
             timeoutMs: plan.timeoutMs,
           });
-          const ssrfPolicyOpts = browserNavigationPolicyForProfile(ctx, profileCtx);
-          if (ssrfPolicyOpts.ssrfPolicy) {
-            await assertBrowserNavigationResultAllowed({
-              url: tab.url,
-              ...ssrfPolicyOpts,
-            });
-          }
           await req.assertCurrent?.(profileCtx.profile);
           const jsonSnapshot = (snapshot: Record<string, unknown>) =>
             res.json({
@@ -507,7 +489,10 @@ export function registerBrowserAgentSnapshotRoutes(
               .getObservedBrowserStateViaPlaywright({
                 cdpUrl: profileCtx.profile.cdpUrl,
                 targetId: tab.targetId,
-                ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+                ssrfPolicy: resolveCdpControlPolicy(
+                  profileCtx.profile,
+                  ctx.state().resolved.cdpPolicy,
+                ),
               })
               .catch(() => undefined);
           }
@@ -588,7 +573,10 @@ export function registerBrowserAgentSnapshotRoutes(
               selector: plan.selectorValue,
               frameSelector: plan.frameSelectorValue,
               refsMode: plan.refsMode,
-              ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+              ssrfPolicy: resolveCdpControlPolicy(
+                profileCtx.profile,
+                ctx.state().resolved.cdpPolicy,
+              ),
               urls: plan.urls,
               timeoutMs: plan.timeoutMs,
               maxChars: plan.resolvedMaxChars,
@@ -646,7 +634,10 @@ export function registerBrowserAgentSnapshotRoutes(
                     cdpUrl: profileCtx.profile.cdpUrl,
                     targetId: tab.targetId,
                     refsMode: "aria",
-                    ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+                    ssrfPolicy: resolveCdpControlPolicy(
+                      profileCtx.profile,
+                      ctx.state().resolved.cdpPolicy,
+                    ),
                     urls: plan.urls,
                     timeoutMs: plan.timeoutMs,
                     signal,
@@ -711,7 +702,10 @@ export function registerBrowserAgentSnapshotRoutes(
               targetId: tab.targetId,
               limit: plan.limit,
               timeoutMs: plan.timeoutMs,
-              ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+              ssrfPolicy: resolveCdpControlPolicy(
+                profileCtx.profile,
+                ctx.state().resolved.cdpPolicy,
+              ),
               signal,
             });
           } else {

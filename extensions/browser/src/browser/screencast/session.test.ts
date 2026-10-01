@@ -240,81 +240,38 @@ describe("browser screencast sessions", () => {
     ]);
   });
 
-  it("detaches without capturing or acking while policy is pending, and closes on rejection", async () => {
-    let reject!: (error: Error) => void;
-    const check = vi.fn(async (_url: string) => {});
-    const viewer = await attach(screencastParams({ checkNavigationAllowed: check }));
+  it("retires old pixels and pending acknowledgements while a later navigation waits for detach", async () => {
+    const viewer = await attach();
     const retired = page.cdp;
     page.paint(9);
     viewer.send.mockClear();
-    check.mockImplementationOnce(
-      () =>
-        new Promise<void>((_resolve, fail) => {
-          reject = fail;
-        }),
-    );
-    page.navigate("https://blocked.test/");
-    expect(retired.detach).toHaveBeenCalledOnce();
-    expect(page.newCDPSession).toHaveBeenCalledTimes(1);
-    page.paint(10);
-    await vi.advanceTimersByTimeAsync(50);
-    expect(viewer.frames()).toHaveLength(0);
-    expect(retired.send.mock.calls.map(([method]) => method)).toEqual(["Page.startScreencast"]);
-    reject(new Error("blocked"));
-    await flush();
-    page.paint(11);
-    expect(viewer.frames()).toHaveLength(0);
-    expect(viewer.close).toHaveBeenCalledWith(4003, "navigation_blocked");
-    expect(retired.detach).toHaveBeenCalledOnce();
-  });
-
-  it("never forwards delayed blocked-document pixels after a later allowed navigation", async () => {
-    let rejectBlocked!: (error: Error) => void;
-    let allowNext!: () => void;
-    const check = vi.fn(async (_url: string) => {});
-    const viewer = await attach(screencastParams({ checkNavigationAllowed: check }));
-    const retired = page.cdp;
-    page.paint(1);
-    await vi.advanceTimersByTimeAsync(50);
-    viewer.send.mockClear();
-    retired.send.mockClear();
-    check.mockImplementationOnce(
-      () =>
-        new Promise<void>((_resolve, reject) => {
-          rejectBlocked = reject;
-        }),
-    );
-    page.navigate("https://blocked.test/");
-    expect.soft(retired.detach).toHaveBeenCalledOnce();
-    expect(page.newCDPSession).toHaveBeenCalledTimes(1);
-    retired.paint(10);
-    await vi.advanceTimersByTimeAsync(50);
-    expect(viewer.frames()).toEqual([]);
-    expect.soft(retired.send).not.toHaveBeenCalled();
-
-    check.mockImplementationOnce(
+    let finishDetach!: () => void;
+    retired.detach.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
-          allowNext = resolve;
+          finishDetach = resolve;
         }),
     );
-    page.navigate("https://example.test/next");
-    rejectBlocked(new Error("blocked"));
-    await flush();
-    expect(viewer.close).not.toHaveBeenCalled();
+    page.navigate("http://127.0.0.1/first");
+    expect(retired.detach).toHaveBeenCalledOnce();
+    retired.paint(10);
+    page.navigate("http://192.168.1.2/latest");
+    await vi.advanceTimersByTimeAsync(50);
     expect(page.newCDPSession).toHaveBeenCalledTimes(1);
-    allowNext();
-    await flush();
-    expect.soft(page.newCDPSession).toHaveBeenCalledTimes(2);
+    expect(viewer.frames()).toEqual([]);
+    expect(retired.send.mock.calls.map(([method]) => method)).toEqual(["Page.startScreencast"]);
 
+    finishDetach();
+    await flush();
+    expect(page.newCDPSession).toHaveBeenCalledTimes(2);
     retired.paint(99, Buffer.from([0xff, 0xd8, 0x42, 0xff, 0xd9]));
-    expect(viewer.frames().map(parseScreencastFrame)).toEqual([]);
+    expect(viewer.frames()).toEqual([]);
     page.paint(100);
     await vi.advanceTimersByTimeAsync(50);
     expect(viewer.frames().map(parseScreencastFrame)).toEqual([
       {
         header: {
-          url: "https://example.test/next",
+          url: "http://192.168.1.2/latest",
           cssWidth: 800,
           cssHeight: 600,
           scrollX: 12,
@@ -330,63 +287,57 @@ describe("browser screencast sessions", () => {
     expect(viewer.close).not.toHaveBeenCalled();
   });
 
-  it("checks the initial URL before ready or frames, and ignores stale navigation completions", async () => {
-    let initial!: () => void;
-    const check = vi
-      .fn<() => Promise<void>>()
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            initial = resolve;
-          }),
-      )
-      .mockResolvedValue(undefined);
-    const viewer = await attach(screencastParams({ checkNavigationAllowed: check }));
-    expect(page.newCDPSession).not.toHaveBeenCalled();
-    page.paint();
+  it("detaches a stale initial capture and publishes only the successor document", async () => {
+    const stale = new FakeCdp();
+    let finishAttach!: (cdp: FakeCdp) => void;
+    page.newCDPSession.mockImplementationOnce(
+      () =>
+        new Promise<FakeCdp>((resolve) => {
+          finishAttach = resolve;
+        }),
+    );
+    const viewer = await attach();
     expect(viewer.send).not.toHaveBeenCalled();
     page.currentTitle = "Next";
-    page.navigate("https://example.test/next");
+    page.navigate("http://127.0.0.1/next");
     await flush();
-    initial();
+    finishAttach(stale);
     await flush();
+    expect(stale.detach).toHaveBeenCalledOnce();
+    expect(stale.send).not.toHaveBeenCalled();
+    stale.paint();
+    expect(viewer.frames()).toEqual([]);
     page.paint(2);
     expect(viewer.messages()).toEqual([
-      { type: "ready", targetId: "target-1", url: "https://example.test/next", title: "Next" },
+      { type: "ready", targetId: "target-1", url: "http://127.0.0.1/next", title: "Next" },
     ]);
     expect(
-      parseScreencastFrame(expectDefined(viewer.frames()[0], "approved document frame")).header.url,
-    ).toBe("https://example.test/next");
+      parseScreencastFrame(expectDefined(viewer.frames()[0], "successor document frame")).header
+        .url,
+    ).toBe("http://127.0.0.1/next");
     page.currentTitle = "Loaded";
     page.emit("load");
     await flush();
     expect(viewer.messages().at(-1)).toEqual({
       type: "meta",
-      url: "https://example.test/next",
+      url: "http://127.0.0.1/next",
       title: "Loaded",
     });
   });
 
-  it("does not leak a changed URL before Playwright's navigation event", async () => {
-    let allowed!: () => void;
-    const check = vi.fn(async (_url: string) => {});
-    const viewer = await attach(screencastParams({ checkNavigationAllowed: check }));
+  it("does not label old pixels with a changed URL before Playwright's navigation event", async () => {
+    const viewer = await attach();
     const retired = page.cdp;
-    check.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          allowed = resolve;
-        }),
-    );
-    page.currentUrl = "https://example.test/next";
+    page.currentUrl = "http://127.0.0.1/next";
     page.paint();
     expect(viewer.frames()).toHaveLength(0);
     expect(retired.detach).toHaveBeenCalledOnce();
-    expect(page.newCDPSession).toHaveBeenCalledTimes(1);
-    allowed();
     await flush();
     page.paint(2);
-    expect(viewer.frames()).toHaveLength(1);
+    expect(viewer.frames().map((frame) => parseScreencastFrame(frame).header.url)).toEqual([
+      "http://127.0.0.1/next",
+    ]);
+    expect(viewer.close).not.toHaveBeenCalled();
   });
 
   it.each(["page", "cdp", "lifecycle"])(

@@ -145,7 +145,7 @@ async function resolveManagedProfile(definition: BrowserDashboardDefinition) {
       `Browser dashboard ${definition.name} requires a local managed profile; ${definition.profile} cannot be attached or routed to another host.`,
     );
   }
-  return { profile, resolved, ssrfPolicy: resolveCdpControlPolicy(profile, resolved.ssrfPolicy) };
+  return { profile, resolved, ssrfPolicy: resolveCdpControlPolicy(profile, resolved.cdpPolicy) };
 }
 
 async function observeExistingTab(

@@ -1065,8 +1065,8 @@ describe("registerPolicyDoctorChecks", () => {
     const cfg = {
       ...cfgWithPolicy(),
       browser: {
-        ssrfPolicy: {
-          allowPrivateNetwork: true,
+        cdpPolicy: {
+          dangerouslyAllowPrivateNetwork: true,
         },
       },
     } as OpenClawConfig;

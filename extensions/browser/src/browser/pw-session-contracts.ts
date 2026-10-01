@@ -175,5 +175,3 @@ export const connectingByCdpUrl = new Map<string, PendingBrowserConnection>();
 export const retainedClosingByCdpUrl = new Map<string, Set<ConnectedBrowser>>();
 export const closeConnectionPromises = new WeakMap<ConnectedBrowser, Promise<void>>();
 export const PLAYWRIGHT_CONNECTION_CLOSE_TIMEOUT_MS = 2_000;
-export const blockedTargetsByCdpUrl = new Set<string>();
-export const blockedPageRefsByCdpUrl = new Map<string, WeakSet<Page>>();

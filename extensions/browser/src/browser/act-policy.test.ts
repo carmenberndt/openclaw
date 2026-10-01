@@ -17,7 +17,7 @@ describe("browser action request deadlines", () => {
         fn: "() => true",
         timeoutMs: 20_000,
       }),
-    ).toBe(135_000);
+    ).toBe(135_250);
   });
 
   it("normalizes each condition timeout before multiplication", () => {
@@ -31,13 +31,13 @@ describe("browser action request deadlines", () => {
       fn: "() => true",
     } as const;
 
-    expect(resolveBrowserActRequestTimeoutMs({ ...wait, timeoutMs: 1 })).toBe(8_000);
+    expect(resolveBrowserActRequestTimeoutMs({ ...wait, timeoutMs: 1 })).toBe(10_250);
     expect(
       resolveBrowserActRequestTimeoutMs({
         kind: "batch",
         actions: [{ ...wait, timeoutMs: Number.MAX_VALUE }],
       }),
-    ).toBe(725_000);
+    ).toBe(725_250);
   });
 
   it("keeps Playwright text whitespace in sequential batch budgets", () => {
@@ -76,11 +76,11 @@ describe("browser action request deadlines", () => {
     ).toBe(95_000);
   });
 
-  it("budgets action and verification defaults and adds outer slack once", () => {
-    expect(resolveBrowserActRequestTimeoutMs({ kind: "click", ref: "1" })).toBe(126_250);
-    expect(resolveBrowserActRequestTimeoutMs({ kind: "wait", timeMs: 0 })).toBe(126_250);
+  it("budgets action defaults and adds outer slack once", () => {
+    expect(resolveBrowserActRequestTimeoutMs({ kind: "click", ref: "1" })).toBe(65_000);
+    expect(resolveBrowserActRequestTimeoutMs({ kind: "wait", timeMs: 0 })).toBe(70_000);
     expect(resolveBrowserActRequestTimeoutMs({ kind: "click", ref: "1", timeoutMs: 45_000 })).toBe(
-      96_250,
+      50_250,
     );
   });
 
@@ -99,7 +99,7 @@ describe("browser action request deadlines", () => {
           },
         ],
       }),
-    ).toBe(85_500);
+    ).toBe(85_250);
     expect(
       resolveBrowserActRequestTimeoutMs({
         kind: "type",
@@ -142,7 +142,7 @@ describe("browser action request deadlines", () => {
     (request) => {
       expect(
         resolveBrowserActRequestTimeoutMs({ ...request, timeoutMs: Number.MAX_VALUE }),
-      ).toBeLessThanOrEqual(126_250);
+      ).toBeLessThanOrEqual(125_250);
     },
   );
 
@@ -173,7 +173,7 @@ describe("browser action request deadlines", () => {
           ref: "result",
         })),
       }),
-    ).toBe(86_000);
+    ).toBe(85_250);
     expect(
       resolveBrowserActRequestTimeoutMs({
         kind: "batch",

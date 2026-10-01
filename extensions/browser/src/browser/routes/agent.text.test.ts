@@ -51,17 +51,13 @@ describe("browser page text route", () => {
     expect(pageText).not.toHaveBeenCalled();
   });
 
-  it("rejects disallowed current tab URLs before reading page text", async () => {
+  it("reads private current tab URLs without a page destination policy", async () => {
     setBrowserControlServerSsrFPolicy({ allowPrivateNetwork: false });
     setBrowserControlServerTabUrl("http://127.0.0.1:8080/admin");
     const base = await startServerAndBase();
     const response = await getBrowserTestFetch()(`${base}/text?targetId=abcd1234`);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "browser navigation blocked by policy",
-      reason: "navigation_blocked",
-    });
-    expect(pageText).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(pageText).toHaveBeenCalledOnce();
   });
 
   it("rejects existing-session text with a supported alternative", async () => {

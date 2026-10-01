@@ -10,22 +10,18 @@ const snapshotRoleViaCdpSession = vi.fn();
 const markBackendDomRefsOnPage = vi.fn();
 const readMainFrameDocumentIdentityForPage = vi.fn();
 const formatAriaSnapshot = vi.fn();
-const gotoPageWithNavigationGuard = vi.fn();
 const createDownloadCaptureForPage = vi.fn(() => ({
   armed: true,
   promise: new Promise(() => {}),
   cancel: vi.fn(),
 }));
 
-vi.mock("./pw-session.js", () => ({
-  assertPageNavigationCompletedSafely: vi.fn(),
-  closeBlockedNavigationTarget: vi.fn(),
+vi.mock("./pw-session.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pw-session.js")>()),
   ensurePageState,
   forceDisconnectPlaywrightForTarget: vi.fn(),
   getPageForTargetId,
-  gotoPageWithNavigationGuard,
   isDownloadStartingNavigationError: vi.fn(() => false),
-  isPolicyDenyNavigationError: vi.fn(() => false),
   storeRoleRefsForTarget,
 }));
 

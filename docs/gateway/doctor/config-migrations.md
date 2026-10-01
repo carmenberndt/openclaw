@@ -214,7 +214,6 @@ Doctor also refuses these retired config inputs:
   Timeouts on tool-model selectors remain supported.
 - `memorySearch.store.path`, including its agent and `memory.search` forms.
 - `plugins.installs`, `gateway.webchat`, `session.parentForkMaxTokens`,
-  `browser.relayBindHost`, and `browser.ssrfPolicy.allowPrivateNetwork`.
 - Extension browser profiles with a legacy `cdpUrl`. Current extension profiles
   discover their relay endpoint automatically; the extension driver remains supported.
 - The `openai-codex-responses` provider or model API identifier. The intermediate
@@ -917,6 +916,7 @@ against the current SQLite owners before the import can rename profiles.
     | `plugins.entries.voice-call.config.streaming.sttProvider`                                        | `plugins.entries.voice-call.config.streaming.provider`                      |
     | `plugins.entries.voice-call.config.streaming.openaiApiKey`/`sttModel`/`silenceDurationMs`/`vadThreshold` | `plugins.entries.voice-call.config.streaming.providers.openai.*`             |
     | `models.providers.*.api: "openai"`                                                               | `"openai-completions"` (gateway startup also skips providers whose `api` is a future/unknown enum value rather than failing closed) |
+    | `browser.ssrfPolicy`                                                                            | `browser.cdpPolicy` for CDP endpoints only; page IP/DNS protection removed |
     | `mcp.servers.*.type`, `nodeHost.mcp.servers.*.type` (CLI-native aliases)                           | corresponding `transport` field                                            |
     | `mcp.servers.*.disabled`                                                                         | inverse `mcp.servers.*.enabled`                                              |
     | MCP timeout aliases `connectTimeout`/`connect_timeout`/`timeout`                                 | `connectionTimeoutMs`/`requestTimeoutMs`                                    |
@@ -928,7 +928,6 @@ against the current SQLite owners before the import can rename profiles.
     | `talk.realtime.voice`, Discord realtime `voice`                                                 | `speakerVoice`                                                                |
     | `agents.defaults.pdfMaxBytesMb`                                                                  | `agents.defaults.pdfMaxMb`                                                    |
     | `tools.exec.timeoutSec`                                                                          | `tools.exec.timeoutSeconds`                                                   |
-    | `browser.ssrfPolicy.hostnameAllowlist`                                                           | wildcard-aware `browser.ssrfPolicy.allowedHostnames`                          |
     | sandbox browser `enableNoVnc`                                                                    | `noVncEnabled`                                                                |
     | root `media`                                                                                     | `attachments`                                                                |
     | channel/account `heartbeat` visibility blocks                                                   | `heartbeatVisibility`                                                         |
@@ -957,6 +956,30 @@ against the current SQLite owners before the import can rename profiles.
     | `session.maintenance.rotateBytes`                                 | removed (deprecated)                                                        |
     | Runtime and channel tuning knobs retired in 2026.7                                               | removed (built-in production defaults apply)                               |
     | `diagnostics.memoryPressureSnapshot`, legacy `diagnostics.memoryPressureBundle`                  | removed (automatic critical-memory snapshots were retired; no replacement automatic capture) |
+
+    Doctor migrates the retired `browser.ssrfPolicy` block before validating
+    current config. It preserves CDP endpoint settings in `browser.cdpPolicy`,
+    normalizes `allowPrivateNetwork` into `dangerouslyAllowPrivateNetwork` using
+    the legacy effective OR, and merges `hostnameAllowlist` into `allowedHostnames`.
+    Existing `cdpPolicy` fields win individually, including explicit `false` and
+    empty lists. Runtime accepts only the canonical `cdpPolicy` block.
+
+    If the old browser policy allowed private networking, Doctor also preserves
+    that image-endpoint permission in the existing
+    `models.providers.openai.request.allowPrivateNetwork` setting when OpenAI
+    request settings or an explicit native API route are already configured.
+    An existing provider value wins, including `false`; an old browser `false`
+    never overwrites a provider `true`. Doctor leaves OAuth-only provider config
+    unchanged because adding request settings can change image auth routing.
+    In that case it tells you to configure the image permission explicitly if
+    needed. `browser.cdpPolicy` does not grant image-endpoint permission.
+
+    Doctor's notice states that browser page navigation no longer performs
+    private-IP or DNS security checks, including explicit strict settings, and
+    that native browser security remains enabled. Moving settings preserves CDP
+    restrictions; it does not restore page egress enforcement. Repeating the
+    migration makes no further changes. Use host/container network isolation or
+    a policy-enforcing proxy if page egress must be restricted.
 
     Doctor migrates MCP `type: "http"` to `transport: "streamable-http"` and `type: "sse"` to `transport: "sse"` in both server maps. An existing `transport` wins. For command-based servers, Doctor removes `type: "stdio"`; the command still selects stdio. The update-time Doctor pass uses the same backed-up config repair. Plugin bundle files keep their external `type` format: bundle loading translates recognized types, and CLI exports use the destination's required format. An unknown bundle HTTP transport is rejected instead of being treated as SSE; its original `type` remains available to the destination CLI.
 

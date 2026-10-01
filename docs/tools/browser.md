@@ -17,17 +17,17 @@ OpenClaw can run a **dedicated Chrome/Brave/Edge/Chromium profile** that the age
 This page is an index. The browser documentation is split across nine pages,
 one per reader job. Open the page that matches your task.
 
-| Page                                                                         | Read it when                                                                    |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [Browser setup](/tools/browser/setup)                                        | You are turning the browser on for the first time, or the tool is missing.      |
-| [Browser profiles](/tools/browser/profiles)                                  | You are choosing between the managed browser and a signed-in Chrome session.    |
-| [Browser configuration](/tools/browser/configuration)                        | You need the config block, ports, SSRF policy, or a different Chromium binary.  |
-| [Remote and hosted browsers](/tools/browser/remote)                          | The browser lives on another machine, or you use a hosted CDP provider.         |
-| [Browser security](/tools/browser/security)                                  | You are reviewing control-API auth or handling remote CDP tokens.               |
-| [Multi-profile and existing-session attach](/tools/browser/existing-session) | You want extra named profiles or the agent inside your signed-in browser.       |
-| [Isolation and browser selection](/tools/browser/isolation)                  | You need the isolation guarantees, the binary search order, or the control API. |
-| [Browser troubleshooting](/tools/browser/troubleshooting)                    | The browser will not start, or a navigation is blocked.                         |
-| [Browser agent tools](/tools/browser/agent-tools)                            | You need the browser tool actions and the arguments an agent passes.            |
+| Page                                                                         | Read it when                                                                           |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| [Browser setup](/tools/browser/setup)                                        | You are turning the browser on for the first time, or the tool is missing.             |
+| [Browser profiles](/tools/browser/profiles)                                  | You are choosing between the managed browser and a signed-in Chrome session.           |
+| [Browser configuration](/tools/browser/configuration)                        | You need the config block, ports, CDP endpoint policy, or a different Chromium binary. |
+| [Remote and hosted browsers](/tools/browser/remote)                          | The browser lives on another machine, or you use a hosted CDP provider.                |
+| [Browser security](/tools/browser/security)                                  | You are reviewing control-API auth or handling remote CDP tokens.                      |
+| [Multi-profile and existing-session attach](/tools/browser/existing-session) | You want extra named profiles or the agent inside your signed-in browser.              |
+| [Isolation and browser selection](/tools/browser/isolation)                  | You need the isolation guarantees, the binary search order, or the control API.        |
+| [Browser troubleshooting](/tools/browser/troubleshooting)                    | The browser will not start, or a navigation is blocked.                                |
+| [Browser agent tools](/tools/browser/agent-tools)                            | You need the browser tool actions and the arguments an agent passes.                   |
 
 ## What you get
 
@@ -35,7 +35,7 @@ one per reader job. Open the page that matches your task.
 - Deterministic tab control (list/open/focus/close).
 - Agent actions (click/type/drag/select), snapshots, screenshots, PDFs.
 - Question answering over readable page text without returning a full snapshot.
-- Playwright-backed profiles save direct attachment navigations under the managed downloads directory and return `{ url, suggestedFilename, path }` metadata after final-URL policy validation.
+- Playwright-backed profiles save direct attachment navigations under the managed downloads directory and return `{ url, suggestedFilename, path }` metadata.
 - Playwright-backed agent actions return a `downloads` array with the same managed metadata when the action immediately starts one or more downloads.
 - A bundled `browser-automation` skill that teaches agents the snapshot,
   stable-tab, stale-ref, and manual-blocker recovery loop when the browser
@@ -63,7 +63,7 @@ still resolves. Each entry points at the page that now holds the content.
 - <a id="tab-cleanup-ownership" />[Tab cleanup ownership](/tools/browser/configuration#tab-cleanup-ownership)
 - <a id="screenshot-vision-(text-only-model-support)" /><a id="screenshot-vision-text-only-model-support" />[Screenshot vision (text-only model support)](/tools/browser/configuration#screenshot-vision-text-only-model-support)
 - <a id="ports-and-reachability" />[Ports and reachability](/tools/browser/configuration#ports-and-reachability)
-- <a id="ssrf-policy" />[SSRF policy](/tools/browser/configuration#ssrf-policy)
+- <a id="ssrf-policy" />[CDP endpoint policy](/tools/browser/configuration#cdp-endpoint-policy)
 - <a id="profile-behavior" />[Profile behavior](/tools/browser/configuration#profile-behavior)
 - <a id="use-brave-or-another-chromium-based-browser" />[Use Brave or another Chromium-based browser](/tools/browser/configuration#use-brave-or-another-chromium-based-browser)
 - <a id="macos" />[macOS executable path tab](/tools/browser/configuration#macos)
@@ -85,7 +85,7 @@ still resolves. Each entry points at the page that now holds the content.
 - <a id="browser-selection" />[Browser selection](/tools/browser/isolation#browser-selection)
 - <a id="control-api-(optional)" /><a id="control-api-optional" />[Control API (optional)](/tools/browser/isolation#control-api-optional)
 - <a id="troubleshooting" />[Troubleshooting](/tools/browser/troubleshooting)
-- <a id="cdp-startup-failure-vs-navigation-ssrf-block" />[CDP startup failure vs navigation SSRF block](/tools/browser/troubleshooting#cdp-startup-failure-vs-navigation-ssrf-block)
+- <a id="cdp-startup-failure-vs-navigation-ssrf-block" />[CDP startup failure vs page navigation failure](/tools/browser/troubleshooting#cdp-startup-failure-vs-page-navigation-failure)
 - <a id="agent-tools-%2B-how-control-works" /><a id="agent-tools-+-how-control-works" />[Agent tools + how control works](/tools/browser/agent-tools)
 
 ## Related

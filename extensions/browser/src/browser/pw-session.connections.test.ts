@@ -305,7 +305,7 @@ describe("pw-session connection scoping", () => {
     },
   );
 
-  it("allows loopback CDP control without widening the navigation allowlist", async () => {
+  it("allows loopback CDP control while preserving the configured endpoint policy", async () => {
     const browser = makeBrowser("A", "https://example.com");
     connectOverCdpSpy.mockResolvedValue(browser.browser);
     getChromeWebSocketUrlSpy.mockResolvedValue({
@@ -688,7 +688,7 @@ describe("Playwright created-page ownership", () => {
     expect(f.pageMock.close).not.toHaveBeenCalled();
     expect(f.context.pages()).toEqual([f.page]);
   });
-  it.each(["connect", "context", "page", "target", "route"] as const)(
+  it.each(["connect", "context", "page", "target"] as const)(
     "rejects an unsignalled authority revocation during %s before navigation",
     async (stage) => {
       getChromeWebSocketUrlSpy.mockResolvedValue({
@@ -703,14 +703,12 @@ describe("Playwright created-page ownership", () => {
         f.contextMock.newPage.mockImplementationOnce(() => pause(f.page));
       } else if (stage === "target") {
         f.sessionSend.mockImplementationOnce(() => pause(targetInfo));
-      } else {
-        f.pageMock.route.mockImplementationOnce(() => pause(undefined));
       }
       let current = true;
       const creation = create({
         url: "http://127.0.0.1:18793/revocation-fixture",
         isolatedContext: true,
-        ssrfPolicy: { allowPrivateNetwork: true },
+        cdpPolicy: { allowPrivateNetwork: true },
         assertCurrent: () => {
           if (!current) {
             throw new Error("caller receipt expired");
@@ -737,18 +735,15 @@ describe("Playwright created-page ownership", () => {
     },
   );
   it("starts navigation in the same turn as its synchronous authority assertion", async () => {
-    const { gotoPageWithNavigationGuard } = await import("./pw-session-navigation.js");
     let expired = false;
     f.pageMock.goto.mockImplementationOnce(async () => {
       expect(expired).toBe(false);
       return null;
     });
-    await gotoPageWithNavigationGuard({
-      cdpUrl: creationCdpUrl,
-      page: f.page,
+    await create({
       url: "http://127.0.0.1:18793/authority-turn",
-      timeoutMs: 1000,
-      assertPageCurrent: () => {
+      assertCurrent: () => {
+        expired = false;
         queueMicrotask(() => {
           expired = true;
         });
@@ -780,26 +775,6 @@ describe("Playwright created-page ownership", () => {
     });
     expect(f.pageMock.bringToFront).toHaveBeenCalledOnce();
     expect(expired).toBe(true);
-  });
-  it("does not navigate when cancellation wins navigation validation", async () => {
-    const { entered, release, pause } = pauseAtBoundary();
-    const validation = vi
-      .spyOn(await import("./navigation-guard.js"), "assertBrowserNavigationAllowed")
-      .mockImplementationOnce(() => pause(undefined));
-    const controller = new AbortController();
-    try {
-      const creation = create({ url: "https://example.com", signal: controller.signal });
-      const rejected = expect(creation).rejects.toThrow("cancelled validation");
-      await entered;
-      controller.abort(new Error("cancelled validation"));
-      release();
-      await rejected;
-      expect(f.pageMock.goto).not.toHaveBeenCalled();
-      expect(f.page.context().pages()).toEqual([]);
-    } finally {
-      release();
-      validation.mockRestore();
-    }
   });
   it("closes a new page when cancellation wins target resolution", async () => {
     const { entered, release, pause } = pauseAtBoundary();

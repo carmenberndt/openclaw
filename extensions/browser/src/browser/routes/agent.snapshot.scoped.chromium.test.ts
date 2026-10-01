@@ -122,7 +122,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_SCOPED_REFS_E2E === "1")(
         profiles: new Map(),
         resolved: resolveBrowserConfig({
           defaultProfile: "scoped",
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+          cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
           profiles: { scoped: { cdpUrl, color: "#123456", attachOnly: true } },
         }),
       };
@@ -434,7 +434,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_SCOPED_REFS_E2E === "1")(
         profiles: new Map(),
         resolved: resolveBrowserConfig({
           defaultProfile: "clear",
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+          cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
           profiles: { clear: { cdpUrl: proxyUrl, color: "#123456", attachOnly: true } },
         }),
       };

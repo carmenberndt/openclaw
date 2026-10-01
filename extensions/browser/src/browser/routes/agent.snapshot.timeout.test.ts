@@ -53,12 +53,6 @@ vi.mock("../chrome-mcp.js", () => ({
   takeChromeMcpSnapshot: vi.fn(),
 }));
 
-vi.mock("../navigation-guard.js", () => ({
-  assertBrowserNavigationAllowed: vi.fn(async () => {}),
-  assertBrowserNavigationResultAllowed: vi.fn(async () => {}),
-  withBrowserNavigationPolicy: vi.fn(() => ({})),
-}));
-
 vi.mock("../screenshot.js", () => ({
   DEFAULT_BROWSER_SCREENSHOT_MAX_BYTES: 128,
   DEFAULT_BROWSER_SCREENSHOT_MAX_SIDE: 64,
@@ -77,7 +71,6 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async (importOriginal) => ({
 
 vi.mock("./agent.shared.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./agent.shared.js")>()),
-  browserNavigationPolicyForProfile: vi.fn(() => ({})),
   handleRouteError: vi.fn((_res, err) => {
     throw err;
   }),

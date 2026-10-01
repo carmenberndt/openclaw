@@ -32,7 +32,7 @@ describe("browser tab routes attachOnly loopback profiles", () => {
       profile: makeLoopbackProfile(true),
       resolvedOverrides: {
         defaultProfile: "manual-cdp",
-        ssrfPolicy: {},
+        cdpPolicy: {},
       },
     });
 
@@ -90,7 +90,11 @@ describe("browser tab routes attachOnly loopback profiles", () => {
   });
 
   it.each([
-    { attachOnly: false, allowPrivateNetwork: false, expectedUrl: "" },
+    {
+      attachOnly: false,
+      allowPrivateNetwork: false,
+      expectedUrl: "http://93.184.216.34/proxy-routed",
+    },
     {
       attachOnly: false,
       allowPrivateNetwork: true,
@@ -102,14 +106,14 @@ describe("browser tab routes attachOnly loopback profiles", () => {
       expectedUrl: "http://93.184.216.34/proxy-routed",
     },
   ])(
-    "applies managed browser proxy policy to tab list URLs (attachOnly=$attachOnly, allowPrivateNetwork=$allowPrivateNetwork)",
+    "lists page URLs independently of managed browser proxy and CDP policy (attachOnly=$attachOnly, allowPrivateNetwork=$allowPrivateNetwork)",
     async ({ attachOnly, allowPrivateNetwork, expectedUrl }) => {
       const state = makeBrowserServerState({
         profile: makeLoopbackProfile(attachOnly),
         resolvedOverrides: {
           defaultProfile: "manual-cdp",
           extraArgs: ["--proxy-server=http://proxy.example.test:8080"],
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: allowPrivateNetwork },
+          cdpPolicy: { dangerouslyAllowPrivateNetwork: allowPrivateNetwork },
         },
       });
 

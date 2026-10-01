@@ -5,11 +5,6 @@
  * tests that exercise Chrome MCP branches without launching Chrome.
  */
 import { vi } from "vitest";
-import {
-  assertBrowserNavigationResultAllowed,
-  withBrowserNavigationPolicy,
-} from "../navigation-guard.js";
-import type { BrowserRouteContext } from "../server-context.js";
 import type { BrowserRequest, BrowserResponse } from "./types.js";
 
 /** Mutable profile/tab state consumed by existing-session route mocks. */
@@ -40,9 +35,6 @@ export const existingSessionRouteState = {
 /** Create a vi mock module for routes that import agent.shared helpers. */
 export function createExistingSessionAgentSharedModule() {
   return {
-    browserNavigationPolicyForProfile: vi.fn((ctx: BrowserRouteContext) =>
-      withBrowserNavigationPolicy(ctx.state().resolved.ssrfPolicy),
-    ),
     handleRouteError: vi.fn((res: BrowserResponse, err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       res.status(400);
@@ -53,7 +45,7 @@ export function createExistingSessionAgentSharedModule() {
       throw new Error("Playwright should not be used for existing-session tests");
     }),
     resolveProfileContext: vi.fn(() => existingSessionRouteState.profileCtx),
-    resolveSafeRouteTabUrl: vi.fn(
+    resolveRouteTabUrl: vi.fn(
       async (params: {
         profileCtx: typeof existingSessionRouteState.profileCtx;
         targetId: string;
@@ -65,26 +57,7 @@ export function createExistingSessionAgentSharedModule() {
     ),
     withPlaywrightRouteContext: vi.fn(),
     withRouteTabContext: vi.fn(
-      async ({
-        ctx,
-        enforceCurrentUrlAllowed,
-        req,
-        run,
-      }: {
-        ctx: BrowserRouteContext;
-        enforceCurrentUrlAllowed?: boolean;
-        req: BrowserRequest;
-        run: (args: unknown) => Promise<void>;
-      }) => {
-        if (enforceCurrentUrlAllowed) {
-          const ssrfPolicyOpts = withBrowserNavigationPolicy(ctx.state().resolved.ssrfPolicy);
-          if (ssrfPolicyOpts.ssrfPolicy) {
-            await assertBrowserNavigationResultAllowed({
-              url: existingSessionRouteState.tab.url,
-              ...ssrfPolicyOpts,
-            });
-          }
-        }
+      async ({ req, run }: { req: BrowserRequest; run: (args: unknown) => Promise<void> }) => {
         await run({
           profileCtx: existingSessionRouteState.profileCtx,
           cdpUrl: "http://127.0.0.1:18800",

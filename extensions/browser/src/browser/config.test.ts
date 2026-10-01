@@ -775,13 +775,14 @@ describe("browser config", () => {
 
   it.each([
     {
-      name: "resolves browser SSRF policy when configured",
+      name: "resolves browser CDP policy when configured",
       config: {
-        ssrfPolicy: {
+        cdpPolicy: {
           dangerouslyAllowPrivateNetwork: true,
           allowRfc2544BenchmarkRange: true,
           allowIpv6UniqueLocalRange: true,
           allowedHostnames: [" localhost ", " *.trusted.example ", ""],
+          blockedHostnames: ["metadata.google.internal", "*.blocked.example"],
         },
       },
       expected: {
@@ -789,27 +790,28 @@ describe("browser config", () => {
         allowRfc2544BenchmarkRange: true,
         allowIpv6UniqueLocalRange: true,
         allowedHostnames: ["localhost", "*.trusted.example"],
+        blockedHostnames: ["metadata.google.internal", "*.blocked.example"],
       },
     },
     {
-      name: "defaults browser SSRF policy to strict mode when unset",
+      name: "defaults browser CDP policy to strict mode when unset",
       config: {},
       expected: {},
     },
     {
       name: "supports explicit strict mode by disabling private network access",
-      config: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } },
+      config: { cdpPolicy: { dangerouslyAllowPrivateNetwork: false } },
       expected: { dangerouslyAllowPrivateNetwork: false },
     },
     {
-      name: "keeps allowlist-only browser SSRF policy strict by default",
+      name: "keeps trusted-host-only browser CDP policy strict by default",
       config: {
-        ssrfPolicy: { allowedHostnames: ["example.com", "*.example.com"] },
-      } as unknown as BrowserConfig,
+        cdpPolicy: { allowedHostnames: ["example.com", "*.example.com"] },
+      },
       expected: { allowedHostnames: ["example.com", "*.example.com"] },
     },
     {
-      name: "keeps configured profile cdpUrls out of the shared browser SSRF policy",
+      name: "keeps configured profile cdpUrls out of the browser CDP policy",
       config: withProfile("remote", {
         color: "#123456",
         cdpUrl: "http://172.29.128.1:9223",
@@ -817,7 +819,7 @@ describe("browser config", () => {
       expected: {},
     },
   ])("$name", ({ config, expected }) => {
-    expect(resolveBrowserConfig(config).ssrfPolicy).toStrictEqual(expected);
+    expect(resolveBrowserConfig(config).cdpPolicy).toStrictEqual(expected);
   });
 
   it.each([

@@ -1,15 +1,11 @@
 import { formatErrorMessage } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import { ensureOutputDirectory } from "../output-directories.js";
 import { DEFAULT_DOWNLOAD_DIR } from "../paths.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
 import type { BrowserRouteContext } from "../server-context.js";
-import {
-  browserNavigationPolicyForProfile,
-  readBody,
-  requirePwAi,
-  withRouteTabContext,
-} from "./agent.shared.js";
+import { readBody, requirePwAi, withRouteTabContext } from "./agent.shared.js";
 import { EXISTING_SESSION_LIMITS } from "./existing-session-limits.js";
 import { resolveWritableOutputPathOrRespond } from "./output-paths.js";
 import { readRouteTimerTimeoutMs } from "./route-numeric.js";
@@ -60,7 +56,6 @@ export function registerBrowserAgentActDownloadRoutes(
         res,
         ctx,
         targetId,
-        enforceCurrentUrlAllowed: true,
         run: async ({ profileCtx, cdpUrl, tab, signal, assertCurrent }) => {
           if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
             return jsonError(
@@ -93,7 +88,7 @@ export function registerBrowserAgentActDownloadRoutes(
             cdpUrl,
             targetId: tab.targetId,
             timeoutMs,
-            ...browserNavigationPolicyForProfile(ctx, profileCtx),
+            ssrfPolicy: resolveCdpControlPolicy(profileCtx.profile, ctx.state().resolved.cdpPolicy),
             rootDir: DEFAULT_DOWNLOAD_DIR,
             signal,
             ...(assertCurrent ? { assertCurrent } : {}),

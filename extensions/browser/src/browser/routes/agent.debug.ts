@@ -1,10 +1,11 @@
 import crypto from "node:crypto";
 import { formatErrorMessage } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import { DEFAULT_TRACE_DIR } from "../paths.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
 import type { PwAiModule } from "../pw-ai-module.js";
-import type { BrowserRouteContext } from "../server-context.js";
+import type { BrowserRouteContext, ProfileContext } from "../server-context.js";
 import { readBody, resolveProfileContext, withPlaywrightRouteContext } from "./agent.shared.js";
 import { EXISTING_SESSION_LIMITS } from "./existing-session-limits.js";
 import { resolveWritableOutputPathOrRespond } from "./output-paths.js";
@@ -15,6 +16,7 @@ import { jsonError, toBoolean, toStringOrEmpty } from "./utils.js";
 type DebugCollector = (
   pw: PwAiModule,
   target: { cdpUrl: string; targetId: string; signal: AbortSignal },
+  profileCtx: ProfileContext,
 ) => Promise<object | null>;
 
 export function registerBrowserAgentDebugRoutes(
@@ -54,9 +56,8 @@ export function registerBrowserAgentDebugRoutes(
         profileCtx,
         targetId,
         feature,
-        enforceCurrentUrlAllowed: true,
         run: async ({ cdpUrl, tab, pw, resolveTabUrl, signal }) => {
-          const result = await collect(pw, { cdpUrl, targetId: tab.targetId, signal });
+          const result = await collect(pw, { cdpUrl, targetId: tab.targetId, signal }, profileCtx);
           if (result === null) {
             return;
           }
@@ -111,13 +112,19 @@ export function registerBrowserAgentDebugRoutes(
     EXISTING_SESSION_LIMITS.text,
   );
 
-  register("get", "/dialogs", "dialog state", () => async (pw, { cdpUrl, targetId }) => ({
-    browserState: await pw.getObservedBrowserStateViaPlaywright({
-      cdpUrl,
-      targetId,
-      ssrfPolicy: ctx.state().resolved.ssrfPolicy,
-    }),
-  }));
+  register(
+    "get",
+    "/dialogs",
+    "dialog state",
+    () =>
+      async (pw, { cdpUrl, targetId }, profileCtx) => ({
+        browserState: await pw.getObservedBrowserStateViaPlaywright({
+          cdpUrl,
+          targetId,
+          ssrfPolicy: resolveCdpControlPolicy(profileCtx.profile, ctx.state().resolved.cdpPolicy),
+        }),
+      }),
+  );
 
   register("post", "/trace/start", "trace start", (input) => {
     const screenshots = toBoolean(input.screenshots) ?? undefined;

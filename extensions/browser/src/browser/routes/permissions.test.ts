@@ -74,10 +74,10 @@ function createProfileContext(overrides: Record<string, unknown> = {}) {
 
 function createRouteContext(
   profileCtx: ReturnType<typeof createProfileContext>,
-  ssrfPolicy: Record<string, unknown> = { allowPrivateNetwork: false },
+  cdpPolicy: Record<string, unknown> = { dangerouslyAllowPrivateNetwork: false },
 ) {
   return {
-    state: () => ({ resolved: { ssrfPolicy } }),
+    state: () => ({ resolved: { cdpPolicy } }),
     forProfile: () => profileCtx,
     listProfiles: vi.fn(async () => []),
   };
@@ -87,7 +87,7 @@ async function callGrant(
   body: Record<string, unknown>,
   options: {
     profile?: Record<string, unknown>;
-    ssrfPolicy?: Record<string, unknown>;
+    cdpPolicy?: Record<string, unknown>;
     ensureBrowserAvailable?: () => Promise<void>;
   } = {},
 ) {
@@ -96,7 +96,7 @@ async function callGrant(
   if (options.ensureBrowserAvailable) {
     profileCtx.ensureBrowserAvailable = vi.fn(options.ensureBrowserAvailable);
   }
-  registerBrowserPermissionRoutes(app, createRouteContext(profileCtx, options.ssrfPolicy) as never);
+  registerBrowserPermissionRoutes(app, createRouteContext(profileCtx, options.cdpPolicy) as never);
   const handler = postHandlers.get("/permissions/grant");
   expect(handler).toBeTypeOf("function");
 
@@ -262,10 +262,7 @@ describe("browser permission routes", () => {
           cdpHost: "browser.example",
           cdpIsLoopback: false,
         },
-        ssrfPolicy: {
-          allowPrivateNetwork: true,
-          allowedOrigins: ["https://navigation.example"],
-        },
+        cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
       },
     );
 
@@ -274,7 +271,7 @@ describe("browser permission routes", () => {
       "https://browser.example:9222",
       5000,
       {
-        allowPrivateNetwork: true,
+        dangerouslyAllowPrivateNetwork: true,
         allowedHostnames: ["browser.example"],
       },
     );

@@ -74,7 +74,7 @@ async function labeled() {
 }
 
 describe("browser tab selection and ownership", () => {
-  it("preserves a disappeared sticky alias when a newly discovered tab is blocked", async () => {
+  it("adopts the exact committed target when its discovery URL is private", async () => {
     const create = vi
       .spyOn(cdp, "createTargetViaCdp")
       .mockResolvedValueOnce({ targetId: "GOOD", finalUrl: "about:blank" })
@@ -92,18 +92,20 @@ describe("browser tab selection and ownership", () => {
       }
       throw new Error("unexpected fetch: " + url);
     });
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
     await openclaw.openTab("about:blank", { label: "good" });
-    const aliases = structuredClone(runtime.tabAliases);
-    await expect(openclaw.openTab("https://example.com", { label: "blocked" })).rejects.toThrow(
-      /private|blocked|ssrf/i,
-    );
-    expect(runtime.lastTargetId).toBe("GOOD");
-    expect(runtime.tabAliases).toEqual(aliases);
+    await expect(openclaw.openTab("https://example.com", { label: "new" })).resolves.toMatchObject({
+      targetId: "BLOCKED",
+      url: "https://example.com",
+      tabId: "t2",
+      label: "new",
+    });
+    expect(runtime.lastTargetId).toBe("BLOCKED");
     expect(runtime.tabAliases?.byTargetId).toEqual({
       GOOD: { tabId: "t1", label: "good", url: "about:blank" },
+      BLOCKED: { tabId: "t2", label: "new", url: "https://example.com" },
     });
-    expect(closeRequests).toEqual(["http://127.0.0.1:18800/json/close/BLOCKED"]);
+    expect(closeRequests).toEqual([]);
   });
 
   it("returns an undiscovered target without adopting or cleaning it", async () => {
@@ -300,7 +302,7 @@ describe("browser tab selection and ownership", () => {
       .mockRejectedValueOnce(new Error("HTTP 405"))
       .mockResolvedValueOnce(page("NEW", "https://example.com"));
     const { state, openclaw, runtime } = listOnly(() => []);
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
     await expect(openclaw.openTab("https://example.com", { label: "raw" })).resolves.toMatchObject({
       targetId: "NEW",
       tabId: "t1",
@@ -318,19 +320,26 @@ describe("browser tab selection and ownership", () => {
     ]);
   });
 
-  it("rejects a raw target whose committed URL is blocked", async () => {
+  it("adopts a raw target whose committed URL is private", async () => {
     vi.spyOn(cdp, "createTargetViaCdp").mockRejectedValue(new Error("cdp unavailable"));
     vi.spyOn(cdp, "waitForCdpCommittedNavigationUrl").mockResolvedValue(
       "http://127.0.0.1:9/blocked",
     );
     vi.spyOn(cdpHelpers, "fetchJson").mockResolvedValue(page("RAW_BLOCKED", "https://example.com"));
     const { state, openclaw, runtime } = listOnly(() => []);
-    state.resolved.ssrfPolicy = {};
-    await expect(openclaw.openTab("https://example.com", { label: "blocked" })).rejects.toThrow(
-      /private|blocked|ssrf/i,
-    );
-    expect(runtime.lastTargetId).toBeNull();
-    expect(runtime.tabAliases).toBeUndefined();
+    state.resolved.cdpPolicy = {};
+    await expect(
+      openclaw.openTab("https://example.com", { label: "private" }),
+    ).resolves.toMatchObject({
+      targetId: "RAW_BLOCKED",
+      url: "http://127.0.0.1:9/blocked",
+      tabId: "t1",
+      label: "private",
+    });
+    expect(runtime.lastTargetId).toBe("RAW_BLOCKED");
+    expect(runtime.tabAliases?.byTargetId).toEqual({
+      RAW_BLOCKED: { tabId: "t1", label: "private", url: "http://127.0.0.1:9/blocked" },
+    });
   });
 
   it("preserves the opened WebSocket lookup when the same-target relist omits it", async () => {
@@ -360,7 +369,7 @@ describe("browser tab selection and ownership", () => {
       lookup: dns.lookup,
     });
     const { state, openclaw } = listOnly(() => []);
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
     const selected = await openclaw.ensureTabAvailable();
     expect(selected).toMatchObject({
       targetId: "NEW",

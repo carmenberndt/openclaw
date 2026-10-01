@@ -80,7 +80,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_ACTION_ERRORS_E2E === "1")(
         profiles: new Map(),
         resolved: resolveBrowserConfig({
           defaultProfile: "errors",
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+          cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
           profiles: { errors: { cdpUrl, color: "#123456", attachOnly: true } },
         }),
       };

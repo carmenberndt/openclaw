@@ -73,7 +73,7 @@ export function registerPluginServiceReloadTests() {
       for (const path of [
         "browser.enabled",
         "browser.evaluateEnabled",
-        "browser.ssrfPolicy.allowedHostnames",
+        "browser.cdpPolicy.allowedHostnames",
         "browser.extensionRelay.allowLegacyAuth",
       ]) {
         const plan = buildGatewayReloadPlan([path]);

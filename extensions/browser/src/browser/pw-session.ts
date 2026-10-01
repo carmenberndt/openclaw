@@ -27,15 +27,6 @@ export {
   storeRoleRefsForTarget,
 } from "./pw-session-state.js";
 export {
-  assertPageNavigationCompletedSafely,
-  closeBlockedNavigationTarget,
-  gotoPageWithNavigationGuard,
-  isPolicyDenyNavigationError,
-  quarantineBlockedNavigationTarget,
-  wasBrowserNavigationSourcePreservedAfterPolicyDenial,
-  withPageNavigationRequestGuard,
-} from "./pw-session-navigation.js";
-export {
   closePageByTargetIdViaPlaywright,
   closePlaywrightBrowserConnection,
   createPageViaPlaywright,

@@ -11,12 +11,7 @@ import type { BrowserDownloadResult } from "./download-types.js";
 import { BrowserTabNotFoundError } from "./errors.js";
 import type { RelayOperationReference } from "./extension-relay/owner-client.js";
 import { closeRelayOperationConnection } from "./extension-relay/owner-playwright.js";
-import {
-  assertBrowserNavigationAllowed,
-  assertBrowserNavigationResultAllowed,
-  type BrowserNavigationPolicyOptions,
-  withBrowserNavigationPolicy,
-} from "./navigation-guard.js";
+import { parseBrowserNavigationUrl } from "./navigation-guard.js";
 import { createDownloadCaptureForPage } from "./pw-download-capture.js";
 import type { RoleRefMap } from "./pw-role-snapshot.js";
 import { closeResolvedPageViaPlaywright } from "./pw-session-actions.js";
@@ -24,14 +19,10 @@ import { connectBrowser, pageTargetInfo } from "./pw-session-connection.js";
 import type { RoleRefs } from "./pw-session-contracts.js";
 import { isConnectionScopedPage } from "./pw-session-page-target.js";
 import {
-  assertPageNavigationCompletedSafely,
-  closeBlockedNavigationTarget,
   ensurePageState,
   forceDisconnectPlaywrightForTarget,
   getPageForTargetId,
-  gotoPageWithNavigationGuard,
   isDownloadStartingNavigationError,
-  isPolicyDenyNavigationError,
   storeRoleRefsForTarget,
 } from "./pw-session.js";
 import {
@@ -39,11 +30,7 @@ import {
   readMainFrameDocumentIdentityForPage,
   withPageScopedCdpClient,
 } from "./pw-session.page-cdp.js";
-import {
-  prepareSnapshotPageViaPlaywright,
-  resolveSnapshotTimeoutMs,
-  withSnapshotFrameGuard,
-} from "./pw-snapshot-page.js";
+import { resolveSnapshotTimeoutMs, withSnapshotFrameGuard } from "./pw-snapshot-page.js";
 import {
   assertInteractionCurrent,
   type InteractionTargetOptions,
@@ -171,7 +158,7 @@ export async function snapshotAriaViaPlaywright(opts: {
   ssrfPolicy?: SsrFPolicy;
 }): Promise<{ nodes: AriaSnapshotNode[] }> {
   const limit = resolveIntegerOption(opts.limit, 500, { min: 1, max: 2000 });
-  const page = await prepareSnapshotPageViaPlaywright({
+  const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,
@@ -207,7 +194,7 @@ export async function snapshotAriaViaPlaywright(opts: {
   });
 }
 
-/** Navigates the target page while enforcing browser SSRF policy before and after load. */
+/** Navigates the target page and reports its final URL or captured download. */
 export async function navigateViaPlaywright(opts: {
   cdpUrl: string;
   targetId?: string;
@@ -217,7 +204,6 @@ export async function navigateViaPlaywright(opts: {
   url: string;
   timeoutMs?: number;
   ssrfPolicy?: SsrFPolicy;
-  browserProxyMode?: BrowserNavigationPolicyOptions["browserProxyMode"];
 }): Promise<{ url: string; targetId?: string; download?: BrowserDownloadResult }> {
   const isRetryableNavigateError = (err: unknown): boolean => {
     const msg =
@@ -236,67 +222,38 @@ export async function navigateViaPlaywright(opts: {
   if (!url) {
     throw new Error("url is required");
   }
-  const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
-    browserProxyMode: opts.browserProxyMode,
-  });
-  await assertBrowserNavigationAllowed({
-    url,
-    ...navigationPolicy,
-  });
+  parseBrowserNavigationUrl(url);
   const timeout = resolveBrowserNavigationTimeoutMs(opts.timeoutMs);
   let currentTargetId = opts.targetId;
   let page = await getPageForTargetId(opts);
   let pageState = ensurePageState(page);
-  const navigate = async () =>
-    await gotoPageWithNavigationGuard({
-      cdpUrl: opts.cdpUrl,
-      page,
-      url,
-      timeoutMs: timeout,
-      ssrfPolicy: opts.ssrfPolicy,
-      browserProxyMode: opts.browserProxyMode,
-      targetId: currentTargetId,
-      ...(opts.resolveOperationTarget
-        ? {
-            assertPageCurrent: async () => {
-              if ((await opts.resolveOperationTarget?.()) !== currentTargetId) {
-                throw new BrowserTabNotFoundError({ input: currentTargetId });
-              }
-              if (opts.assertCurrent) {
-                await opts.assertCurrent();
-              }
-            },
-          }
-        : opts.assertCurrent
-          ? { assertPageCurrent: opts.assertCurrent }
-          : {}),
-    });
-  const navigateWithDownloadCapture = async (): Promise<{
-    response: Awaited<ReturnType<typeof navigate>> | null;
-    download?: BrowserDownloadResult;
-  }> => {
+  const navigate = async () => {
+    if (opts.resolveOperationTarget && (await opts.resolveOperationTarget()) !== currentTargetId) {
+      throw new BrowserTabNotFoundError({ input: currentTargetId });
+    }
+    const assertion = opts.assertCurrent?.();
+    if (assertion) {
+      await assertion;
+    }
+    return await page.goto(url, { timeout });
+  };
+  const navigateWithDownloadCapture = async (): Promise<BrowserDownloadResult | undefined> => {
     const downloadCapture = createDownloadCaptureForPage(page, pageState, timeout, {
       mode: "passive",
       timeoutMessage: "Timeout waiting for navigation download",
-      beforeSave: async (download) => {
-        await assertBrowserNavigationResultAllowed({
-          url: download.url || url,
-          ...navigationPolicy,
-        });
-      },
     });
     void downloadCapture.promise.catch(() => {});
     try {
-      const response = await navigate();
+      await navigate();
       downloadCapture.cancel();
-      return { response };
+      return undefined;
     } catch (err) {
       if (!isDownloadStartingNavigationError(err, url) || !downloadCapture.armed) {
         downloadCapture.cancel();
         throw err;
       }
       try {
-        return { response: null, download: await downloadCapture.promise };
+        return await downloadCapture.promise;
       } catch (downloadErr) {
         if (
           downloadErr instanceof Error &&
@@ -304,21 +261,14 @@ export async function navigateViaPlaywright(opts: {
         ) {
           throw err;
         }
-        if (isPolicyDenyNavigationError(downloadErr)) {
-          await closeBlockedNavigationTarget({
-            cdpUrl: opts.cdpUrl,
-            page,
-            targetId: currentTargetId,
-          });
-        }
         throw downloadErr;
       }
     }
   };
 
-  let navigationResult: Awaited<ReturnType<typeof navigateWithDownloadCapture>>;
+  let download: BrowserDownloadResult | undefined;
   try {
-    navigationResult = await navigateWithDownloadCapture();
+    download = await navigateWithDownloadCapture();
   } catch (err) {
     if (isConnectionScopedPage(page) || !isRetryableNavigateError(err)) {
       throw err;
@@ -351,35 +301,14 @@ export async function navigateViaPlaywright(opts: {
       page = await getPageForTargetId(opts);
     }
     pageState = ensurePageState(page);
-    navigationResult = await navigateWithDownloadCapture();
+    download = await navigateWithDownloadCapture();
   }
-  try {
-    if (!navigationResult.download) {
-      await assertPageNavigationCompletedSafely({
-        cdpUrl: opts.cdpUrl,
-        page,
-        response: navigationResult.response,
-        ssrfPolicy: opts.ssrfPolicy,
-        browserProxyMode: opts.browserProxyMode,
-        targetId: currentTargetId,
-      });
-    }
-  } catch (err) {
-    if (isPolicyDenyNavigationError(err)) {
-      await closeBlockedNavigationTarget({
-        cdpUrl: opts.cdpUrl,
-        page,
-        targetId: currentTargetId,
-      });
-    }
-    throw err;
-  }
-  const finalUrl = navigationResult.download?.url || page.url();
+  const finalUrl = download?.url || page.url();
   const targetId = (await pageTargetInfo(page).catch(() => null))?.targetId;
   return {
     url: finalUrl,
     ...(targetId ? { targetId } : {}),
-    ...(navigationResult.download ? { download: navigationResult.download } : {}),
+    ...(download ? { download } : {}),
   };
 }
 

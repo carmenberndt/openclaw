@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as outputFiles from "./output-files.js";
 import { observeOutputWriteSettlement } from "./output-files.test-support.js";
 import {
-  getPwToolsCoreSessionMocks,
   installPwToolsCoreTestHooks,
   setPwToolsCoreCurrentPage,
 } from "./pw-tools-core.test-harness.js";
@@ -53,7 +52,6 @@ describe("download current document", () => {
       targetId: "test-page",
       expectedUrl,
       rootDir,
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
       ...options,
     });
   }
@@ -75,9 +73,7 @@ describe("download current document", () => {
       events.emit("framenavigated", {});
       events.emit("download", download);
     });
-    const result = await start({
-      ssrfPolicy: { allowPrivateNetwork: true, dangerouslyAllowPrivateNetwork: false },
-    });
+    const result = await start();
     expect(result).toMatchObject({ url: download.url(), suggestedFilename: "inline.png" });
     expect(path.dirname(result.path)).toBe(rootDir);
     expect(await fs.readFile(result.path, "utf8")).toBe("exact asset bytes");
@@ -92,64 +88,12 @@ describe("download current document", () => {
     expect(await fs.readdir(rootDir)).toEqual([]);
   });
 
-  it("rejects unsupported URLs and uninspectable strict-policy redirects before browser traffic", async () => {
-    await expect(start({ expectedUrl: "file:///tmp/secret" })).rejects.toThrow("Only HTTP(S)");
-    await expect(start({ ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } })).rejects.toThrow(
-      "download redirects cannot be inspected",
+  it("rejects unsupported URLs before browser traffic", async () => {
+    await expect(start({ expectedUrl: "file:///tmp/secret" })).rejects.toThrow(
+      "unsupported protocol",
     );
     expect(evaluate).not.toHaveBeenCalled();
   });
-
-  it.each([
-    { name: "omitted policy", policy: undefined },
-    { name: "empty policy", policy: {} },
-    { name: "legacy private denial", policy: { allowPrivateNetwork: false } },
-    {
-      name: "blocklist despite private access",
-      policy: {
-        dangerouslyAllowPrivateNetwork: true,
-        blockedHostnames: [" *.Forbidden.Example. "],
-      },
-    },
-  ])("refuses $name before resolving the browser or triggering traffic", async ({ policy }) => {
-    await expect(start({ ssrfPolicy: policy })).rejects.toThrow(
-      "download redirects cannot be inspected",
-    );
-    expect(getPwToolsCoreSessionMocks().getPageForTargetId).not.toHaveBeenCalled();
-    expect(evaluate).not.toHaveBeenCalled();
-    expect(await fs.readdir(rootDir)).toEqual([]);
-  });
-
-  it.each([
-    { name: "legacy explicit private permission", policy: { allowPrivateNetwork: true } },
-    {
-      name: "normalized unconstrained hostname entries",
-      policy: {
-        dangerouslyAllowPrivateNetwork: true,
-        hostnameAllowlist: ["", " . ", " * "],
-        blockedHostnames: [" ", " *. "],
-      },
-    },
-  ])("retains download support for $name", async ({ policy }) => {
-    evaluate.mockImplementationOnce(async () => {
-      events.emit("download", makeDownload());
-    });
-    await expect(start({ ssrfPolicy: policy })).resolves.toMatchObject({
-      suggestedFilename: "inline.png",
-    });
-  });
-
-  it("validates the final download URL before saving", async () => {
-    const download = makeDownload("file:///tmp/not-a-network-asset");
-    evaluate.mockImplementationOnce(async () => {
-      events.emit("download", download);
-    });
-    await expect(start()).rejects.toThrow("unsupported protocol");
-    expect(download.saveAs).not.toHaveBeenCalled();
-    expect(download.cancel).toHaveBeenCalledOnce();
-    expect(await fs.readdir(rootDir)).toEqual([]);
-  });
-
   it("rejects a tab change between triggering and the download event", async () => {
     const download = makeDownload();
     evaluate.mockImplementationOnce(async () => {

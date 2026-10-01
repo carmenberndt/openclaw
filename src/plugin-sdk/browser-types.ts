@@ -14,8 +14,8 @@ export type ResolvedBrowserProfileConfig = {
   color: string;
 };
 
-/** SSRF policy embedded in resolved browser config. */
-export type ResolvedBrowserSsrFPolicy = SsrFPolicy;
+/** Endpoint policy for CDP control connections, independent of page navigation. */
+export type ResolvedBrowserCdpPolicy = SsrFPolicy;
 
 /** Resolved browser tab cleanup settings after defaults and config are applied. */
 export type ResolvedBrowserTabCleanupConfig = {
@@ -48,7 +48,7 @@ export type ResolvedBrowserConfig = {
   defaultProfile: string;
   profiles: Record<string, ResolvedBrowserProfileConfig>;
   tabCleanup: ResolvedBrowserTabCleanupConfig;
-  ssrfPolicy?: ResolvedBrowserSsrFPolicy;
+  cdpPolicy?: ResolvedBrowserCdpPolicy;
   extraArgs: string[];
 };
 

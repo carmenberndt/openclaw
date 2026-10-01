@@ -1,5 +1,5 @@
 ---
-summary: "Separating CDP startup failures from navigation SSRF blocks, plus the platform-specific pages"
+summary: "Separating CDP startup failures from page navigation failures, plus the platform-specific pages"
 title: "Browser troubleshooting"
 read_when:
   - The browser will not start or a page will not load
@@ -33,12 +33,14 @@ user-created symlinks anywhere in the directory path, including when the final
 directory already exists. The macOS `/tmp` and `/var` system aliases remain
 supported.
 
-## CDP startup failure vs navigation SSRF block
+<a id="cdp-startup-failure-vs-navigation-ssrf-block" />
+
+## CDP startup failure vs page navigation failure
 
 These are different failure classes and they point to different code paths.
 
 - **CDP startup or readiness failure** means OpenClaw cannot confirm that the browser control plane is healthy.
-- **Navigation SSRF block** means the browser control plane is healthy, but a page navigation target is rejected by policy.
+- **Page navigation failure** means control is available, but the URL is invalid or the browser cannot load the target page.
 
 Common examples:
 
@@ -47,8 +49,9 @@ Common examples:
   - `Remote CDP for profile "<name>" is not reachable at <cdpUrl>`
   - `Port <port> is in use for profile "<name>" but not by openclaw` when a
     loopback external CDP service is configured without `attachOnly: true`
-- Navigation SSRF block:
-  - `open`, `navigate`, snapshot, or tab-opening flows fail with a browser/network policy error while `start` and `tabs` still work
+- Page navigation failure:
+  - `open` or `navigate` rejects an unsupported scheme or URL-embedded credentials
+  - the browser reports a connection, TLS, or website error while `start` and `tabs` still work
 
 Use this minimal sequence to separate the two:
 
@@ -62,16 +65,16 @@ How to read the results:
 
 - If `start` fails with `not reachable after start`, troubleshoot CDP readiness first.
 - If `start` succeeds but `tabs` fails, the control plane is still unhealthy. Treat this as a CDP reachability problem, not a page-navigation problem.
-- If `start` and `tabs` succeed but `open` or `navigate` fails, the browser control plane is up and the failure is in navigation policy or the target page.
+- If `start` and `tabs` succeed but `open` or `navigate` fails, the browser control plane is up. Check the requested URL and the target page.
 - If `start`, `tabs`, and `open` all succeed, the basic managed-browser control path is healthy.
 
 Important behavior details:
 
-- Browser config defaults to a fail-closed SSRF policy object even when you do not configure `browser.ssrfPolicy`.
-- For the local loopback `openclaw` managed profile, CDP health checks intentionally skip browser SSRF reachability enforcement for OpenClaw's own local control plane.
+- `browser.cdpPolicy` defaults to strict checks for remote control endpoints; it does not restrict page destinations.
+- For the local loopback `openclaw` managed profile, CDP health checks intentionally skip remote CDP endpoint enforcement for OpenClaw's own local control plane.
 - After launching a local managed browser, readiness checks allow up to 1.5 seconds per HTTP request and 2 seconds per WebSocket stage to tolerate Gateway scheduling delays. The readiness retry window is eight seconds; checks near its end use shorter timeouts.
 - Later operations use the same readiness allowance for an owned managed browser before deciding it needs a restart. Stopping a profile aborts its pending discovery and readiness checks; canceling one caller waiting for a shared start does not stop that shared launch.
-- Navigation protection is separate. A successful `start` or `tabs` result does not mean a later `open` or `navigate` target is allowed.
+- Page navigation has no OpenClaw IP/DNS guard. HTTP(S) localhost and private pages use ordinary browser behavior; native browser security stays enabled.
 
 Resetting or deleting a local managed profile stops a verified browser left by an
 earlier Gateway runtime before moving its data. If a live profile owner cannot be
@@ -82,6 +85,7 @@ starting the browser also preserves that locked profile's preferences.
 
 Security guidance:
 
-- Do **not** relax browser SSRF policy by default.
-- Prefer narrow exact-hostname `allowedHostnames` exceptions over broad private-network access.
-- Use `dangerouslyAllowPrivateNetwork: true` only in intentionally trusted environments where private-network browser access is required and reviewed.
+- Keep CDP endpoint restrictions unless you need a trusted remote control endpoint.
+- Prefer narrow exact-hostname `browser.cdpPolicy.allowedHostnames` exceptions over broad private-network access.
+- Use `browser.cdpPolicy.dangerouslyAllowPrivateNetwork: true` only in intentionally trusted environments where private-network CDP access is required.
+- To restrict browser page egress, use host/container isolation or a policy-enforcing proxy; `browser.cdpPolicy` does not provide that boundary.

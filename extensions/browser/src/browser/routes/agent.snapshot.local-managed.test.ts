@@ -44,14 +44,6 @@ const pwState = vi.hoisted(() => ({
   module: null as null | Record<string, ReturnType<typeof vi.fn>>,
 }));
 
-const navigationGuardMocks = vi.hoisted(() => ({
-  assertBrowserNavigationAllowed: vi.fn(async () => {}),
-  assertBrowserNavigationResultAllowed: vi.fn(async (): Promise<void> => {
-    throw new Error("browser navigation blocked by policy");
-  }),
-  withBrowserNavigationPolicy: vi.fn((ssrfPolicy?: unknown) => (ssrfPolicy ? { ssrfPolicy } : {})),
-}));
-
 vi.mock("../pw-ai-module.js", () => ({
   getPwAiModule: vi.fn(async () => pwState.module),
   getLoadedPwAiModule: () => null,
@@ -71,12 +63,6 @@ vi.mock("../chrome-mcp.js", () => ({
   takeChromeMcpSnapshot: vi.fn(),
 }));
 
-vi.mock("../navigation-guard.js", () => ({
-  assertBrowserNavigationAllowed: navigationGuardMocks.assertBrowserNavigationAllowed,
-  assertBrowserNavigationResultAllowed: navigationGuardMocks.assertBrowserNavigationResultAllowed,
-  withBrowserNavigationPolicy: navigationGuardMocks.withBrowserNavigationPolicy,
-}));
-
 vi.mock("../screenshot.js", () => ({
   DEFAULT_BROWSER_SCREENSHOT_MAX_BYTES: 128,
   DEFAULT_BROWSER_SCREENSHOT_MAX_SIDE: 64,
@@ -93,10 +79,8 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async (importOriginal) => ({
   saveMediaBuffer: vi.fn(async () => ({ path: "/tmp/fake.png" })),
 }));
 
-vi.mock("./agent.shared.js", () => ({
-  browserNavigationPolicyForProfile: vi.fn(() => ({
-    ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-  })),
+vi.mock("./agent.shared.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent.shared.js")>()),
   handleRouteError: vi.fn(
     (res: { status: (code: number) => unknown; json: (body: unknown) => void }, err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -118,7 +102,7 @@ function getSnapshotGetHandler(
     resolved: {
       actionTimeoutMs: 60_000,
       extraArgs: [],
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+      cdpPolicy: { dangerouslyAllowPrivateNetwork: false },
     },
   },
 ) {
@@ -168,24 +152,9 @@ describe("local-managed browser snapshot routes", () => {
     });
     pwState.module = null;
     tabLookup.mockClear();
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockClear();
-    navigationGuardMocks.withBrowserNavigationPolicy.mockClear();
-  });
-
-  it("blocks AI CDP role snapshots when the current tab violates browser navigation policy", async () => {
-    const response = await snapshot({ format: "ai", interactive: "true" });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.body).toEqual({ error: "browser navigation blocked by policy" });
-    expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
-      url: "http://127.0.0.1:8080/admin",
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-    });
-    expect(cdpMocks.snapshotRoleViaCdp).not.toHaveBeenCalled();
   });
 
   it("uses CDP first for unscoped managed role snapshots and publishes its refs", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     const pw = createPwModule();
     pwState.module = pw;
     const response = await snapshot({
@@ -217,7 +186,6 @@ describe("local-managed browser snapshot routes", () => {
   });
 
   it("falls back to Playwright once when the CDP-first snapshot fails early", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     cdpMocks.snapshotRoleViaCdp.mockRejectedValueOnce(new Error("cdp unavailable"));
     const pw = createPwModule();
     pwState.module = pw;
@@ -230,7 +198,6 @@ describe("local-managed browser snapshot routes", () => {
   });
 
   it("keeps aria refs on Playwright-first role snapshots", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     const pw = createPwModule();
     pwState.module = pw;
     const response = await snapshot({ format: "ai", interactive: "true", refs: "aria" });
@@ -249,7 +216,6 @@ describe("local-managed browser snapshot routes", () => {
   ])(
     "validates only captured documents for %s snapshots",
     async (_label, playwright, query, reject) => {
-      navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
       const identities = vi
         .fn()
         .mockResolvedValueOnce({ mainFrame: "main", frameTree: "before-child-navigation" })
@@ -277,7 +243,6 @@ describe("local-managed browser snapshot routes", () => {
     ],
     ["an explicit zero cap", { maxChars: "0" }, {}],
   ])("forwards %s to Playwright AI snapshots", async (_name, query, expected) => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     const snapshotRoleViaPlaywright = vi.fn(async () => ({ snapshot: "Playwright" }));
     pwState.module = createPwModule({ snapshotRoleViaPlaywright });
     const response = await snapshot(query);
@@ -288,7 +253,7 @@ describe("local-managed browser snapshot routes", () => {
       targetId: "7",
       refsMode: "aria",
       signal: expect.any(AbortSignal),
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+      ssrfPolicy: undefined,
       timeoutMs: undefined,
       urls: undefined,
       delta: undefined,
@@ -297,7 +262,6 @@ describe("local-managed browser snapshot routes", () => {
   });
 
   it("surfaces pending dialog state without reading the blocked page", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     const snapshotRoleViaPlaywright = vi.fn(async () => ({ snapshot: "Playwright" }));
     pwState.module = createPwModule({
       getObservedBrowserStateViaPlaywright: vi.fn(async () => ({
@@ -329,7 +293,6 @@ describe("local-managed browser snapshot routes", () => {
   });
 
   it("rejects a snapshot when the main-frame loader changes during capture", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValueOnce(undefined);
     cdpMocks.getDocumentIdentitiesViaCdp
       .mockResolvedValueOnce({ mainFrame: "cdp:before", frameTree: "cdp:tree-before" })
       .mockResolvedValueOnce({ mainFrame: "cdp:after", frameTree: "cdp:tree-after" });
@@ -342,7 +305,6 @@ describe("local-managed browser snapshot routes", () => {
   });
 
   it("disables deltas when no stable document identity is available", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     cdpMocks.getDocumentIdentitiesViaCdp.mockResolvedValue({});
     const handler = getSnapshotGetHandler();
     const first = createBrowserRouteResponse();
@@ -360,12 +322,11 @@ describe("local-managed browser snapshot routes", () => {
   });
 
   it("reuses same-document delta keys across request contexts in one browser runtime", async () => {
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockResolvedValue(undefined);
     const state = {
       resolved: {
         actionTimeoutMs: 60_000,
         extraArgs: [],
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
+        cdpPolicy: { dangerouslyAllowPrivateNetwork: false },
       },
     };
     const firstHandler = getSnapshotGetHandler(state);

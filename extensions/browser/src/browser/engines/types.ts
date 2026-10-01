@@ -56,7 +56,7 @@ type BrowserEngineCdpNormalizer = {
   clear: () => void;
 };
 
-/** Engine behavior only. Browser sessions, navigation policy and tools keep their existing owners. */
+/** Engine behavior only. Browser sessions, URL validation and tools keep their existing owners. */
 export type BrowserEngineAdapter = {
   descriptor: Readonly<BrowserEngineDescriptor>;
   requiresDedicatedEndpoint: boolean;

@@ -266,7 +266,7 @@ describe("browser server-context listProfiles", () => {
       }),
       resolvedOverrides: {
         defaultProfile: "manual-cdp",
-        ssrfPolicy: {},
+        cdpPolicy: {},
       },
     });
     const isChromeReachable = vi.mocked(chromeModule.isChromeReachable);

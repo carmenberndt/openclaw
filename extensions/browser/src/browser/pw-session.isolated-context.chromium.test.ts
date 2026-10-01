@@ -54,7 +54,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_SNAPSHOT_E2E === "1")(
               cdpUrl,
               url: `${url}session-context/${index}`,
               isolatedContext: true,
-              ssrfPolicy: { allowPrivateNetwork: true },
+              cdpPolicy: { allowPrivateNetwork: true },
             }),
           );
         }

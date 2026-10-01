@@ -310,23 +310,22 @@ describe("openai image generation provider", () => {
     },
   );
 
-  it.each([false, true])(
-    "sets private-network permission from browser opt-in: %s",
+  it.each([undefined, false, true])(
+    "uses image endpoint permission $allow independently of CDP policy",
     async (allow) => {
       const cfg = openAIImageConfig({
         baseUrl: "http://127.0.0.1:44080/v1",
-        ...(allow ? { apiKey: "local-noauth" } : {}),
+        apiKey: "local-noauth",
+        ...(allow === undefined ? {} : { request: { allowPrivateNetwork: allow } }),
       });
-      if (allow) {
-        cfg.browser = { ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } };
-      }
+      cfg.browser = { cdpPolicy: { dangerouslyAllowPrivateNetwork: allow !== true } };
       const result = await generateOpenAIImage("Private endpoint", {
         cfg,
         ssrfPolicy: { allowRfc2544BenchmarkRange: true },
       });
       expect(jsonRequestCall()).toMatchObject({
         url: "http://127.0.0.1:44080/v1/images/generations",
-        allowPrivateNetwork: allow,
+        allowPrivateNetwork: allow === true,
         ssrfPolicy: { allowRfc2544BenchmarkRange: true },
       });
       expect(result.images).toHaveLength(1);
@@ -598,7 +597,10 @@ describe("openai image generation provider", () => {
       size: "864x1536",
       quality: "high",
       outputFormat: "webp",
-      cfg: openAIImageConfig({ baseUrl: "http://127.0.0.1:44080/v1" }),
+      cfg: openAIImageConfig({
+        baseUrl: "http://127.0.0.1:44080/v1",
+        request: { allowPrivateNetwork: true },
+      }),
       ssrfPolicy: { allowRfc2544BenchmarkRange: true },
       inputImages: [
         { buffer: Buffer.from("png-bytes"), mimeType: "image/png", fileName: "reference.png" },
@@ -616,7 +618,7 @@ describe("openai image generation provider", () => {
     const request = multipartRequestCall();
     expect(request).toMatchObject({
       url: "http://127.0.0.1:44080/v1/images/edits",
-      allowPrivateNetwork: false,
+      allowPrivateNetwork: true,
       ssrfPolicy: { allowRfc2544BenchmarkRange: true },
       dispatcherPolicy: undefined,
       fetchFn: fetch,

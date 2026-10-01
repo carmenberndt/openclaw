@@ -44,7 +44,7 @@ export function makeState(
       headlessSource: "config",
       noSandbox: false,
       attachOnly: false,
-      ssrfPolicy: { allowPrivateNetwork: true },
+      cdpPolicy: { allowPrivateNetwork: true },
       tabCleanup: {
         enabled: true,
         idleMinutes: 120,
@@ -125,7 +125,7 @@ export function createTestBrowserRouteContext(opts: { getState: () => BrowserSer
     const selectionOps = createProfileSelectionOps({
       profile,
       runtime,
-      getCdpControlPolicy: () => resolveCdpControlPolicy(profile, state.resolved.ssrfPolicy),
+      getCdpControlPolicy: () => resolveCdpControlPolicy(profile, state.resolved.cdpPolicy),
       listTabs: tabOps.listTabs,
       openTab: tabOps.openTab,
     });

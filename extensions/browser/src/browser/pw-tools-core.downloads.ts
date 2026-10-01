@@ -1,20 +1,10 @@
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import {
-  isPrivateNetworkAllowedByPolicy,
-  normalizeHostname,
-} from "openclaw/plugin-sdk/security-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import type { Frame, Page } from "playwright-core";
 import { DEFAULT_BROWSER_DOWNLOAD_TIMEOUT_MS } from "./constants.js";
-import type { BrowserDownloadCandidate, BrowserDownloadResult } from "./download-types.js";
-import {
-  assertBrowserNavigationAllowed,
-  assertBrowserNavigationResultAllowed,
-  type BrowserNavigationPolicyOptions,
-  InvalidBrowserNavigationUrlError,
-  parseBrowserNavigationUrl,
-} from "./navigation-guard.js";
+import type { BrowserDownloadResult } from "./download-types.js";
+import { InvalidBrowserNavigationUrlError, parseBrowserNavigationUrl } from "./navigation-guard.js";
 import { resolveStrictExistingUploadPaths } from "./paths.js";
 import { createDownloadCaptureForPage } from "./pw-download-capture.js";
 import {
@@ -24,7 +14,6 @@ import {
   refLocator,
   respondToObservedDialogOnPage,
   restoreRoleRefsForTarget,
-  withPageNavigationRequestGuard,
 } from "./pw-session.js";
 import {
   clickViaPlaywright,
@@ -35,10 +24,7 @@ import {
   assertInteractionCurrent,
   BrowserInteractionAuthorityError,
   createAbortPromiseWithListener,
-  hasInteractionNavigationPolicy,
-  interactionNavigationPolicy,
   type InteractionTargetOptions,
-  type NavigationTargetOptions,
   runCancellablePageInteraction,
 } from "./pw-tools-core.interactions.navigation.js";
 import {
@@ -60,17 +46,15 @@ type ActiveUpload = {
 
 const activeUploads = new WeakMap<Page, ActiveUpload>();
 
-function createExplicitDownloadCapture(
-  params: BrowserNavigationPolicyOptions & {
-    page: Page;
-    state: ReturnType<typeof ensurePageState>;
-    timeoutMs: number;
-    outPath?: string;
-    rootDir?: string;
-    signal?: AbortSignal;
-    beforeSave?: (download: BrowserDownloadCandidate) => Promise<void> | void;
-  },
-) {
+function createExplicitDownloadCapture(params: {
+  page: Page;
+  state: ReturnType<typeof ensurePageState>;
+  timeoutMs: number;
+  outPath?: string;
+  rootDir?: string;
+  signal?: AbortSignal;
+  beforeSave?: () => Promise<void> | void;
+}) {
   params.state.armIdDownload = bumpDownloadArmId();
   const armId = params.state.armIdDownload;
   return createDownloadCaptureForPage(params.page, params.state, params.timeoutMs, {
@@ -79,19 +63,11 @@ function createExplicitDownloadCapture(
     outputRoot: params.rootDir,
     signal: params.signal,
     cancelOnBeforeSaveError: () => params.state.armIdDownload === armId,
-    beforeSave: async (download) => {
+    beforeSave: async () => {
       if (params.state.armIdDownload !== armId) {
         throw new Error("Download was superseded by another waiter");
       }
-      if (params.ssrfPolicy !== undefined || params.browserProxyMode !== undefined) {
-        await assertBrowserNavigationResultAllowed({
-          url: download.url,
-          ssrfPolicy: params.ssrfPolicy,
-          browserProxyMode: params.browserProxyMode,
-          signal: params.signal,
-        });
-      }
-      await params.beforeSave?.(download);
+      await params.beforeSave?.();
       if (params.state.armIdDownload !== armId) {
         throw new Error("Download was superseded by another waiter");
       }
@@ -103,7 +79,7 @@ function resolveImplicitDownloadRoot(): string {
   return path.join(resolvePreferredOpenClawTmpDir(), "downloads");
 }
 
-type UploadOptions = NavigationTargetOptions & {
+type UploadOptions = InteractionTargetOptions & {
   ref?: string;
   paths?: string[];
   timeoutMs?: number;
@@ -313,7 +289,7 @@ export async function armDialogViaPlaywright(
 
 /** Waits for the next page download and writes it under the configured output root. */
 export async function waitForDownloadViaPlaywright(
-  opts: NavigationTargetOptions & {
+  opts: InteractionTargetOptions & {
     path?: string;
     rootDir?: string;
     signal?: AbortSignal;
@@ -323,48 +299,23 @@ export async function waitForDownloadViaPlaywright(
   const page = await getPageForTargetId(opts);
   const state = ensurePageState(page);
   const timeout = normalizeTimeoutMs(opts.timeoutMs, 120_000);
-  const navigationPolicy = interactionNavigationPolicy(opts);
-  const policyDenial = new AbortController();
-  const signal = opts.signal
-    ? AbortSignal.any([opts.signal, policyDenial.signal])
-    : policyDenial.signal;
-  const waitForCapture = async () => {
-    if (opts.assertCurrent) {
-      await assertInteractionCurrent(opts);
-    }
-    const capture = createExplicitDownloadCapture({
-      page,
-      state,
-      timeoutMs: timeout,
-      outPath: opts.path,
-      rootDir: opts.path?.trim() ? opts.rootDir : (opts.rootDir ?? resolveImplicitDownloadRoot()),
-      signal,
-      ...navigationPolicy,
-    });
-    return await capture.promise;
-  };
-  if (!hasInteractionNavigationPolicy(navigationPolicy)) {
-    return await waitForCapture();
+  if (opts.assertCurrent) {
+    await assertInteractionCurrent(opts);
   }
-  return await withPageNavigationRequestGuard({
+  const capture = createExplicitDownloadCapture({
     page,
-    ...navigationPolicy,
-    onPolicyDenied: (event) => {
-      if (event.state === "detected") {
-        policyDenial.abort(
-          event.error instanceof Error
-            ? event.error
-            : new Error("Browser navigation blocked by policy", { cause: event.error }),
-        );
-      }
-    },
-    action: waitForCapture,
+    state,
+    timeoutMs: timeout,
+    outPath: opts.path,
+    rootDir: opts.path?.trim() ? opts.rootDir : (opts.rootDir ?? resolveImplicitDownloadRoot()),
+    signal: opts.signal,
   });
+  return await capture.promise;
 }
 
 /** Clicks an element ref and saves the download triggered by that click. */
 export async function downloadViaPlaywright(
-  opts: NavigationTargetOptions & {
+  opts: InteractionTargetOptions & {
     ref: string;
     path: string;
     rootDir?: string;
@@ -393,8 +344,6 @@ export async function downloadViaPlaywright(
     outPath,
     rootDir: opts.rootDir,
     signal: opts.signal,
-    ssrfPolicy: opts.ssrfPolicy,
-    browserProxyMode: opts.browserProxyMode,
   });
   void capture.promise.catch(() => {});
   try {
@@ -416,7 +365,7 @@ export async function downloadViaPlaywright(
 
 /** Save the displayed document using its browser session without navigating its preview. */
 export async function downloadCurrentDocumentViaPlaywright(
-  opts: NavigationTargetOptions & {
+  opts: InteractionTargetOptions & {
     expectedUrl: string;
     rootDir?: string;
     signal?: AbortSignal;
@@ -428,21 +377,6 @@ export async function downloadCurrentDocumentViaPlaywright(
   const parsed = parseBrowserNavigationUrl(expectedUrl);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new InvalidBrowserNavigationUrlError("Only HTTP(S) documents can be downloaded");
-  }
-  // Chromium hides native download redirect requests from page.route. A starting
-  // host's trust does not authorize the next host, and save-time checks are too late.
-  // Shared policy normalization treats blank/lone-wildcard entries as unconstrained.
-  const hasHostnameRestrictions = [
-    ...(opts.ssrfPolicy?.hostnameAllowlist ?? []),
-    ...(opts.ssrfPolicy?.blockedHostnames ?? []),
-  ].some((pattern) => {
-    const normalized = normalizeHostname(pattern);
-    return normalized.length > 0 && normalized !== "*";
-  });
-  if (!isPrivateNetworkAllowedByPolicy(opts.ssrfPolicy) || hasHostnameRestrictions) {
-    throw new InvalidBrowserNavigationUrlError(
-      "Current-document downloads are unavailable under this browser network policy because download redirects cannot be inspected",
-    );
   }
   const operation = new AbortController();
   const signal = opts.signal ? AbortSignal.any([opts.signal, operation.signal]) : operation.signal;
@@ -466,16 +400,6 @@ export async function downloadCurrentDocumentViaPlaywright(
     page.on("close", onClose);
     page.on("framenavigated", onNavigation);
     assertCurrentDocument();
-    await awaitActionWithAbort(
-      assertBrowserNavigationAllowed({
-        url: page.url(),
-        ssrfPolicy: opts.ssrfPolicy,
-        browserProxyMode: opts.browserProxyMode,
-        signal,
-      }),
-      abortPromise,
-    );
-    assertCurrentDocument();
     if (opts.assertCurrent) {
       await assertInteractionCurrent(opts);
       assertCurrentDocument();
@@ -487,15 +411,8 @@ export async function downloadCurrentDocumentViaPlaywright(
       timeoutMs: timeout,
       rootDir: opts.rootDir ?? resolveImplicitDownloadRoot(),
       signal,
-      beforeSave: async (download) => {
+      beforeSave: () => {
         try {
-          assertCurrentDocument();
-          await assertBrowserNavigationAllowed({
-            url: download.url,
-            ssrfPolicy: opts.ssrfPolicy,
-            browserProxyMode: opts.browserProxyMode,
-            signal,
-          });
           assertCurrentDocument();
         } catch (error) {
           operation.abort(error);

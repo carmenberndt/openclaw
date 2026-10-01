@@ -29,8 +29,6 @@ import {
 } from "./server.control-server.test-harness.js";
 import { createBrowserTestClient, getBrowserTestFetch } from "./test-support/fetch.js";
 
-const BROWSER_NAVIGATION_BLOCKED_MESSAGE = "browser navigation blocked by policy";
-
 async function postActAndReadError(base: string, body?: unknown) {
   const response = await realFetch(`${base}/act`, {
     method: "POST",
@@ -87,7 +85,7 @@ const guardedCurrentTabRouteCases = [
   ["POST", "/highlight", { targetId: "abcd1234", ref: "e1" }, "highlightViaPlaywright"],
   ["GET", "/console?targetId=abcd1234", undefined, "getConsoleMessagesViaPlaywright"],
   ["POST", "/pdf", { targetId: "abcd1234" }, "pdfViaPlaywright"],
-  ["POST", "/screenshot", { targetId: "abcd1234" }, "takeScreenshotViaPlaywright"],
+  ["POST", "/screenshot", { targetId: "abcd1234", ref: "e1" }, "takeScreenshotViaPlaywright"],
   [
     "POST",
     "/download",
@@ -164,7 +162,7 @@ describe("browser control server", () => {
     expect(requirePwMock("executeActViaPlaywright")).not.toHaveBeenCalled();
   });
 
-  it("canonicalizes request and batch target aliases with the resolved proxy policy", async () => {
+  it("canonicalizes request and batch target aliases without page proxy-policy propagation", async () => {
     setBrowserControlServerExtraArgs(["--proxy-server=http://proxy.example:8080"]);
     const base = await startServerAndBase();
     const response = await postJson<{ ok: boolean }>(`${base}/act`, {
@@ -176,7 +174,6 @@ describe("browser control server", () => {
 
     expect(response.ok).toBe(true);
     expect(requirePwMock("executeActViaPlaywright").mock.calls[0]?.[0]).toMatchObject({
-      browserProxyMode: "explicit-browser-proxy",
       action: { targetId: "abcd1234", actions: [{ targetId: "abcd1234" }] },
     });
   });
@@ -272,17 +269,16 @@ describe("browser control server", () => {
     });
   });
 
-  it("blocks disallowed snapshot tabs before reading Playwright browser state", async () => {
-    setBrowserControlServerSsrFPolicy({ allowPrivateNetwork: false });
+  it("reads private snapshot tabs with the default CDP policy", async () => {
+    setBrowserControlServerSsrFPolicy({ dangerouslyAllowPrivateNetwork: false });
     setBrowserControlServerTabUrl("http://127.0.0.1:8080/admin");
     const response = await getBrowserTestFetch()(
       `${await startServerAndBase()}/snapshot?format=ai`,
     );
 
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: BROWSER_NAVIGATION_BLOCKED_MESSAGE });
-    expect(requirePwMock("getObservedBrowserStateViaPlaywright")).not.toHaveBeenCalled();
-    expect(requirePwMock("snapshotRoleViaPlaywright")).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ url: "http://127.0.0.1:8080/admin" });
+    expect(requirePwMock("getObservedBrowserStateViaPlaywright")).toHaveBeenCalled();
   });
 
   it("agent contract: doctor deep runs a live snapshot probe", async () => {
@@ -388,7 +384,7 @@ describe("browser control server", () => {
         cdpUrl: state.cdpBaseUrl,
         targetId: "abcd1234",
         url: "https://example.com",
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        ssrfPolicy: undefined,
       }),
     );
     const actions: Array<{ input: Record<string, unknown>; normalized?: Record<string, unknown> }> =
@@ -426,7 +422,7 @@ describe("browser control server", () => {
           action: { ...input, ...normalized },
           cdpUrl: state.cdpBaseUrl,
           targetId: "abcd1234",
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+          ssrfPolicy: undefined,
         }),
       );
     }
@@ -664,7 +660,7 @@ describe("browser control server", () => {
       await call(route, body, mockName, {
         ...body,
         path: path.resolve(DEFAULT_DOWNLOAD_DIR, "report.pdf"),
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+        ssrfPolicy: undefined,
         signal: expect.any(AbortSignal),
       });
     }
@@ -741,9 +737,9 @@ describe("browser control server", () => {
   });
 
   it.each(guardedCurrentTabRouteCases)(
-    "blocks %s %s on disallowed current tab URLs",
+    "allows %s %s on private current tab URLs",
     async (method, route, body, mockName) => {
-      setBrowserControlServerSsrFPolicy({ allowPrivateNetwork: false });
+      setBrowserControlServerSsrFPolicy({ dangerouslyAllowPrivateNetwork: false });
       setBrowserControlServerTabUrl("http://127.0.0.1:8080/admin");
       const base = await startServerAndBase();
 
@@ -752,14 +748,13 @@ describe("browser control server", () => {
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toMatchObject({ error: BROWSER_NAVIGATION_BLOCKED_MESSAGE });
-      expect(requirePwMock(mockName)).not.toHaveBeenCalled();
+      expect(res.status, JSON.stringify(await res.json())).toBe(200);
+      expect(requirePwMock(mockName)).toHaveBeenCalled();
     },
   );
 
-  it("allows resizing a disallowed tab", async () => {
-    setBrowserControlServerSsrFPolicy({ allowPrivateNetwork: false });
+  it("allows resizing a private tab", async () => {
+    setBrowserControlServerSsrFPolicy({ dangerouslyAllowPrivateNetwork: false });
     setBrowserControlServerTabUrl("http://127.0.0.1:8080/admin");
     expect(
       await postJson(`${await startServerAndBase()}/act`, {
@@ -772,8 +767,8 @@ describe("browser control server", () => {
     expect(requirePwMock("resizeViewportViaPlaywright")).toHaveBeenCalled();
   });
 
-  it("keeps a disallowed tab close bound to the tab it closed", async () => {
-    setBrowserControlServerSsrFPolicy({ allowPrivateNetwork: false });
+  it("keeps a private tab close bound to the tab it closed", async () => {
+    setBrowserControlServerSsrFPolicy({ dangerouslyAllowPrivateNetwork: false });
     setBrowserControlServerTabUrl("http://127.0.0.1:8080/admin");
     const base = await startServerAndBase();
     requirePwMock("closePageViaPlaywright").mockImplementationOnce(async () => {
@@ -805,7 +800,7 @@ describe("browser control server", () => {
       ok: true,
       targetId: "abcd1234",
     });
-    expect(result.url).toBeUndefined();
+    expect(result.url).toBe("http://127.0.0.1:8080/admin");
   });
 
   it("download rejects traversal path outside downloads dir", async () => {
@@ -883,7 +878,7 @@ describe("browser control server", () => {
     }
   });
 
-  it("downloads the current document into managed storage with navigation policy and request ownership", async () => {
+  it("downloads the current document into managed storage with request ownership", async () => {
     const base = await startServerAndBase();
     const res = await postJson<{ ok?: boolean; download?: { path?: string } }>(`${base}/download`, {
       targetId: "abcd1234",
@@ -898,7 +893,7 @@ describe("browser control server", () => {
       expectedUrl: "https://example.com/inline.png",
       timeoutMs: 120_000,
       rootDir: DEFAULT_DOWNLOAD_DIR,
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+      ssrfPolicy: undefined,
     });
     expect(call.signal).toBeInstanceOf(AbortSignal);
     expect(call).not.toHaveProperty("path");

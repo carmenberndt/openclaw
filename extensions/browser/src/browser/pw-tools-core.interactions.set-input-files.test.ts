@@ -102,7 +102,7 @@ describe("upload handoff", () => {
     expect(setInputFiles).not.toHaveBeenCalled();
   });
 
-  it("keeps guarded local-filesystem uploads as paths inside the policy guard", async () => {
+  it("keeps guarded local-filesystem uploads as paths on the local browser", async () => {
     await upload({
       browserFilesystemLocal: true,
       ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
@@ -114,8 +114,6 @@ describe("upload handoff", () => {
     expect(resolveStrictExistingUploadPaths).toHaveBeenCalledWith({ requestedPaths: paths });
     expect(session.refLocator).toHaveBeenCalledWith(page, "e7");
     expect(elementHandle).not.toHaveBeenCalled();
-    expect(session.withPageNavigationRequestGuard).toHaveBeenCalledOnce();
-    expect(session.assertPageNavigationCompletedSafely).toHaveBeenCalledOnce();
   });
 
   it("rejects paths outside the allowed directory before native upload", async () => {

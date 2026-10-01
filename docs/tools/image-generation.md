@@ -76,8 +76,10 @@ or sign in with OpenAI ChatGPT/Codex OAuth.
 <Warning>
 For OpenAI-compatible LAN endpoints such as LocalAI, keep the custom
 `models.providers.openai.baseUrl` and explicitly opt in with
-`browser.ssrfPolicy.dangerouslyAllowPrivateNetwork: true`. Private and
-internal image endpoints remain blocked by default.
+`models.providers.openai.request.allowPrivateNetwork: true`. Private and
+internal image endpoints remain blocked by default. `browser.cdpPolicy` affects browser control endpoints only.
+`openclaw doctor --fix` preserves an old browser private-network opt-in for an
+already-configured native OpenAI image route; explicit provider permission wins.
 </Warning>
 
 ## Common routes

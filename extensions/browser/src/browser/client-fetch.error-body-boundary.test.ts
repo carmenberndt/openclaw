@@ -135,7 +135,7 @@ describe("fetchHttpJson error body boundary", () => {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            error: "browser navigation blocked by policy",
+            error: 'Navigation blocked: unsupported protocol "file:"',
             reason: "navigation_blocked",
             details: { url: "http://internal.example/admin" },
           }),
@@ -237,14 +237,14 @@ describe("fetchHttpJson error body boundary", () => {
     }
   });
 
-  it("preserves a navigation denial without exposing raw policy details over HTTP", async () => {
+  it("preserves a URL-scheme denial without exposing raw details over HTTP", async () => {
     const error = await fetchBrowserJson(`${baseUrl}/navigation-blocked`).catch(
       (err: unknown) => err,
     );
 
     expect(error).toMatchObject({
       name: "BrowserServiceError",
-      message: "browser navigation blocked by policy",
+      message: 'Navigation blocked: unsupported protocol "file:"',
       reason: "navigation_blocked",
       status: 400,
       details: undefined,

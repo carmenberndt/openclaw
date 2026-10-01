@@ -1,4 +1,4 @@
-// Browser tests cover agent.act hook current-tab navigation guard behavior.
+// Browser hooks retain ordinary private-page access.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserRouteApp, createBrowserRouteResponse } from "./test-helpers.js";
 
@@ -68,7 +68,7 @@ function createRouteContext(
       resolved: {
         actionTimeoutMs: 60_000,
         extraArgs: [],
-        ssrfPolicy: {
+        cdpPolicy: {
           dangerouslyAllowPrivateNetwork: options?.allowPrivateNetwork === true,
         },
       },
@@ -104,7 +104,7 @@ async function callHook(params: {
   return response;
 }
 
-const blockedHookCases = [
+const privatePageHookCases = [
   {
     label: "file chooser",
     path: "/hooks/file-chooser" as const,
@@ -126,7 +126,7 @@ const blockedHookCases = [
   },
 ];
 
-describe("agent act hook current URL guard", () => {
+describe("agent act hooks on private pages", () => {
   beforeEach(() => {
     for (const fn of Object.values(chromeMcpMocks)) {
       fn.mockClear();
@@ -139,8 +139,8 @@ describe("agent act hook current URL guard", () => {
     }
   });
 
-  it.each(blockedHookCases)(
-    "blocks $label hooks before page side effects on a disallowed current tab",
+  it.each(privatePageHookCases)(
+    "allows $label hooks on a private current tab",
     async ({ path, body, sideEffects }) => {
       const profileCtx = createProfileContext();
 
@@ -150,15 +150,10 @@ describe("agent act hook current URL guard", () => {
         profileCtx,
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.body).toEqual({
-        error: "browser navigation blocked by policy",
-        reason: "navigation_blocked",
-      });
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toEqual({ ok: true });
       expect(profileCtx.ensureTabAvailable).toHaveBeenCalledOnce();
-      for (const sideEffect of sideEffects) {
-        expect(sideEffect).not.toHaveBeenCalled();
-      }
+      expect(sideEffects.some((sideEffect) => sideEffect.mock.calls.length > 0)).toBe(true);
     },
   );
 

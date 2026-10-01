@@ -254,7 +254,7 @@ async function closeCurrentDurableTab(
   if (profile.driver === "extension" && !resolved.extensionRelayInternalTokens[profile.name]) {
     return { status: "unavailable", reason: "extension-relay-unavailable" };
   }
-  const cdpControlPolicy = resolveCdpControlPolicy(profile, resolved.ssrfPolicy);
+  const cdpControlPolicy = resolveCdpControlPolicy(profile, resolved.cdpPolicy);
   return await closeTrackedCdpTarget({
     profileName: profile.name,
     cdpUrl: profile.cdpUrl,

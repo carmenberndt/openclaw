@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { useBrowserDashboardTestHarness } from "../../browser-dashboard.test-harness.js";
 import type { BrowserActRequest } from "../client-actions.types.js";
 import type { BrowserTab } from "../client.types.js";
-import { gotoPageWithNavigationGuard as gotoPageWithNavigationGuardReal } from "../pw-session-navigation.js";
 import {
   getPwToolsCoreSessionMocks,
   installPwToolsCoreTestHooks,
@@ -92,12 +91,12 @@ describe("dashboard action ownership", () => {
         press: nextEffect,
       });
       if (boundary === "navigation preparation") {
-        getPwToolsCoreSessionMocks().withPageNavigationRequestGuard.mockImplementationOnce(
-          async ({ action, page }) => {
-            await holdAction();
-            return await action(page.url());
-          },
-        );
+        const getPage = getPwToolsCoreSessionMocks().getPageForTargetId;
+        const select = getPage.getMockImplementation()!;
+        getPage.mockImplementationOnce(async () => {
+          await holdAction();
+          return await select();
+        });
       }
       browser.closeOwned.mockImplementation(async () => {
         closeEntered.resolve();
@@ -181,7 +180,7 @@ describe("dashboard action ownership", () => {
     { revoke: "replacement", retry: true },
     { revoke: "none", retry: true },
   ])(
-    "revalidates standalone navigation after $revoke during route preparation with retry=$retry",
+    "revalidates standalone navigation after $revoke during page selection with retry=$retry",
     async ({ revoke, retry }) => {
       const dashboard = await requestBrowserDashboard(request);
       const targetId = dashboard.browserTab!.targetId;
@@ -206,20 +205,18 @@ describe("dashboard action ownership", () => {
         url: () => currentUrl,
         isClosed: () => false,
         goto,
-        route: vi.fn(async () => {
-          preparations += 1;
-          if (preparations === (retry ? 2 : 1)) {
-            preparationEntered.resolve();
-            await releasePreparation.promise;
-          }
-        }),
-        unroute: vi.fn(async () => {}),
       };
       setPwToolsCoreCurrentPage(page);
-      const pwSession = await import("../pw-session.js");
-      const gotoGuard = vi
-        .mocked(pwSession.gotoPageWithNavigationGuard)
-        .mockImplementation(gotoPageWithNavigationGuardReal);
+      const getPage = getPwToolsCoreSessionMocks().getPageForTargetId;
+      const select = getPage.getMockImplementation()!;
+      getPage.mockImplementation(async () => {
+        preparations += 1;
+        if (preparations === (retry ? 2 : 1)) {
+          preparationEntered.resolve();
+          await releasePreparation.promise;
+        }
+        return page;
+      });
       browser.closeOwned.mockImplementation(async () => {
         closeEntered.resolve();
         return await releaseClose.promise;
@@ -275,12 +272,11 @@ describe("dashboard action ownership", () => {
           expect(response.body).toMatchObject({ error: expect.stringMatching(/dashboard/i) });
           expect(page.url()).toBe(dashboard.url);
         }
-        expect(page.unroute).toHaveBeenCalledTimes(retry ? 2 : 1);
       } finally {
         releasePreparation.resolve();
         releaseClose.resolve({ status: "closed" });
         await Promise.allSettled([operation, retirement]);
-        gotoGuard.mockRestore();
+        getPage.mockImplementation(select);
       }
     },
   );

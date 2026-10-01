@@ -198,7 +198,7 @@ describe("registerPolicyDoctorChecks", () => {
       channels: { telegram: { enabled: true } },
       mcp: { servers: { untrusted: { command: "uvx", args: ["untrusted-mcp"] } } },
       models: { providers: { openrouter: {} } },
-      browser: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } },
+      browser: { cdpPolicy: { dangerouslyAllowPrivateNetwork: true } },
     };
     const configPath = await writePolicyFixture({
       channels: {},

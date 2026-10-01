@@ -85,8 +85,8 @@ export function collectEnabledInsecureOrDangerousFlagsFromContracts(
   if (cfg.hooks?.allowRequestSessionKey === true) {
     enabledFlags.push("hooks.allowRequestSessionKey=true");
   }
-  if (cfg.browser?.ssrfPolicy?.dangerouslyAllowPrivateNetwork === true) {
-    enabledFlags.push("browser.ssrfPolicy.dangerouslyAllowPrivateNetwork=true");
+  if (cfg.browser?.cdpPolicy?.dangerouslyAllowPrivateNetwork === true) {
+    enabledFlags.push("browser.cdpPolicy.dangerouslyAllowPrivateNetwork=true");
   }
   if (cfg.tools?.fs?.workspaceOnly === false) {
     enabledFlags.push("tools.fs.workspaceOnly=false");

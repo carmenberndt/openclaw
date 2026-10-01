@@ -122,7 +122,7 @@ function buildSandboxBrowserResolvedConfig(params: {
   cdpAuthToken: string;
   headless: boolean;
   evaluateEnabled: boolean;
-  ssrfPolicy?: SsrFPolicy;
+  cdpPolicy?: SsrFPolicy;
 }): ResolvedBrowserConfig {
   const cdpHost = "127.0.0.1";
   const cdpPortRange = deriveDefaultBrowserCdpPortRange(0);
@@ -163,7 +163,7 @@ function buildSandboxBrowserResolvedConfig(params: {
         color: DEFAULT_OPENCLAW_BROWSER_COLOR,
       },
     },
-    ssrfPolicy: params.ssrfPolicy,
+    cdpPolicy: params.cdpPolicy,
   };
 }
 
@@ -227,7 +227,7 @@ type EnsureSandboxBrowserParams = {
   cfg: SandboxConfig;
   evaluateEnabled: boolean;
   bridgeAuth?: { token?: string; password?: string };
-  ssrfPolicy?: SsrFPolicy;
+  cdpPolicy?: SsrFPolicy;
   /** Joins managed workspace custody for late browser starts as well as allocation. */
   withWorkspace?: <T>(operation: () => Promise<T>) => Promise<T>;
 };
@@ -520,7 +520,7 @@ async function ensureSandboxBrowserContainer(
     existing.containerName === containerName &&
     existingProfile?.cdpPort === mappedCdp &&
     existingProfile?.cdpUrl === cdpUrl &&
-    isSameSsrFPolicy(existing.bridge.state.resolved.ssrfPolicy, params.ssrfPolicy) &&
+    isSameSsrFPolicy(existing.bridge.state.resolved.cdpPolicy, params.cdpPolicy) &&
     existing.authToken === desiredAuthToken &&
     existing.authPassword === desiredAuthPassword &&
     existing.bridge.state.resolved.evaluateEnabled === params.evaluateEnabled,
@@ -564,7 +564,7 @@ async function ensureSandboxBrowserContainer(
           cdpAuthToken,
           headless: params.cfg.browser.headless,
           evaluateEnabled: params.evaluateEnabled,
-          ssrfPolicy: params.ssrfPolicy,
+          cdpPolicy: params.cdpPolicy,
         }),
         authToken: desiredAuthToken,
         authPassword: desiredAuthPassword,

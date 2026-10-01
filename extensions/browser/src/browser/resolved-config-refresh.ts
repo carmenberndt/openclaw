@@ -99,7 +99,7 @@ function applyResolvedConfig(
     // service; a request must not adopt changes that are waiting for its restart.
     enabled: previousResolved.enabled,
     evaluateEnabled: previousResolved.evaluateEnabled,
-    ssrfPolicy: previousResolved.ssrfPolicy,
+    cdpPolicy: previousResolved.cdpPolicy,
     extensionRelay: previousResolved.extensionRelay,
     // Only an exact live relay owns its process-local CDP credential; stale
     // config snapshots must never resurrect closed or replaced credentials.

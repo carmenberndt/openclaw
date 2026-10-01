@@ -9,6 +9,7 @@ import {
   hasConfigTrancheLegacyKeys,
   migrateConfigTranche,
 } from "./legacy-config-migrations.runtime.config-tranche.js";
+import { LEGACY_CONFIG_MIGRATION_RUNTIME_BROWSER } from "./legacy-config-migrations.runtime.retired-browser.js";
 import {
   consolidateMediaCapabilityConfig,
   hasDiscordRealtimeVoice,
@@ -160,21 +161,6 @@ function migrateFinalLayoutRenames(raw: Record<string, unknown>, changes: string
     if (moved) {
       env.vars = vars;
     }
-  }
-
-  const browser = getRecord(raw.browser);
-  const ssrfPolicy = getRecord(browser?.ssrfPolicy);
-  if (ssrfPolicy && Array.isArray(ssrfPolicy.hostnameAllowlist)) {
-    const canonical = Array.isArray(ssrfPolicy.allowedHostnames) ? ssrfPolicy.allowedHostnames : [];
-    ssrfPolicy.allowedHostnames = [
-      ...new Set(
-        [...canonical, ...ssrfPolicy.hostnameAllowlist].filter(
-          (value) => typeof value === "string",
-        ),
-      ),
-    ];
-    delete ssrfPolicy.hostnameAllowlist;
-    changes.push("Merged browser.ssrfPolicy.hostnameAllowlist → allowedHostnames.");
   }
 
   const legacyMedia = getRecord(raw.media);
@@ -381,6 +367,7 @@ function removeUiAssistantIdentity(raw: Record<string, unknown>, changes: string
 }
 
 export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec[] = [
+  LEGACY_CONFIG_MIGRATION_RUNTIME_BROWSER,
   LEGACY_CONFIG_MIGRATION_RUNTIME_MEMORY_QMD,
   {
     id: "runtime.automatic-local-model-lean",

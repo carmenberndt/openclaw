@@ -383,7 +383,7 @@ async function main() {
           defaultProfile: "bench",
           evaluateEnabled: true,
           snapshotDefaults: { mode: "efficient" },
-          ssrfPolicy: {
+          cdpPolicy: {
             allowedHostnames: [fixtureUrl.hostname],
             dangerouslyAllowPrivateNetwork: true,
           },

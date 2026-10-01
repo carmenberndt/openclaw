@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
-import { SsrFBlockedError } from "openclaw/plugin-sdk/security-runtime";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import { WebSocketServer } from "openclaw/plugin-sdk/websocket-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -299,23 +298,17 @@ describe("CDP target creation", () => {
   });
 
   it.each([
-    { url: "http://127.0.0.1:8080", ssrfPolicy: undefined, error: SsrFBlockedError },
-    {
-      url: "https://example.com",
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-      error: InvalidBrowserNavigationUrlError,
-    },
-    { url: "file:///etc/passwd", ssrfPolicy: undefined, error: InvalidBrowserNavigationUrlError },
-  ])(
-    "blocks disallowed navigation to $url before connecting",
-    async ({ url, ssrfPolicy, error }) => {
-      const fetch = vi.spyOn(globalThis, "fetch");
-      await expect(
-        createTargetViaCdp({ cdpUrl: "http://127.0.0.1:9222", url, ssrfPolicy }),
-      ).rejects.toBeInstanceOf(error);
-      expect(fetch).not.toHaveBeenCalled();
-    },
-  );
+    "not-a-url",
+    "file:///etc/passwd",
+    "javascript:alert(1)",
+    "http://browser-user:browser-password@127.0.0.1:8080/",
+  ])("rejects invalid page navigation to %s before connecting", async (url) => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    await expect(
+      createTargetViaCdp({ cdpUrl: "http://127.0.0.1:9222", url }),
+    ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
   it("blocks a cross-host websocket pivot returned by discovery", async () => {
     const browser = await startBrowser(() => undefined, {
@@ -486,22 +479,6 @@ describe("tracked CDP target closure", () => {
 });
 
 describe("browser error mapping", () => {
-  it("maps blocked browser targets to conflict responses", () => {
-    const err = new Error("Target blocked after navigation");
-    err.name = "BlockedBrowserTargetError";
-    expect(toBrowserErrorResponse(err)).toEqual({
-      status: 409,
-      message: err.message,
-      reason: "navigation_blocked",
-    });
-  });
-  it("sanitizes navigation-target SSRF policy details", () => {
-    expect(toBrowserErrorResponse(new SsrFBlockedError("raw private-network policy"))).toEqual({
-      status: 400,
-      message: "browser navigation blocked by policy",
-      reason: "navigation_blocked",
-    });
-  });
   it("distinguishes endpoint policy blocks from navigation errors", () => {
     expect(toBrowserErrorResponse(new BrowserCdpEndpointBlockedError())).toEqual({
       status: 400,

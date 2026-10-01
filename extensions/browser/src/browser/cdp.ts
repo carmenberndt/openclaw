@@ -20,7 +20,7 @@ import {
   scopeCdpPolicyToConfiguredEndpoint,
   withCdpSocket,
 } from "./cdp.helpers.js";
-import { assertBrowserNavigationAllowed, withBrowserNavigationPolicy } from "./navigation-guard.js";
+import { parseBrowserNavigationUrl } from "./navigation-guard.js";
 
 export { appendCdpPath, normalizeCdpWsUrl } from "./cdp.helpers.js";
 export type { AriaSnapshotNode, RawAXNode } from "./cdp-ax.js";
@@ -82,7 +82,7 @@ export async function captureScreenshot(opts: {
   );
 }
 
-/** Create a new browser target after applying navigation and CDP SSRF policy. */
+/** Create a new browser target after URL validation and CDP endpoint protection. */
 export async function createTargetViaCdp(opts: {
   cdpUrl: string;
   url: string;
@@ -93,10 +93,8 @@ export async function createTargetViaCdp(opts: {
   waitForNavigationResult?: boolean;
 }): Promise<{ targetId: string; finalUrl?: string }> {
   opts.signal?.throwIfAborted();
-  await assertBrowserNavigationAllowed({
-    url: opts.url,
-    ...withBrowserNavigationPolicy(opts.ssrfPolicy),
-  });
+  parseBrowserNavigationUrl(opts.url);
+
   const configuredCdpPin = await assertCdpEndpointAllowed(opts.cdpUrl, opts.ssrfPolicy);
   const cdpControlPolicy = scopeCdpPolicyToConfiguredEndpoint(opts.cdpUrl, opts.ssrfPolicy);
 

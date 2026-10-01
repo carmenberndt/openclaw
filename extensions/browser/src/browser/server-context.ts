@@ -111,7 +111,7 @@ function createProfileContext(
   const rawSelection = createProfileSelectionOps({
     profile,
     runtime: profileState,
-    getCdpControlPolicy: () => resolveCdpControlPolicy(profile, state().resolved.ssrfPolicy),
+    getCdpControlPolicy: () => resolveCdpControlPolicy(profile, state().resolved.cdpPolicy),
     listTabs: rawTabOps.listTabs,
     openTab: rawTabOps.openTab,
   });
@@ -289,10 +289,7 @@ export function createBrowserRouteContext(opts: ContextOptions): BrowserRouteCon
                         : await isChromeReachable(
                             activeProfile.cdpUrl,
                             probeTimeoutMs,
-                            resolveCdpReachabilityPolicy(
-                              activeProfile,
-                              current.resolved.ssrfPolicy,
-                            ),
+                            resolveCdpReachabilityPolicy(activeProfile, current.resolved.cdpPolicy),
                             signal,
                           );
                   } catch {

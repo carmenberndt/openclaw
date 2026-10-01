@@ -163,7 +163,6 @@ type ExecuteActMockOptions = {
   action: ExecuteActMockAction;
   targetId?: string;
   ssrfPolicy?: unknown;
-  browserProxyMode?: unknown;
   evaluateEnabled?: boolean;
   signal?: AbortSignal;
 };
@@ -192,7 +191,6 @@ function buildActPayload(params: {
   action: ExecuteActMockAction;
   fields: readonly string[];
   ssrfPolicy?: unknown;
-  browserProxyMode?: unknown;
   signal?: AbortSignal;
   includeSsrf?: boolean;
   includeSignal?: boolean;
@@ -201,9 +199,7 @@ function buildActPayload(params: {
     cdpUrl: params.cdpUrl,
     targetId: params.targetId,
     ...pickActionFields(params.action, params.fields),
-    ...(params.includeSsrf
-      ? { ssrfPolicy: params.ssrfPolicy, browserProxyMode: params.browserProxyMode }
-      : {}),
+    ...(params.includeSsrf ? { ssrfPolicy: params.ssrfPolicy } : {}),
     ...(params.includeSignal ? { signal: params.signal } : {}),
   };
 }
@@ -356,8 +352,7 @@ pwMocks.executeActViaPlaywright.mockImplementation(
     if (!opts) {
       return {};
     }
-    const { cdpUrl, action, targetId, ssrfPolicy, browserProxyMode, evaluateEnabled, signal } =
-      opts;
+    const { cdpUrl, action, targetId, ssrfPolicy, evaluateEnabled, signal } = opts;
     const spec = passThroughActDispatch[action.kind];
     if (spec) {
       await spec.mock(
@@ -367,7 +362,6 @@ pwMocks.executeActViaPlaywright.mockImplementation(
           action,
           fields: spec.fields,
           ssrfPolicy,
-          browserProxyMode,
           signal,
           includeSsrf: spec.includeSsrf,
           includeSignal: spec.includeSignal,
@@ -385,7 +379,6 @@ pwMocks.executeActViaPlaywright.mockImplementation(
           cdpUrl,
           targetId,
           ssrfPolicy,
-          browserProxyMode,
           fn: action.fn,
           ref: action.ref,
           timeoutMs: action.timeoutMs,
@@ -401,7 +394,6 @@ pwMocks.executeActViaPlaywright.mockImplementation(
           stopOnError: action.stopOnError,
           evaluateEnabled,
           ssrfPolicy,
-          browserProxyMode,
           signal,
         });
         return { results: result.results };
@@ -497,7 +489,7 @@ function loadConfig() {
       extraArgs: state.cfgExtraArgs,
       color: "#FF4500",
       attachOnly: state.cfgAttachOnly,
-      ssrfPolicy: state.cfgSsrfPolicy ?? { dangerouslyAllowPrivateNetwork: true },
+      cdpPolicy: state.cfgSsrfPolicy ?? { dangerouslyAllowPrivateNetwork: true },
       headless: true,
       defaultProfile: state.cfgDefaultProfile,
       profiles:

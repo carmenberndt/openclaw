@@ -477,7 +477,7 @@ async function resolveProvisionedSandboxContext(
           cfg: resolvedCfg,
           evaluateEnabled,
           bridgeAuth,
-          ssrfPolicy: resolvedBrowserConfig?.ssrfPolicy,
+          cdpPolicy: resolvedBrowserConfig?.cdpPolicy,
           withWorkspace: localWorkspace?.provision,
           assertCurrent: localWorkspace?.assertCurrent ?? params.assertCurrent,
         })

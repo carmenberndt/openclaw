@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as chromeModule from "./chrome.js";
 import { BrowserTabNotFoundError } from "./errors.js";
 import { pwAi } from "./pw-ai.js";
-import { closeConnectionScopedPageBrowser, markTargetBlocked } from "./pw-session-connection.js";
+import { closeConnectionScopedPageBrowser } from "./pw-session-connection.js";
 
 const {
   closePageByTargetIdViaPlaywright,
@@ -286,25 +286,27 @@ describe("pw-session getPageForTargetId", () => {
     expect(connectOverCdpSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("preserves blocked targets when reconnecting after a stale selection", async () => {
+  it("retains private pages and exact target identity after reconnecting a stale selection", async () => {
     const endpoint = "http://127.0.0.1:9333";
     const stale = makeBrowser([{ targetId: "OLD_TARGET" }]);
-    const fresh = makeBrowser([{ targetId: "BLOCKED" }, { targetId: "HEALTHY" }]);
+    const fresh = makeBrowser([
+      { targetId: "PRIVATE", url: "http://127.0.0.1/admin" },
+      { targetId: "HEALTHY" },
+    ]);
     connectOverCdpSpy.mockResolvedValueOnce(stale.browser).mockResolvedValue(fresh.browser);
     await getPageForTargetId({ cdpUrl: endpoint });
-    markTargetBlocked(endpoint, "BLOCKED");
 
     await expect(getPageForTargetId({ cdpUrl: endpoint, targetId: "HEALTHY" })).resolves.toBe(
       fresh.pages[1],
     );
-    await expect(getPageForTargetId({ cdpUrl: endpoint })).resolves.toBe(fresh.pages[1]);
-    await expect(getPageForTargetId({ cdpUrl: endpoint, targetId: "BLOCKED" })).rejects.toThrow(
-      "Browser target is unavailable after SSRF policy blocked its navigation.",
+    await expect(getPageForTargetId({ cdpUrl: endpoint })).resolves.toBe(fresh.pages[0]);
+    await expect(getPageForTargetId({ cdpUrl: endpoint, targetId: "PRIVATE" })).resolves.toBe(
+      fresh.pages[0],
     );
     expect(connectOverCdpSpy).toHaveBeenCalledTimes(2);
     await expect(
       getPageForTargetId({ cdpUrl: endpoint, targetId: "MISSING_TARGET" }),
     ).rejects.toBeInstanceOf(BrowserTabNotFoundError);
-    await expect(getPageForTargetId({ cdpUrl: endpoint })).resolves.toBe(fresh.pages[1]);
+    await expect(getPageForTargetId({ cdpUrl: endpoint })).resolves.toBe(fresh.pages[0]);
   });
 });

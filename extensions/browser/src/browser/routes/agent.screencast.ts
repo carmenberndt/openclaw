@@ -1,16 +1,12 @@
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import { BrowserProfileUnavailableError } from "../errors.js";
-import { assertBrowserNavigationResultAllowed } from "../navigation-guard.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
 import { getPwAiModule } from "../pw-ai-module.js";
 import { mintBrowserScreencastToken } from "../screencast/tokens.js";
 import type { BrowserRouteContext } from "../server-context.js";
 import { getProfileLifecycle, isProfileGenerationCurrent } from "../server-context.lifecycle.js";
-import {
-  browserNavigationPolicyForProfile,
-  readBody,
-  withRouteTabContext,
-} from "./agent.shared.js";
+import { readBody, withRouteTabContext } from "./agent.shared.js";
 import type { BrowserRouteRegistrar } from "./types.js";
 
 function clampScreencastOption(value: unknown, min: number, max: number, fallback: number) {
@@ -43,7 +39,6 @@ export function registerBrowserAgentScreencastRoutes(
       res,
       ctx,
       targetId: normalizeOptionalString(body.targetId),
-      enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, tab, cdpUrl, signal, resolveTabUrl }) => {
         if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
           res.status(501).json({
@@ -92,7 +87,7 @@ export function registerBrowserAgentScreencastRoutes(
             profileName,
             targetId: tab.targetId,
             cdpUrl,
-            ssrfPolicy: state.resolved.ssrfPolicy,
+            ssrfPolicy: resolveCdpControlPolicy(profileCtx.profile, state.resolved.cdpPolicy),
             maxWidth: clampScreencastOption(body.maxWidth, 320, 2000, 1280),
             maxHeight: clampScreencastOption(body.maxHeight, 320, 2000, 1280),
             quality: clampScreencastOption(body.quality, 30, 90, 70),
@@ -104,12 +99,6 @@ export function registerBrowserAgentScreencastRoutes(
             isRequesterCurrent: retainedRequester?.isCurrent ?? req.requester?.isCurrent,
             releaseRequester: retainedRequester?.release,
             assertCurrent,
-            checkNavigationAllowed: async (nextUrl) => {
-              await assertBrowserNavigationResultAllowed({
-                url: nextUrl,
-                ...browserNavigationPolicyForProfile(ctx, profileCtx),
-              });
-            },
           });
           res.json({
             token,

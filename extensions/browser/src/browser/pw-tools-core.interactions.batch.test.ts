@@ -1,11 +1,9 @@
-import { SsrFBlockedError } from "openclaw/plugin-sdk/security-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserActRequest } from "./client-actions.types.js";
 import {
   BrowserObservedDialogBlockedError,
   isBrowserObservedDialogBlockedError,
 } from "./pw-session-contracts.js";
-import { isPolicyDenyNavigationError } from "./pw-session-navigation.js";
 
 function createPage() {
   let currentUrl = "https://example.com";
@@ -56,22 +54,10 @@ const locator = {
 
 const getPageForTargetId = vi.fn(async () => page);
 const ensurePageState = vi.fn(() => {});
-const assertPageNavigationCompletedSafely = vi.fn(async () => {});
 const forceDisconnectPlaywrightForTarget = vi.fn(async () => {});
-const quarantineBlockedNavigationTarget = vi.fn(async () => {});
 const markObservedDialogsHandledRemotelyForPage = vi.fn(() => ({}));
 const refLocator = vi.fn(() => locator);
 const restoreRoleRefsForTarget = vi.fn(() => {});
-const wasBrowserNavigationSourcePreservedAfterPolicyDenial = vi.fn(() => false);
-const withPageNavigationRequestGuard = vi.fn(
-  async ({
-    action,
-    page: actionPage,
-  }: {
-    action: (url: string) => Promise<unknown>;
-    page: { url: () => string };
-  }) => await action(actionPage.url()),
-);
 
 const closePageViaPlaywright = vi.fn(async () => {});
 const resizeViewportViaPlaywright = vi.fn(async () => {});
@@ -79,8 +65,8 @@ const drainDownloads = vi.fn(async () => undefined);
 const disposeDownloads = vi.fn();
 const cleanupDialogAbort = vi.fn();
 
-vi.mock("./pw-session.js", () => ({
-  assertPageNavigationCompletedSafely,
+vi.mock("./pw-session.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pw-session.js")>()),
   beginActionDownloadCaptureOnPage: vi.fn(() => ({
     drain: drainDownloads,
     dispose: disposeDownloads,
@@ -95,13 +81,9 @@ vi.mock("./pw-session.js", () => ({
   forceDisconnectPlaywrightForTarget,
   getPageForTargetId,
   isBrowserObservedDialogBlockedError,
-  isPolicyDenyNavigationError,
   markObservedDialogsHandledRemotelyForPage,
-  quarantineBlockedNavigationTarget,
   refLocator,
   restoreRoleRefsForTarget,
-  wasBrowserNavigationSourcePreservedAfterPolicyDenial,
-  withPageNavigationRequestGuard,
 }));
 
 vi.mock("./pw-tools-core.snapshot.js", () => ({
@@ -207,78 +189,6 @@ describe("executeActViaPlaywright batches", () => {
     expect(closePageViaPlaywright).toHaveBeenCalledWith(target);
   });
 
-  it.each([
-    { name: "scrollIntoView", action: { kind: "scrollIntoView", ref: "1" } as const },
-    { name: "drag", action: { kind: "drag", startRef: "1", endRef: "2" } as const },
-    { name: "clickCoords", action: { kind: "clickCoords", x: 10, y: 20 } as const },
-    { name: "insertText", action: { kind: "insertText", text: "  pasted 🦞\n" } as const },
-    {
-      name: "select",
-      action: { kind: "select" as const, ref: "1", values: ["one"] },
-    },
-    {
-      name: "fill",
-      action: {
-        kind: "fill" as const,
-        fields: [{ ref: "1", type: "text", value: "value" }],
-      },
-    },
-    { name: "evaluate", action: { kind: "evaluate", fn: "() => true" } as const },
-  ])("guards batched $name document requests with the proxy policy", async ({ action }) => {
-    const ssrfPolicy = { dangerouslyAllowPrivateNetwork: false } as const;
-
-    const result = await batch({
-      actions: [action],
-      evaluateEnabled: true,
-      ssrfPolicy,
-      browserProxyMode: "explicit-browser-proxy",
-    });
-
-    expect(result).toEqual({ targetId: "tab-1", results: [{ ok: true }] });
-    expect(withPageNavigationRequestGuard).toHaveBeenCalledWith({
-      action: expect.any(Function),
-      onPolicyCheckStarted: expect.any(Function),
-      onPolicyDenied: expect.any(Function),
-      page,
-      ssrfPolicy,
-      browserProxyMode: "explicit-browser-proxy",
-    });
-    expect(assertPageNavigationCompletedSafely).toHaveBeenLastCalledWith({
-      ...target,
-      page,
-      response: null,
-      ssrfPolicy,
-      browserProxyMode: "explicit-browser-proxy",
-      targetId: "tab-1",
-    });
-  });
-
-  it("preserves proxy policy through nested batches", async () => {
-    const ssrfPolicy = { dangerouslyAllowPrivateNetwork: false } as const;
-
-    const result = await batch({
-      actions: [
-        {
-          kind: "batch",
-          actions: [{ kind: "click", ref: "1" }],
-        },
-      ],
-      evaluateEnabled: true,
-      ssrfPolicy,
-      browserProxyMode: "explicit-browser-proxy",
-    });
-
-    expect(result).toEqual({ targetId: "tab-1", results: [{ ok: true }] });
-    expect(withPageNavigationRequestGuard).toHaveBeenCalledWith({
-      action: expect.any(Function),
-      onPolicyCheckStarted: expect.any(Function),
-      onPolicyDenied: expect.any(Function),
-      page,
-      ssrfPolicy,
-      browserProxyMode: "explicit-browser-proxy",
-    });
-  });
-
   it("reports a nested failure after inner continue-on-error actions", async () => {
     locator.fill.mockRejectedValueOnce(new Error("not editable"));
     const result = await batch({
@@ -347,10 +257,8 @@ describe("executeActViaPlaywright batches", () => {
     expect(page.off).toHaveBeenCalledWith("framenavigated", expect.any(Function));
   });
 
-  it.each([
-    new SsrFBlockedError("browser navigation blocked by policy"),
-    new BrowserObservedDialogBlockedError({ dialogs: { pending: [], recent: [] } }),
-  ])("stops permissive nested batches on $name", async (error) => {
+  it("stops permissive nested batches on an observed dialog", async () => {
+    const error = new BrowserObservedDialogBlockedError({ dialogs: { pending: [], recent: [] } });
     locator.fill.mockRejectedValueOnce(error);
 
     const result = batch({
@@ -367,15 +275,11 @@ describe("executeActViaPlaywright batches", () => {
         { kind: "press", key: "Enter" },
       ],
     });
-    if (error instanceof BrowserObservedDialogBlockedError) {
-      await expect(result).resolves.toEqual({
-        targetId: "tab-1",
-        blockedByDialog: true,
-        browserState: error.browserState,
-      });
-    } else {
-      await expect(result).rejects.toBe(error);
-    }
+    await expect(result).resolves.toEqual({
+      targetId: "tab-1",
+      blockedByDialog: true,
+      browserState: error.browserState,
+    });
     expect(locator.hover).not.toHaveBeenCalled();
     expect(page.keyboard.press).not.toHaveBeenCalled();
   });

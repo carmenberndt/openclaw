@@ -413,7 +413,7 @@ export async function runBrowserProxyCommand(
             expectedProfileFingerprint: request.ownership.profileFingerprint,
             expectedBrowserInstanceFingerprint: request.ownership.browserInstanceFingerprint,
             timeoutMs: liveResolved.remoteCdpTimeoutMs,
-            ssrfPolicy: resolveCdpControlPolicy(profile, liveResolved.ssrfPolicy),
+            ssrfPolicy: resolveCdpControlPolicy(profile, liveResolved.cdpPolicy),
             signal: invocationSignal,
             closeIfCurrent: async (dispatch) => {
               assertCurrent(profile);

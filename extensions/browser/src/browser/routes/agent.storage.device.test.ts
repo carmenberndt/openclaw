@@ -127,9 +127,6 @@ describe("browser device route", () => {
     expect(routeState.withPlaywrightRouteContext).toHaveBeenCalledWith(
       expect.objectContaining({ feature: "device emulation" }),
     );
-    expect(routeState.withPlaywrightRouteContext.mock.calls[0]?.[0]).not.toHaveProperty(
-      "enforceCurrentUrlAllowed",
-    );
   });
 
   it("never publishes a successful mutation after its route lease is canceled", async () => {
@@ -275,7 +272,7 @@ describe("browser storage route boundaries", () => {
     },
   );
 
-  it("keeps cookie reads behind the current-tab URL guard", async () => {
+  it("returns cookies for the resolved tab", async () => {
     const { app, getHandlers } = createBrowserRouteApp();
     registerBrowserAgentStorageRoutes(app, {} as never);
     const response = createBrowserRouteResponse();
@@ -283,7 +280,7 @@ describe("browser storage route boundaries", () => {
     await getHandlers.get("/cookies")?.({ params: {}, query: {} }, response.res);
 
     expect(routeState.withPlaywrightRouteContext).toHaveBeenCalledWith(
-      expect.objectContaining({ feature: "cookies", enforceCurrentUrlAllowed: true }),
+      expect.objectContaining({ feature: "cookies" }),
     );
     expect(response.body).toEqual({ ok: true, targetId: "tab-1", cookies: [] });
   });

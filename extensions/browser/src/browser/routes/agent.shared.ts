@@ -1,11 +1,6 @@
 import { asNonArrayRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { resolveBrowserNavigationProxyMode } from "../browser-proxy-mode.js";
 import { redactCdpErrorText } from "../cdp.helpers.js";
 import { toBrowserErrorResponse } from "../errors.js";
-import {
-  assertBrowserNavigationResultAllowed,
-  withBrowserNavigationPolicy,
-} from "../navigation-guard.js";
 import type { PwAiModule } from "../pw-ai-module.js";
 import { getPwAiModule } from "../pw-ai-module.js";
 import type { InteractionTargetOptions } from "../pw-tools-core.interactions.navigation.js";
@@ -57,18 +52,6 @@ export function resolveProfileContext(
   return profileCtx;
 }
 
-export function browserNavigationPolicyForProfile(
-  ctx: BrowserRouteContext,
-  profileCtx: ProfileContext,
-) {
-  return withBrowserNavigationPolicy(ctx.state().resolved.ssrfPolicy, {
-    browserProxyMode: resolveBrowserNavigationProxyMode({
-      resolved: ctx.state().resolved,
-      profile: profileCtx.profile,
-    }),
-  });
-}
-
 /** Require Playwright support for a route feature, returning a 501 when absent. */
 export async function requirePwAi(
   res: BrowserResponse,
@@ -109,11 +92,6 @@ type RouteWithTabParams<T> = {
   ctx: BrowserRouteContext;
   profileCtx?: ProfileContext;
   targetId?: string;
-  /**
-   * Set for routes that read from or return data scoped to the selected tab.
-   * Leave false only for routes that navigate, activate, close, or otherwise manage the tab.
-   */
-  enforceCurrentUrlAllowed?: boolean;
   run: (ctx: RouteTabContext) => Promise<T>;
 };
 
@@ -140,13 +118,6 @@ export async function withRouteTabContext<T>(
           signal,
           timeoutMs: params.ctx.state().resolved.actionTimeoutMs,
         });
-        if (params.enforceCurrentUrlAllowed) {
-          await assertBrowserNavigationResultAllowed({
-            url: tab.url,
-            signal,
-            ...browserNavigationPolicyForProfile(params.ctx, profileCtx),
-          });
-        }
         if (assertCurrent) {
           await assertCurrent();
         }
@@ -157,8 +128,7 @@ export async function withRouteTabContext<T>(
           signal,
           ...(assertCurrent ? { assertCurrent } : {}),
           resolveTabUrl: (fallbackUrl?: string) =>
-            resolveSafeRouteTabUrl({
-              ctx: params.ctx,
+            resolveRouteTabUrl({
               profileCtx,
               targetId: tab.targetId,
               fallbackUrl,
@@ -174,12 +144,8 @@ export async function withRouteTabContext<T>(
   }
 }
 
-/**
- * Response-only URL redaction. This swallows policy failures and must not be used as
- * an execution gate; use enforceCurrentUrlAllowed on the route helper instead.
- */
-export async function resolveSafeRouteTabUrl(params: {
-  ctx: BrowserRouteContext;
+/** Resolve the current tab URL, retaining the ensured URL when listing lags. */
+export async function resolveRouteTabUrl(params: {
   profileCtx: ProfileContext;
   targetId: string;
   fallbackUrl?: string;
@@ -193,22 +159,8 @@ export async function resolveSafeRouteTabUrl(params: {
     params.signal?.throwIfAborted();
     tabs = [];
   }
-  const candidateUrl =
-    tabs.find((tab) => tab.targetId === params.targetId)?.url ?? params.fallbackUrl;
-  if (!candidateUrl) {
-    return undefined;
-  }
-  try {
-    await assertBrowserNavigationResultAllowed({
-      url: candidateUrl,
-      signal: params.signal,
-      ...browserNavigationPolicyForProfile(params.ctx, params.profileCtx),
-    });
-    return candidateUrl;
-  } catch {
-    params.signal?.throwIfAborted();
-    return undefined;
-  }
+  params.signal?.throwIfAborted();
+  return tabs.find((tab) => tab.targetId === params.targetId)?.url ?? params.fallbackUrl;
 }
 
 type RouteWithPwParams<T> = Omit<RouteWithTabParams<T>, "run"> & {

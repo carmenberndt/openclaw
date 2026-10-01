@@ -27,16 +27,16 @@ describe("browser action errors", () => {
     });
   });
 
-  it("preserves the navigation reason without forwarding policy details", () => {
+  it("preserves invalid navigation metadata without forwarding extra details", () => {
     expect(
       parseBrowserErrorPayload({
-        error: "browser navigation blocked by policy",
+        error: 'Navigation blocked: unsupported protocol "file:"',
         reason: "navigation_blocked",
         details: { url: "http://internal.example/admin", address: "10.0.0.1" },
         cause: "private lookup details",
       }),
     ).toEqual({
-      error: "browser navigation blocked by policy",
+      error: 'Navigation blocked: unsupported protocol "file:"',
       reason: "navigation_blocked",
     });
     expect(

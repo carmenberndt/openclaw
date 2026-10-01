@@ -11,7 +11,7 @@ import {
   type RoleSnapshotResult,
   type RoleRefMap,
 } from "./pw-role-snapshot.js";
-import { storeRoleRefsForTarget } from "./pw-session.js";
+import { getPageForTargetId, storeRoleRefsForTarget } from "./pw-session.js";
 import {
   markBackendDomRefsOnPage,
   withPageScopedCdpClient,
@@ -19,7 +19,6 @@ import {
 } from "./pw-session.page-cdp.js";
 import {
   collectSnapshotUrls,
-  prepareSnapshotPageViaPlaywright,
   resolveSnapshotTimeoutMs,
   withSnapshotFrameGuard,
 } from "./pw-snapshot-page.js";
@@ -78,7 +77,7 @@ export async function snapshotRoleViaPlaywright(opts: {
   ssrfPolicy?: SsrFPolicy;
   delta?: { mode: RoleSnapshotIdentityMode; previousKeys?: ReadonlySet<string> };
 }): Promise<RoleSnapshotResult> {
-  const page = await prepareSnapshotPageViaPlaywright({
+  const page = await getPageForTargetId({
     cdpUrl: opts.cdpUrl,
     targetId: opts.targetId,
     ssrfPolicy: opts.ssrfPolicy,

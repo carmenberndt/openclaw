@@ -6,8 +6,7 @@ import {
   setupPwSessionConnectionTest,
 } from "./pw-session.connection.test-support.js";
 
-const { connectOverCdpSpy, getChromeWebSocketUrlSpy, markPageRefBlocked, markTargetBlocked, pwAi } =
-  setupPwSessionConnectionTest();
+const { connectOverCdpSpy, getChromeWebSocketUrlSpy, pwAi } = setupPwSessionConnectionTest();
 
 const {
   closePageByTargetIdViaPlaywright,
@@ -411,8 +410,7 @@ describe("pw-session page enumeration", () => {
     pageIds: string[];
     unresolvedId?: string;
     rejectedId?: string;
-    blockedId?: string;
-    blockedPageId?: string;
+    privateTargetId?: string;
     waitsForPublication?: boolean;
     expected: string[] | null;
   }>([
@@ -424,19 +422,17 @@ describe("pw-session page enumeration", () => {
       expected: null,
     },
     {
-      name: "known blocked target with a page",
+      name: "private page with an exact native identity",
       nativeIds: ["A", "B"],
       pageIds: ["A", "B"],
-      blockedId: "B",
-      expected: ["A"],
+      privateTargetId: "B",
+      expected: ["A", "B"],
     },
     {
-      name: "blocked page cannot identify missing native target",
+      name: "unresolved page cannot identify missing native target",
       nativeIds: ["A", "B"],
       pageIds: ["A", "B"],
-      blockedPageId: "B",
       unresolvedId: "B",
-      waitsForPublication: true,
       expected: null,
     },
   ])("enforces enumeration completeness: $name", async (testCase) => {
@@ -445,7 +441,10 @@ describe("pw-session page enumeration", () => {
       testCase.pageIds.map((targetId) => ({
         targetId,
         title: `projected:${targetId}`,
-        url: "https://same.example/",
+        url:
+          targetId === testCase.privateTargetId
+            ? "http://127.0.0.1/admin"
+            : "https://same.example/",
         readTargetInfo: async () => {
           if (targetId === testCase.rejectedId) {
             throw new Error("Target metadata unavailable");
@@ -475,16 +474,6 @@ describe("pw-session page enumeration", () => {
       newBrowserCDPSession: vi.fn(async () => ({ send: inventoryRead, detach })),
     });
     connectOverCdpSpy.mockResolvedValue(fixture.browser);
-    if (testCase.blockedId) {
-      markTargetBlocked(cdpUrl, testCase.blockedId);
-    }
-    const blockedPage = fixture.pages.find(
-      (_, index) => testCase.pageIds[index] === testCase.blockedPageId,
-    );
-    if (blockedPage) {
-      markPageRefBlocked(cdpUrl, blockedPage);
-    }
-
     const requireCompleteTargetList = true;
     const listing = listPagesViaPlaywright({ cdpUrl, requireCompleteTargetList, timeoutMs: 100 });
     if (testCase.expected === null) {
@@ -500,7 +489,10 @@ describe("pw-session page enumeration", () => {
         testCase.expected.map((targetId) => ({
           targetId,
           title: `projected:${targetId}`,
-          url: "https://same.example/",
+          url:
+            targetId === testCase.privateTargetId
+              ? "http://127.0.0.1/admin"
+              : "https://same.example/",
           type: "page",
         })),
       );
@@ -511,9 +503,6 @@ describe("pw-session page enumeration", () => {
     expect(fixture.browserClose).not.toHaveBeenCalled();
     expect(fixture.contextEvents.listenerCount("page")).toBe(1);
     expect(fixture.browserEvents.listenerCount("disconnected")).toBe(1);
-    if (blockedPage) {
-      expect(fixture.newCDPSession).not.toHaveBeenCalledWith(blockedPage);
-    }
   });
 
   it.each(["abort", "disconnect"] as const)("releases a publication wait on %s", async (stop) => {

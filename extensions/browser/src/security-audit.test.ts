@@ -84,7 +84,7 @@ describe("browser security audit collector", () => {
   it("redacts private-host CDP URLs in findings", () => {
     const findings = collectFindings({
       browser: {
-        ssrfPolicy: {
+        cdpPolicy: {
           dangerouslyAllowPrivateNetwork: true,
         },
         profiles: {

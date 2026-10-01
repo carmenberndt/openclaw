@@ -29,7 +29,7 @@ const browserProfilesMock = vi.hoisted(() => ({
   DEFAULT_BROWSER_EVALUATE_ENABLED: true,
   resolveBrowserConfig: vi.fn(() => ({
     evaluateEnabled: true,
-    ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+    cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
   })),
 }));
 // mock-isolation: Keep persistent registry state outside context provisioning tests.
@@ -347,7 +347,7 @@ describe("resolveSandboxContext", () => {
       expect(ensureSandboxBrowserMock.mock.calls.map(([params]) => params.scopeKey)).toEqual(
         scopeKeys,
       );
-      expect(ensureSandboxBrowserMock.mock.calls[0]?.[0].ssrfPolicy).toEqual({
+      expect(ensureSandboxBrowserMock.mock.calls[0]?.[0].cdpPolicy).toEqual({
         dangerouslyAllowPrivateNetwork: true,
       });
     } finally {

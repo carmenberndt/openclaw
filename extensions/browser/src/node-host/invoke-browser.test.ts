@@ -71,7 +71,7 @@ const browserConfigMocks = vi.hoisted(() => ({
       },
     },
     remoteCdpTimeoutMs: 20_000,
-    ssrfPolicy: undefined,
+    cdpPolicy: {},
   })),
   resolveProfile: vi.fn(
     (resolved: { profiles?: Record<string, unknown> }, name: string) =>
@@ -184,7 +184,7 @@ describe("runBrowserProxyCommand", () => {
         },
       },
       remoteCdpTimeoutMs: 20_000,
-      ssrfPolicy: undefined,
+      cdpPolicy: {},
     });
     browserConfigMocks.resolveProfile.mockClear();
     cdpMocks.closeTrackedCdpTarget.mockReset().mockResolvedValue({ status: "closed" });
@@ -758,7 +758,7 @@ describe("runBrowserProxyCommand", () => {
           },
         },
         remoteCdpTimeoutMs: 20_000,
-        ssrfPolicy: undefined,
+        cdpPolicy: {},
       }),
     );
     dispatcherMocks.dispatch.mockResolvedValue({

@@ -163,7 +163,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_MCP_E2E === "1")(
           port: 0,
           resolved: resolveBrowserConfig({
             defaultProfile: profileName,
-            ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+            cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
             profiles: {
               [profileName]: { ...profile, driver: "existing-session", color: "#123456" },
             },

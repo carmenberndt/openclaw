@@ -1,7 +1,7 @@
-import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveExistingSessionActTimeouts } from "../act-policy.js";
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import type { ChromeMcpTargetOperation } from "../chrome-mcp-contracts.js";
 import {
   clickChromeMcpElement,
@@ -25,7 +25,6 @@ import { clearSnapshotKeysForTab } from "../snapshot-delta-cache.js";
 import { registerBrowserAgentActDownloadRoutes } from "./agent.act.download.js";
 import { browserEvaluateDisabledMessage, jsonActError } from "./agent.act.errors.js";
 import {
-  assertExistingSessionPostInteractionNavigationAllowed,
   createExistingSessionDeadline,
   waitForExistingSessionCondition,
 } from "./agent.act.existing-session.js";
@@ -33,11 +32,10 @@ import { registerBrowserAgentActHookRoutes } from "./agent.act.hooks.js";
 import { canonicalizeActTargetIds, normalizeActRequest } from "./agent.act.normalize.js";
 import { isActKind } from "./agent.act.shared.js";
 import {
-  browserNavigationPolicyForProfile,
   readBody,
   requirePwAi,
   resolveProfileContext,
-  resolveSafeRouteTabUrl,
+  resolveRouteTabUrl,
   withRouteTabContext,
   SELECTOR_UNSUPPORTED_MESSAGE,
 } from "./agent.shared.js";
@@ -124,19 +122,12 @@ export function registerBrowserAgentActRoutes(
         ctx,
         profileCtx,
         targetId,
-        // Batch stays guarded because nested actions can read or return page data.
-        enforceCurrentUrlAllowed: action.kind !== "resize" && action.kind !== "close",
         run: async ({ cdpUrl, tab, signal, resolveTabUrl, assertCurrent }) => {
           const evaluateEnabled = ctx.state().resolved.evaluateEnabled;
-          const navigationPolicy = browserNavigationPolicyForProfile(ctx, profileCtx);
-          let verificationDeadline: ReturnType<typeof createExistingSessionDeadline> | undefined;
           const existingSessionCallOptions: ChromeMcpOperationOptions = {
             timeoutMs: existingSessionTimeouts.timeoutMs,
             signal,
           };
-          const hasNavigationResultPolicy = Boolean(
-            navigationPolicy.ssrfPolicy || navigationPolicy.browserProxyMode,
-          );
           let resolveRelayTarget: Awaited<ReturnType<typeof captureBrowserOperationTarget>>;
           try {
             requestDeadline?.throwIfAborted();
@@ -150,7 +141,7 @@ export function registerBrowserAgentActRoutes(
               options?: { resolveCurrentTarget?: boolean; operationTargetId?: string },
             ) => {
               const shouldResolveCurrentTarget =
-                options?.resolveCurrentTarget && (!isExistingSession || hasNavigationResultPolicy);
+                options?.resolveCurrentTarget && !isExistingSession;
               const responseTargetId = shouldResolveCurrentTarget
                 ? await resolveOperationTargetOutcome({
                     actedOnTargetId: tab.targetId,
@@ -161,8 +152,7 @@ export function registerBrowserAgentActRoutes(
               const url =
                 !isExistingSession && responseTargetId === tab.targetId
                   ? await resolveTabUrl(tab.url)
-                  : await resolveSafeRouteTabUrl({
-                      ctx,
+                  : await resolveRouteTabUrl({
                       profileCtx,
                       targetId: responseTargetId,
                       fallbackUrl: tab.url,
@@ -173,11 +163,10 @@ export function registerBrowserAgentActRoutes(
                               responseTargetId === tab.targetId
                                 ? ctx.state().resolved.actionTimeoutMs
                                 : existingSessionCallOptions.timeoutMs,
-                            signal: verificationDeadline?.signal ?? signal,
+                            signal,
                           }
                         : {}),
                     });
-              verificationDeadline?.throwIfAborted();
               requestDeadline?.throwIfAborted();
               if (isExistingSession) {
                 signal.throwIfAborted();
@@ -222,15 +211,7 @@ export function registerBrowserAgentActRoutes(
                 targetId: tab.targetId,
                 ...existingSessionCallOptions,
               };
-              const initialTabTargetIds =
-                hasNavigationResultPolicy && existingSessionTimeouts.verificationTimeoutMs > 0
-                  ? new Set(
-                      (await profileCtx.listTabs(existingSessionCallOptions)).map(
-                        (currentTab) => currentTab.targetId,
-                      ),
-                    )
-                  : new Set<string>();
-              const runGuardedAction = async <T>(
+              const runExistingSessionAction = async <T>(
                 execute: (
                   target: ChromeMcpTargetOperation,
                   checkDeadline: () => void,
@@ -249,7 +230,6 @@ export function registerBrowserAgentActRoutes(
                   signal.throwIfAborted();
                   bodyDeadline?.throwIfAborted();
                 };
-                let outcome: { result: T } | { error: unknown };
                 try {
                   checkDeadline();
                   const result = await execute(
@@ -257,40 +237,13 @@ export function registerBrowserAgentActRoutes(
                     checkDeadline,
                   );
                   checkDeadline();
-                  outcome = { result };
-                } catch (error) {
-                  outcome = {
-                    error: bodyDeadline?.signal.aborted ? bodyDeadline.signal.reason : error,
-                  };
+                  return result;
                 } finally {
                   bodyDeadline?.cleanup();
                 }
-                if (existingSessionTimeouts.verificationTimeoutMs > 0) {
-                  verificationDeadline = createExistingSessionDeadline(
-                    existingSessionTimeouts.verificationTimeoutMs,
-                    signal,
-                    "Browser navigation verification",
-                  );
-                  verificationDeadline.throwIfAborted();
-                  const verificationOptions = {
-                    ...existingSessionCallOptions,
-                    signal: verificationDeadline.signal,
-                  };
-                  await assertExistingSessionPostInteractionNavigationAllowed({
-                    ...existingSessionTarget,
-                    ...verificationOptions,
-                    ...navigationPolicy,
-                    listTabs: () => profileCtx.listTabs(verificationOptions),
-                    initialTabTargetIds,
-                  });
-                }
-                if ("error" in outcome) {
-                  throw toErrorObject(outcome.error, "Non-Error thrown");
-                }
-                return outcome.result;
               };
               const admittedAction = admission.action;
-              const result = await runGuardedAction(async (target, checkDeadline) => {
+              const result = await runExistingSessionAction(async (target, checkDeadline) => {
                 switch (admittedAction.kind) {
                   case "click":
                     return await clickChromeMcpElement({
@@ -362,7 +315,6 @@ export function registerBrowserAgentActRoutes(
                       url: admittedAction.url,
                       loadState: admittedAction.loadState,
                       fn: admittedAction.fn,
-                      ...navigationPolicy,
                     });
                   case "evaluate":
                     return await evaluateChromeMcpScript({
@@ -405,7 +357,10 @@ export function registerBrowserAgentActRoutes(
               action,
               targetId: tab.targetId,
               evaluateEnabled,
-              ...navigationPolicy,
+              ssrfPolicy: resolveCdpControlPolicy(
+                profileCtx.profile,
+                ctx.state().resolved.cdpPolicy,
+              ),
               signal,
               ...(assertCurrent ? { assertCurrent } : {}),
             });
@@ -444,11 +399,9 @@ export function registerBrowserAgentActRoutes(
               action.kind === "resize" || action.kind === "close" ? undefined : resultTargetOptions,
             );
           } catch (error) {
-            verificationDeadline?.throwIfAborted();
             requestDeadline?.throwIfAborted();
             throw error;
           } finally {
-            verificationDeadline?.cleanup();
             await resolveRelayTarget?.release();
           }
         },
@@ -482,7 +435,6 @@ export function registerBrowserAgentActRoutes(
       res,
       ctx,
       targetId,
-      enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, cdpUrl, tab, signal, resolveTabUrl }) => {
         if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
           return jsonError(res, 501, EXISTING_SESSION_LIMITS.responseBody);
@@ -524,7 +476,6 @@ export function registerBrowserAgentActRoutes(
       res,
       ctx,
       targetId,
-      enforceCurrentUrlAllowed: true,
       run: async ({ profileCtx, cdpUrl, tab, signal, resolveTabUrl }) => {
         const jsonOk = async () => {
           const currentUrl = await resolveTabUrl(tab.url);

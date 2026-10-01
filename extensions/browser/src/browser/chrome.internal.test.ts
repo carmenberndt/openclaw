@@ -1246,7 +1246,7 @@ describe("chrome.ts internal", () => {
 
               try {
                 const resolved = makeResolved({
-                  ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+                  cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
                 });
                 await expect(stopOwnedOpenClawChrome(resolved, profile)).resolves.toMatchObject({
                   status: "unverified",

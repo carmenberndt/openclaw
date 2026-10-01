@@ -73,7 +73,7 @@ describe("browser inherited launch settings reload", () => {
   it("keeps restart-owned controls while refreshing launch and cleanup settings", async () => {
     config.current.browser = {
       ...config.current.browser,
-      ssrfPolicy: { allowedHostnames: ["192.0.2.10"] },
+      cdpPolicy: { allowedHostnames: ["192.0.2.10"] },
     };
     const { state, ctx } = createContext();
     const startup = state.resolved;
@@ -87,7 +87,7 @@ describe("browser inherited launch settings reload", () => {
       noSandbox: true,
       enabled: false,
       evaluateEnabled: false,
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+      cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
       extensionRelay: { allowLegacyAuth: false },
       tabCleanup: { enabled: false },
     };

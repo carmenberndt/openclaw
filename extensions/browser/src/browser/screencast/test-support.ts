@@ -15,7 +15,6 @@ export function screencastParams(
     lifecycleGeneration: 0,
     lifecycleSignal: new AbortController().signal,
     assertCurrent: () => {},
-    checkNavigationAllowed: async () => {},
     ...overrides,
   };
 }

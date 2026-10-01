@@ -88,7 +88,6 @@ describe("browser remote profile tab ops via Playwright", () => {
       cdpUrl: "https://1.1.1.1:9222/chrome?token=abc",
       url: "http://127.0.0.1:3000",
       cdpPolicy: permissiveRemoteCdpPolicy,
-      ssrfPolicy: { allowPrivateNetwork: true },
     });
 
     await remote.closeTab("T1");
@@ -325,7 +324,6 @@ describe("browser remote profile tab ops via Playwright", () => {
       cdpUrl: "https://1.1.1.1:9222/chrome?token=abc",
       url: "about:blank",
       cdpPolicy: permissiveRemoteCdpPolicy,
-      ssrfPolicy: { allowPrivateNetwork: true },
     });
   });
 
@@ -379,7 +377,7 @@ describe("browser remote profile tab ops via Playwright", () => {
     } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
 
     const state = deps.makeState("remote");
-    state.resolved.ssrfPolicy = {
+    state.resolved.cdpPolicy = {
       dangerouslyAllowPrivateNetwork: false,
       allowedHostnames: ["browserless.example.com"],
     };

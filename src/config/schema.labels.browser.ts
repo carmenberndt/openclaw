@@ -26,10 +26,11 @@ export const BROWSER_FIELD_LABELS: Record<string, string> = {
   "browser.snapshotDefaults.mode": "Browser Snapshot Mode",
   "browser.tabCleanup": "Browser Tab Cleanup",
   "browser.tabCleanup.enabled": "Browser Tab Cleanup Enabled",
-  "browser.ssrfPolicy": "Browser SSRF Policy",
-  "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork": "Browser Dangerously Allow Private Network",
-  "browser.ssrfPolicy.allowedHostnames": "Browser Allowed Hostnames",
-  "browser.ssrfPolicy.blockedHostnames": "Browser Blocked Hostnames",
-  "browser.ssrfPolicy.allowRfc2544BenchmarkRange": "Browser Allow RFC 2544 Benchmark Range",
-  "browser.ssrfPolicy.allowIpv6UniqueLocalRange": "Browser Allow IPv6 Unique Local Range",
+  "browser.cdpPolicy": "Browser CDP Policy",
+  "browser.cdpPolicy.dangerouslyAllowPrivateNetwork":
+    "Browser CDP Dangerously Allow Private Network",
+  "browser.cdpPolicy.allowedHostnames": "Browser CDP Allowed Hostnames",
+  "browser.cdpPolicy.blockedHostnames": "Browser CDP Blocked Hostnames",
+  "browser.cdpPolicy.allowRfc2544BenchmarkRange": "Browser CDP Allow RFC 2544 Benchmark Range",
+  "browser.cdpPolicy.allowIpv6UniqueLocalRange": "Browser CDP Allow IPv6 Unique Local Range",
 };

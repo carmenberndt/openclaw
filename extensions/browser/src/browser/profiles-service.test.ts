@@ -344,7 +344,7 @@ describe("BrowserProfilesService", () => {
 
   it("redacts CDP credentials from create responses while preserving profile auth", async () => {
     const resolved = resolveBrowserConfig({
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+      cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
     });
     const { ctx } = createCtx(resolved);
     const cdpUrl = "http://browser-user:browser-password@127.0.0.1:9222/?token=browser-token";
@@ -363,7 +363,7 @@ describe("BrowserProfilesService", () => {
   });
 
   it("rejects private-network cdpUrl before creating an existing-session profile", async () => {
-    const strictConfig = { ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } };
+    const strictConfig = { cdpPolicy: { dangerouslyAllowPrivateNetwork: false } };
     const { ctx } = createCtx(resolveBrowserConfig(strictConfig));
     vi.mocked(getRuntimeConfig).mockReturnValue({ browser: { ...strictConfig, profiles: {} } });
 

@@ -98,7 +98,7 @@ export function createBrowserProfilesService(ctx: BrowserRouteContext) {
       let parsed: ReturnType<typeof parseHttpUrl>;
       try {
         parsed = parseHttpUrl(rawCdpUrl, "browser.profiles.cdpUrl");
-        await assertCdpEndpointAllowed(parsed.normalized, state.resolved.ssrfPolicy);
+        await assertCdpEndpointAllowed(parsed.normalized, state.resolved.cdpPolicy);
       } catch (err) {
         throw new BrowserValidationError(formatErrorMessage(err));
       }

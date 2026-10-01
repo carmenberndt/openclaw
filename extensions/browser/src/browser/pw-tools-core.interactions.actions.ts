@@ -16,13 +16,12 @@ import {
 } from "./pw-session.js";
 import {
   assertInteractionCurrent,
-  awaitNavigationGuardedInteraction,
+  awaitInteractionWithAbort,
   createAbortPromiseWithListener,
   type ElementInteractionOptions,
   getRestoredPageForTarget,
-  type GuardedInteractionOptions,
+  type AbortableInteractionOptions,
   type InteractionTargetOptions,
-  interactionNavigationPolicy,
   reconcileRemoteDialogAfterActionSettled,
   resolveBoundedDelayMs,
   runCancellablePageInteraction,
@@ -87,7 +86,7 @@ export async function clickViaPlaywright(
 }
 
 export async function clickCoordsViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     x: number;
     y: number;
     doubleClick?: boolean;
@@ -96,7 +95,7 @@ export async function clickCoordsViaPlaywright(
   },
 ): Promise<void> {
   const page = await getRestoredPageForTarget(opts);
-  await runGuardedPageInteraction(page, opts, async () => {
+  await runAbortablePageInteraction(page, opts, async () => {
     await page.mouse.click(opts.x, opts.y, {
       button: opts.button,
       clickCount: opts.doubleClick ? 2 : 1,
@@ -105,22 +104,18 @@ export async function clickCoordsViaPlaywright(
   });
 }
 
-async function runGuardedPageInteraction<T>(
+async function runAbortablePageInteraction<T>(
   page: Page,
-  opts: GuardedInteractionOptions,
+  opts: AbortableInteractionOptions,
   action: () => Promise<T>,
 ): Promise<T> {
-  // Mouse and keyboard primitives lack native cancellation. Keep their guard
-  // alive after foreground interruption until the underlying operation settles.
+  // Mouse and keyboard primitives lack native cancellation. Reconcile dialogs
+  // when an interrupted foreground operation eventually settles.
   const { abortPromise, cleanup } = createAbortPromiseWithListener(opts.signal);
   try {
-    return await awaitNavigationGuardedInteraction(
+    return await awaitInteractionWithAbort(
       {
         action,
-        cdpUrl: opts.cdpUrl,
-        page,
-        ...interactionNavigationPolicy(opts),
-        targetId: opts.targetId,
         assertCurrent: opts.assertCurrent,
       },
       abortPromise,
@@ -155,7 +150,7 @@ export async function hoverViaPlaywright(opts: ElementInteractionOptions): Promi
 }
 
 export async function dragViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     startRef?: string;
     startSelector?: string;
     endRef?: string;
@@ -208,7 +203,7 @@ export async function selectOptionViaPlaywright(
 }
 
 export async function pressKeyViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     key: string;
     delayMs?: number;
   },
@@ -218,7 +213,7 @@ export async function pressKeyViaPlaywright(
     throw new Error("key is required");
   }
   const page = await getPageForTargetId(opts);
-  await runGuardedPageInteraction(page, opts, async () => {
+  await runAbortablePageInteraction(page, opts, async () => {
     await page.keyboard.press(key, {
       delay: resolveNonNegativeIntegerOption(opts.delayMs, 0),
     });
@@ -226,10 +221,10 @@ export async function pressKeyViaPlaywright(
 }
 
 export async function insertTextViaPlaywright(
-  opts: GuardedInteractionOptions & { text: string },
+  opts: AbortableInteractionOptions & { text: string },
 ): Promise<void> {
   const page = await getPageForTargetId(opts);
-  await runGuardedPageInteraction(page, opts, async () => {
+  await runAbortablePageInteraction(page, opts, async () => {
     try {
       // Native insertion preserves the focused frame and selection without reading the clipboard.
       await page.keyboard.insertText(opts.text);
@@ -287,7 +282,7 @@ export async function typeViaPlaywright(
 }
 
 export async function fillFormViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     fields: BrowserFormField[];
     timeoutMs?: number;
   },
@@ -326,7 +321,7 @@ export async function fillFormViaPlaywright(
 }
 
 export async function evaluateViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     fn: string;
     ref?: string;
     timeoutMs?: number;
@@ -371,7 +366,6 @@ export async function evaluateViaPlaywright(
   }
 
   try {
-    const navigationPolicy = interactionNavigationPolicy(opts);
     const reconcileRemoteDialog = () => reconcileRemoteDialogAfterActionSettled(page, signal);
     const evaluatorBody = `
         "use strict";
@@ -411,13 +405,9 @@ export async function evaluateViaPlaywright(
       const evaluate = new Function("args", evaluatorBody) as (args: EvaluateArgs) => unknown;
       action = async () => await page.evaluate(evaluate, args);
     }
-    return await awaitNavigationGuardedInteraction(
+    return await awaitInteractionWithAbort(
       {
         action,
-        cdpUrl: opts.cdpUrl,
-        page,
-        ...navigationPolicy,
-        targetId: opts.targetId,
         assertCurrent: opts.assertCurrent,
       },
       abortPromise,

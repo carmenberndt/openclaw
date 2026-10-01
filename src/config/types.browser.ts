@@ -9,13 +9,13 @@ export type BrowserProfileConfig = NonNullable<BrowserSchemaInput["profiles"]>[s
   color?: string;
 };
 
-export type BrowserSsrFPolicyConfig = SsrFPolicyConfig;
+export type BrowserCdpPolicyConfig = SsrFPolicyConfig;
 
-export type BrowserConfig = Omit<BrowserSchemaInput, "profiles" | "ssrfPolicy"> & {
+export type BrowserConfig = Omit<BrowserSchemaInput, "profiles" | "cdpPolicy"> & {
   /** @deprecated Doctor-only legacy input; canonical schema rejects this field. */
   color?: string;
   /** Named browser profiles with explicit CDP ports or URLs. */
   profiles?: Record<string, BrowserProfileConfig>;
-  /** SSRF policy for browser navigation/open-tab operations. */
-  ssrfPolicy?: BrowserSsrFPolicyConfig;
+  /** Endpoint policy for CDP control connections; does not restrict page navigation. */
+  cdpPolicy?: BrowserCdpPolicyConfig;
 };

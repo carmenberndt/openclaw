@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveMemorySearchConfig } from "../../../agents/memory-search.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../../agents/workspace-default.js";
 import { findLegacyConfigIssues } from "../../../config/legacy.js";
@@ -8,6 +8,193 @@ import { applyLegacyDoctorMigrations } from "./legacy-config-compat.js";
 import { migrateLegacyConfig } from "./legacy-config-migrate.js";
 
 describe("legacy config migration end to end", () => {
+  it.each([
+    {
+      name: "explicit strict policy and all CDP fields",
+      legacy: {
+        dangerouslyAllowPrivateNetwork: false,
+        allowedHostnames: ["cdp.example"],
+        blockedHostnames: ["*.blocked.example"],
+        allowRfc2544BenchmarkRange: true,
+        allowIpv6UniqueLocalRange: false,
+      },
+      canonical: undefined,
+      expected: {
+        dangerouslyAllowPrivateNetwork: false,
+        allowedHostnames: ["cdp.example"],
+        blockedHostnames: ["*.blocked.example"],
+        allowRfc2544BenchmarkRange: true,
+        allowIpv6UniqueLocalRange: false,
+      },
+    },
+    {
+      name: "legacy aliases with conflicting private-network booleans",
+      legacy: {
+        allowPrivateNetwork: true,
+        dangerouslyAllowPrivateNetwork: false,
+        allowedHostnames: ["localhost"],
+        hostnameAllowlist: ["localhost", "*.example.com"],
+      },
+      canonical: undefined,
+      expected: {
+        dangerouslyAllowPrivateNetwork: true,
+        allowedHostnames: ["localhost", "*.example.com"],
+      },
+    },
+    {
+      name: "canonical false and empty lists override legacy values",
+      legacy: {
+        dangerouslyAllowPrivateNetwork: true,
+        allowedHostnames: ["legacy.example"],
+        blockedHostnames: ["legacy-blocked.example"],
+        allowRfc2544BenchmarkRange: true,
+        allowIpv6UniqueLocalRange: true,
+      },
+      canonical: {
+        dangerouslyAllowPrivateNetwork: false,
+        allowedHostnames: [],
+        blockedHostnames: ["canonical-blocked.example"],
+        allowRfc2544BenchmarkRange: false,
+      },
+      expected: {
+        dangerouslyAllowPrivateNetwork: false,
+        allowedHostnames: [],
+        blockedHostnames: ["canonical-blocked.example"],
+        allowRfc2544BenchmarkRange: false,
+        allowIpv6UniqueLocalRange: true,
+      },
+    },
+  ])("retires browser page checks while preserving $name", ({ legacy, canonical, expected }) => {
+    const raw = {
+      browser: { ssrfPolicy: legacy, ...(canonical ? { cdpPolicy: canonical } : {}) },
+    };
+    const validationBefore = validateConfigObjectRaw(raw);
+    expect(validationBefore.ok).toBe(false);
+    if (!validationBefore.ok) {
+      expect(validationBefore.issues).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: "browser" })]),
+      );
+    }
+    expect(findLegacyConfigIssues(raw)).toEqual([
+      expect.objectContaining({
+        path: "browser.ssrfPolicy",
+        message: expect.stringContaining("including explicit strict settings"),
+      }),
+    ]);
+
+    const result = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
+
+    expect(result.partiallyValid).toBeUndefined();
+    expect(result.config?.browser?.cdpPolicy).toEqual(expected);
+    expect(result.config).not.toHaveProperty("browser.ssrfPolicy");
+    expect(validateConfigObjectRaw(result.config).ok).toBe(true);
+    expect(findLegacyConfigIssues(result.sourceConfig)).toEqual([]);
+    expect(result.changes.join("\n")).toContain(
+      "Browser page navigation no longer performs private-IP or DNS security checks",
+    );
+    expect(result.changes.join("\n")).toContain(
+      "Discord attachment downloads use Discord-owned CDN and configured-endpoint rules",
+    );
+    expect(raw.browser.ssrfPolicy).toEqual(legacy);
+    expect(
+      migrateLegacyConfig(result.config, { sourceConfigBeforeMigrations: result.config }),
+    ).toEqual({ config: null, changes: [] });
+  });
+
+  it.each([
+    {
+      name: "native API key route",
+      legacy: { dangerouslyAllowPrivateNetwork: true },
+      provider: { apiKey: "synthetic-image-key" },
+      expected: true,
+    },
+    {
+      name: "existing request settings and legacy boolean alias",
+      legacy: { allowPrivateNetwork: true, dangerouslyAllowPrivateNetwork: false },
+      provider: { request: {} },
+      expected: true,
+    },
+    {
+      name: "explicit provider false",
+      legacy: { dangerouslyAllowPrivateNetwork: true },
+      provider: { request: { allowPrivateNetwork: false } },
+      expected: false,
+    },
+    {
+      name: "explicit provider true with old browser false",
+      legacy: { dangerouslyAllowPrivateNetwork: false },
+      provider: { request: { allowPrivateNetwork: true } },
+      expected: true,
+    },
+  ])("preserves private image endpoint permission for $name", ({ legacy, provider, expected }) => {
+    const raw = {
+      browser: { ssrfPolicy: legacy },
+      models: { providers: { openai: provider } },
+    };
+    const result = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
+    expect(result.partiallyValid).toBeUndefined();
+    expect(result.config?.models?.providers?.openai?.request?.allowPrivateNetwork).toBe(expected);
+    expect(result.config?.browser?.cdpPolicy?.dangerouslyAllowPrivateNetwork).toBe(
+      legacy.dangerouslyAllowPrivateNetwork ||
+        ("allowPrivateNetwork" in legacy && legacy.allowPrivateNetwork),
+    );
+    expect(validateConfigObjectRaw(result.config).ok).toBe(true);
+    expect(
+      migrateLegacyConfig(result.config, { sourceConfigBeforeMigrations: result.config }),
+    ).toEqual({ config: null, changes: [] });
+  });
+
+  it("preserves custom image endpoint permission with an environment API key", () => {
+    vi.stubEnv("OPENAI_API_KEY", "synthetic-image-key");
+    try {
+      const raw = {
+        browser: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } },
+        models: { providers: { openai: { baseUrl: "http://127.0.0.1:12345/v1" } } },
+      };
+      const result = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
+      expect(result.partiallyValid).toBeUndefined();
+      expect(result.config?.models?.providers?.openai?.request?.allowPrivateNetwork).toBe(true);
+      expect(validateConfigObjectRaw(result.config).ok).toBe(true);
+      expect(
+        migrateLegacyConfig(result.config, { sourceConfigBeforeMigrations: result.config }),
+      ).toEqual({ config: null, changes: [] });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    "https://api.openai.com/v1",
+    "https://chatgpt.com/backend-api/codex",
+    "http://127.0.0.1:12345/v1",
+  ])("leaves OAuth routing unchanged for the authored endpoint %s", (baseUrl) => {
+    vi.stubEnv("OPENAI_API_KEY", "");
+    try {
+      const raw = {
+        browser: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } },
+        models: { providers: { openai: { baseUrl } } },
+      };
+      const result = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
+      expect(result.partiallyValid).toBeUndefined();
+      expect(result.config).not.toHaveProperty("models.providers.openai.request");
+      expect(result.config?.models?.providers?.openai?.baseUrl).toBe(baseUrl);
+      expect(result.changes.join("\n")).toContain("configure it explicitly if needed");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("retires the old image opt-in without changing an OAuth-only provider route", () => {
+    const raw = { browser: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } } };
+    const result = migrateLegacyConfig(raw, { sourceConfigBeforeMigrations: raw });
+    expect(result.config).not.toHaveProperty("models");
+    expect(result.config?.browser?.cdpPolicy?.dangerouslyAllowPrivateNetwork).toBe(true);
+    expect(result.changes.join("\n")).toContain(
+      "configure it explicitly if needed. No provider request settings were added",
+    );
+    expect(validateConfigObjectRaw(result.config).ok).toBe(true);
+  });
+
   it.each([
     { prefsPath: "/tmp/synthetic-tts.json" },
     { personas: { narrator: { prompt: { style: "Synthetic instruction" } } } },
@@ -353,6 +540,9 @@ describe("legacy config migration end to end", () => {
       agents: {
         defaults: { pdfMaxMb: 12, mediaModels: { image: "openai/image-1" } },
         entries: { main: { name: "Main", tools: { exec: { timeoutSeconds: 45 } } } },
+      },
+      browser: {
+        cdpPolicy: { allowedHostnames: ["localhost", "*.example.com"] },
       },
       plugins: { entries: { openai: { config: { personality: "off" } } } },
       tools: { exec: { timeoutSeconds: 30 } },

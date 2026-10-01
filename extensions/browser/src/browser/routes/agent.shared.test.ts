@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { BrowserProfileUnavailableError } from "../errors.js";
-import * as navigationGuard from "../navigation-guard.js";
 import type { BrowserRouteContext, ProfileContext } from "../server-context.js";
 import "../../test-support/browser-security.mock.js";
-import { handleRouteError, resolveSafeRouteTabUrl, withRouteTabContext } from "./agent.shared.js";
+import { handleRouteError, resolveRouteTabUrl, withRouteTabContext } from "./agent.shared.js";
 import { createBrowserRouteResponse } from "./test-helpers.js";
 import type { BrowserRequest } from "./types.js";
 
@@ -12,17 +11,6 @@ function requestWithBody(body: unknown): BrowserRequest {
     params: {},
     query: {},
     body,
-  };
-}
-
-function routeContext(ssrfPolicy?: unknown) {
-  return {
-    state: () => ({
-      resolved: {
-        extraArgs: [],
-        ssrfPolicy,
-      },
-    }),
   };
 }
 
@@ -58,7 +46,6 @@ function routeContextForTab(
     state: () => ({
       resolved: {
         actionTimeoutMs: 60_000,
-        ssrfPolicy: {},
       },
     }),
   } as unknown as BrowserRouteContext;
@@ -136,11 +123,10 @@ describe("browser route shared helpers", () => {
     expect(JSON.stringify(response.body)).not.toContain("browser-token");
   });
 
-  describe("safe route tab URLs", () => {
+  describe("route tab URLs", () => {
     it("falls back to the ensured tab URL when tab listing is stale", async () => {
       await expect(
-        resolveSafeRouteTabUrl({
-          ctx: routeContext() as never,
+        resolveRouteTabUrl({
           profileCtx: profileContext([]) as never,
           targetId: "tab-1",
           fallbackUrl: "https://example.com/fallback",
@@ -148,47 +134,38 @@ describe("browser route shared helpers", () => {
       ).resolves.toBe("https://example.com/fallback");
     });
 
-    it("omits URLs blocked by the browser SSRF policy", async () => {
+    it("returns private page URLs without endpoint policy checks", async () => {
       await expect(
-        resolveSafeRouteTabUrl({
-          ctx: routeContext({ dangerouslyAllowPrivateNetwork: false }) as never,
+        resolveRouteTabUrl({
           profileCtx: profileContext([
-            { targetId: "tab-1", url: "http://127.0.0.1:9222/" },
+            { targetId: "tab-1", url: "http://127.0.0.1:8080/admin" },
           ]) as never,
           targetId: "tab-1",
         }),
-      ).resolves.toBeUndefined();
+      ).resolves.toBe("http://127.0.0.1:8080/admin");
     });
 
-    it("propagates cancelled URL verification instead of returning a redacted URL", async () => {
+    it("propagates cancellation during tab listing", async () => {
       const controller = new AbortController();
-      const reason = new Error("browser navigation verification deadline expired");
-      const guard = vi
-        .spyOn(navigationGuard, "assertBrowserNavigationResultAllowed")
-        .mockImplementationOnce(async () => {
-          controller.abort(reason);
-          throw reason;
-        });
-      try {
-        await expect(
-          resolveSafeRouteTabUrl({
-            ctx: routeContext() as never,
-            profileCtx: profileContext([
-              { targetId: "tab-1", url: "https://example.com/current" },
-            ]) as never,
-            targetId: "tab-1",
-            signal: controller.signal,
-          }),
-        ).rejects.toBe(reason);
-        expect(guard).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }));
-      } finally {
-        guard.mockRestore();
-      }
+      const reason = new Error("browser request cancelled");
+      await expect(
+        resolveRouteTabUrl({
+          profileCtx: {
+            listTabs: async () => {
+              controller.abort(reason);
+              throw reason;
+            },
+          } as never,
+          targetId: "tab-1",
+          signal: controller.signal,
+          fallbackUrl: "https://example.com/fallback",
+        }),
+      ).rejects.toBe(reason);
     });
   });
 
   describe("withRouteTabContext", () => {
-    it("does not enforce current-tab URL policy unless requested", async () => {
+    it("runs agent operations on private page URLs", async () => {
       const response = createBrowserRouteResponse();
       const run = vi.fn(async () => {
         response.res.json({ ok: true });

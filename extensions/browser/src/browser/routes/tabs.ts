@@ -6,17 +6,14 @@ import {
   BrowserTargetAmbiguousError,
   toBrowserErrorResponse,
 } from "../errors.js";
-import {
-  assertBrowserNavigationAllowed,
-  assertBrowserNavigationResultAllowed,
-} from "../navigation-guard.js";
+import { parseBrowserNavigationUrl } from "../navigation-guard.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
 import { isManagedOnlyBrowserRequest } from "../request-policy.js";
 import type { BrowserRouteContext, ProfileContext } from "../server-context.js";
 import { isProfileRestartRequiredError } from "../server-context.lifecycle.js";
 import { clearSnapshotKeysForTab } from "../snapshot-delta-cache.js";
 import { resolveTargetIdFromTabs } from "../target-id.js";
-import { browserNavigationPolicyForProfile, resolveProfileContext } from "./agent.shared.js";
+import { resolveProfileContext } from "./agent.shared.js";
 import { readRouteNonNegativeInteger } from "./route-numeric.js";
 import type { BrowserRequest, BrowserResponse, BrowserRouteRegistrar } from "./types.js";
 import { jsonBrowserError, jsonError, runProfileRouteOperation, toStringOrEmpty } from "./utils.js";
@@ -88,38 +85,6 @@ async function ensureBrowserRunning(
   if (!isReachable) {
     throw new BrowserProfileUnavailableError("browser not running");
   }
-}
-
-async function redactBlockedTabUrls(params: {
-  tabs: Awaited<ReturnType<ProfileContext["listTabs"]>>;
-  navigationPolicy: ReturnType<typeof browserNavigationPolicyForProfile>;
-}): Promise<Awaited<ReturnType<ProfileContext["listTabs"]>>> {
-  if (!params.navigationPolicy.ssrfPolicy) {
-    return params.tabs;
-  }
-
-  const redactedTabs: Awaited<ReturnType<ProfileContext["listTabs"]>> = [];
-  for (const tab of params.tabs) {
-    try {
-      await assertBrowserNavigationResultAllowed({
-        url: tab.url,
-        ...params.navigationPolicy,
-      });
-      redactedTabs.push(tab);
-    } catch (error) {
-      const failure = toBrowserErrorResponse(error);
-      // Preserve safe tab management without turning a DNS failure into a policy denial.
-      redactedTabs.push({
-        ...tab,
-        url: "",
-        urlUnavailableReason:
-          failure && "reason" in failure && failure.reason === "navigation_blocked"
-            ? "navigation_blocked"
-            : "navigation_check_failed",
-      });
-    }
-  }
-  return redactedTabs;
 }
 
 function parseRequiredTargetId(res: BrowserResponse, rawTargetId: unknown): string | null {
@@ -196,10 +161,7 @@ export function registerBrowserTabRoutes(app: BrowserRouteRegistrar, ctx: Browse
     if (!running) {
       return { running: false, tabs: [] };
     }
-    const tabs = await redactBlockedTabUrls({
-      tabs: await profileCtx.listTabs({ signal }),
-      navigationPolicy: browserNavigationPolicyForProfile(ctx, profileCtx),
-    });
+    const tabs = await profileCtx.listTabs({ signal });
     signal.throwIfAborted();
     return { running: true, tabs };
   };
@@ -210,10 +172,6 @@ export function registerBrowserTabRoutes(app: BrowserRouteRegistrar, ctx: Browse
     tab: Awaited<ReturnType<ProfileContext["listTabs"]>>[number],
     signal: AbortSignal,
   ) => {
-    const policy = browserNavigationPolicyForProfile(ctx, profileCtx);
-    if (policy.ssrfPolicy) {
-      await assertBrowserNavigationResultAllowed({ url: tab.url, ...policy });
-    }
     signal.throwIfAborted();
     const requestAssertCurrent = req.assertCurrent;
     await profileCtx.focusTab(tab.targetId, {
@@ -248,10 +206,7 @@ export function registerBrowserTabRoutes(app: BrowserRouteRegistrar, ctx: Browse
       ctx,
       mapTabError: true,
       run: async (profileCtx, signal) => {
-        await assertBrowserNavigationAllowed({
-          url,
-          ...browserNavigationPolicyForProfile(ctx, profileCtx),
-        });
+        parseBrowserNavigationUrl(url);
         await profileCtx.ensureBrowserAvailable({ signal });
         await req.assertCurrent?.(profileCtx.profile);
         const opened = await profileCtx.openTab(url, {

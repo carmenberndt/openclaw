@@ -42,7 +42,7 @@ Harden a deployment:
 - [Access control and allowlists](/gateway/security/access-control) - DM policy, allowlists, DM session isolation, context visibility, command authorization.
 - [Prompt injection](/gateway/security/prompt-injection) - Untrusted content reaching the model, model choice, and the wrapping that bounds it.
 - [Tool and agent permissions](/gateway/security/tool-permissions) - Control-plane tools, node execution, plugins, sandboxing, per-agent profiles.
-- [Browser control risks](/gateway/security/browser-control) - What a real browser exposes, and the SSRF policy that bounds it.
+- [Browser control risks](/gateway/security/browser-control) - What a real browser exposes, and the policy protecting CDP endpoints.
 - [Network exposure](/gateway/security/network-exposure) - Bind, firewall, discovery, Gateway auth, Tailscale, reverse proxy, dangerous flags.
 - [Secrets, storage, and logs](/gateway/security/secrets-and-storage) - What lands on disk, which files hold credentials, and what transcripts contain.
 - [Secure file operations](/gateway/security/secure-file-operations) - Root-bounded file access, atomic writes, and archive extraction helpers.
@@ -119,7 +119,7 @@ Every anchor this page used to publish still resolves here. Each entry below car
 **[Browser control risks](/gateway/security/browser-control)**
 
 - <a id="browser-control-risks" />[Browser control risks](/gateway/security/browser-control#browser-control-risks)
-- <a id="browser-ssrf-policy-(strict-by-default)" /><a id="browser-ssrf-policy-strict-by-default" />[Browser SSRF policy (strict by default)](/gateway/security/browser-control#browser-ssrf-policy-strict-by-default)
+- <a id="browser-ssrf-policy-(strict-by-default)" /><a id="browser-ssrf-policy-strict-by-default" />[Page navigation and CDP endpoint policy](/gateway/security/browser-control#page-navigation-and-cdp-endpoint-policy)
 
 **[Network exposure](/gateway/security/network-exposure)**
 

@@ -205,7 +205,7 @@ function createLazyBrowserPluginService(
       configPrefixes: [
         "browser.enabled",
         "browser.evaluateEnabled",
-        "browser.ssrfPolicy",
+        "browser.cdpPolicy",
         "browser.extensionRelay.allowLegacyAuth",
       ],
     },

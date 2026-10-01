@@ -47,8 +47,8 @@ session.
 
 The panel streams the active tab live as the page repaints. It falls back to
 screenshots for node-routed browsers, Chrome MCP existing-session profiles,
-missing Playwright, or stream connection failures. Navigation rules apply to
-the stream: navigating to a blocked address stops it and clears the view.
+missing Playwright, or stream connection failures. Navigation retires the old
+capture before streaming the replacement document, including private-network pages.
 
 After an established stream disconnects, the panel refreshes its screenshot
 and retries the stream automatically after a short delay. Annotation and
@@ -64,10 +64,10 @@ used tab; different page URLs or browser routes stay separate. Long URLs that
 may have been shortened in tool metadata keep separate tab cards to avoid hiding
 different pages. Expand the tool activity to inspect every original call and result.
 
-If a listed tab cannot be accessed, the panel explains whether navigation rules
-blocked it or its address could not be verified. Select another tab, enter an
-allowed address, or refresh after a temporary lookup failure. Blocked URLs stay
-hidden; displaying a tab title does not grant access to its contents.
+Tab listings include localhost and private-network page URLs. Browser-control
+authentication, tab ownership, and native browser restrictions still apply to
+content reads and actions. If a tab is unavailable, select another tab or refresh
+after reconnecting its browser.
 
 Following a historical tab never starts a stopped managed browser: a fresh
 launch cannot contain that tab. The panel shows **Start browser** instead, and

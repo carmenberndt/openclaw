@@ -112,7 +112,7 @@ export function collectBrowserSecurityAuditFindings(ctx: OpenClawPluginSecurityA
       });
     }
     if (
-      isPrivateNetworkOptInEnabled(resolved.ssrfPolicy) &&
+      isPrivateNetworkOptInEnabled(resolved.cdpPolicy) &&
       (isTrustedPrivateHostname(url.hostname) || isPrivateIpAddress(url.hostname))
     ) {
       findings.push({
@@ -123,7 +123,7 @@ export function collectBrowserSecurityAuditFindings(ctx: OpenClawPluginSecurityA
           `browser profile "${name}" points at a private/internal CDP host (${redactedCdpUrl}). ` +
           "This is expected for LAN/tailnet/WSL-style setups, but treat it as a trusted-network endpoint.",
         remediation:
-          "Prefer a tailnet or tunnel for remote CDP. If you want strict blocking, set browser.ssrfPolicy.dangerouslyAllowPrivateNetwork=false and allow only explicit hosts.",
+          "Prefer a tailnet or tunnel for remote CDP. If you want strict blocking, set browser.cdpPolicy.dangerouslyAllowPrivateNetwork=false and allow only explicit hosts.",
       });
     }
   }

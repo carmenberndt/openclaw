@@ -102,10 +102,6 @@ function formatAgentTab(tab: unknown): Record<string, unknown> {
     ...(label ? { label } : {}),
     title: source.title,
     url: source.url,
-    ...(source.urlUnavailableReason === "navigation_blocked" ||
-    source.urlUnavailableReason === "navigation_check_failed"
-      ? { urlUnavailableReason: source.urlUnavailableReason }
-      : {}),
     type: source.type,
     ...(targetId ? { targetId } : {}),
     ...(source.wsUrl ? { wsUrl: source.wsUrl } : {}),

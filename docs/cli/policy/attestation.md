@@ -63,8 +63,8 @@ Example JSON output:
     ],
     "network": [
       {
-        "id": "browser-private-network",
-        "source": "oc://openclaw.config/browser/ssrfPolicy/dangerouslyAllowPrivateNetwork",
+        "id": "browser-cdp-private-network",
+        "source": "oc://openclaw.config/browser/cdpPolicy/dangerouslyAllowPrivateNetwork",
         "value": false
       }
     ],

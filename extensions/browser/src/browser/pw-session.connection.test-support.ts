@@ -2,7 +2,6 @@ import { chromium } from "playwright-core";
 import { afterEach, vi } from "vitest";
 import * as chromeModule from "./chrome.js";
 import { pwAi } from "./pw-ai.js";
-import { markPageRefBlocked, markTargetBlocked } from "./pw-session-connection.js";
 
 const { registerManagedProxyBrowserCdpBypassMock } = vi.hoisted(() => ({
   registerManagedProxyBrowserCdpBypassMock: vi.fn<(url: string) => (() => void) | undefined>(
@@ -62,8 +61,6 @@ export function setupPwSessionConnectionTest() {
     connectOverCdpSpy,
     getChromeWebSocketEndpointSpy,
     getChromeWebSocketUrlSpy,
-    markPageRefBlocked,
-    markTargetBlocked,
     pwAi,
     registerManagedProxyBrowserCdpBypassMock,
   };

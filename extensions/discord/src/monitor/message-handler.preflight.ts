@@ -151,7 +151,6 @@ async function resolveDiscordHistoryMediaForPendingRecord(params: {
     Math.min(params.preflight.mediaMaxBytes, DISCORD_HISTORY_MEDIA_MAX_BYTES),
     {
       fetchImpl: params.preflight.discordRestFetch,
-      ssrfPolicy: params.preflight.cfg.browser?.ssrfPolicy,
       readIdleTimeoutMs: DISCORD_HISTORY_MEDIA_IDLE_TIMEOUT_MS,
       totalTimeoutMs: DISCORD_HISTORY_MEDIA_TOTAL_TIMEOUT_MS,
       abortSignal: params.preflight.abortSignal,
@@ -888,7 +887,6 @@ export async function preflightDiscordMessage(
   // of after the run queue, which may delay processing past the URL TTL.
   const mediaResolveOptions = {
     fetchImpl: params.discordRestFetch,
-    ssrfPolicy: params.cfg.browser?.ssrfPolicy,
     readIdleTimeoutMs: DISCORD_ATTACHMENT_IDLE_TIMEOUT_MS,
     totalTimeoutMs: DISCORD_ATTACHMENT_TOTAL_TIMEOUT_MS,
     abortSignal: params.abortSignal,

@@ -172,7 +172,7 @@ notification handoff.
 | Gateway auth limits       | `gateway.auth.rateLimit`                                                                                                                                                                                                                                           | No (retains limiter state)                                                                     |
 | Discovery visibility      | `discovery.mdns.mode`                                                                                                                                                                                                                                              | No (replaces discovery advertisements)                                                         |
 | Browser defaults          | `browser.profiles`, `browser.defaultProfile`, `browser.headless`, `browser.executablePath`, `browser.attachOnly`, `browser.cdpUrl`, `browser.noSandbox`, `browser.extraArgs`, `browser.snapshotDefaults`, `browser.tabCleanup`, `browser.allowSystemProfileImport` | No                                                                                             |
-| Browser control policy    | `browser.enabled`, `browser.evaluateEnabled`, `browser.ssrfPolicy`, `browser.extensionRelay.allowLegacyAuth`                                                                                                                                                       | No (replaces Browser control service)                                                          |
+| Browser control policy    | `browser.enabled`, `browser.evaluateEnabled`, `browser.cdpPolicy`, `browser.extensionRelay.allowLegacyAuth`                                                                                                                                                        | No (replaces Browser control service)                                                          |
 | Gateway server            | Other `gateway.*` settings (port, bind, auth mode, tailscale, TLS)                                                                                                                                                                                                 | **Yes**                                                                                        |
 | Infrastructure            | Other `discovery` and `browser` settings, MCP Apps listener settings, `secrets.egressProxy`                                                                                                                                                                        | **Yes**                                                                                        |
 
@@ -300,7 +300,7 @@ in force until that restart completes or its rejected changes are reverted.
 
 Browser default-profile changes apply on the next request. Launch-setting
 changes replace affected managed browser processes when next used; externally
-attached browsers stay running. Browser enablement, evaluation, and SSRF policy
+attached browsers stay running. Browser enablement, evaluation, and CDP endpoint policy
 changes replace only the Browser control service: pending operations cancel and
 owned Chrome processes close before the new policy applies. Attached and remote
 browser processes stay open while OpenClaw disconnects its control sessions.

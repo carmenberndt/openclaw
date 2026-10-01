@@ -102,7 +102,6 @@ describe("Doctor workspace persistence", () => {
           "browser.profiles.relay.cdpUrl",
           "models.providers.custom.api",
           "models.providers.custom.models.0.api",
-          "allowPrivateNetwork",
           "messages.queue.mode",
           "messages.queue.byChannel.discord",
           "messages.queue.byChannel.slack",
@@ -147,6 +146,9 @@ describe("Doctor workspace persistence", () => {
             ],
           },
           gateway: { mode: "local" },
+          browser: {
+            ssrfPolicy: { allowPrivateNetwork: true, allowedHostnames: ["browser.example.com"] },
+          },
           plugins: { enabled: false },
         });
         const ctx = await prepareDoctorContext(configPath);
@@ -159,7 +161,12 @@ describe("Doctor workspace persistence", () => {
         expect(ctx.configWriteRefusal).toBeUndefined();
         const saved = await readConfigFileSnapshot();
         expect(saved.config.commands?.ownerAllowFrom).toEqual([...canonical, ...preserved]);
+        expect(saved.config.browser?.cdpPolicy).toEqual({
+          dangerouslyAllowPrivateNetwork: true,
+          allowedHostnames: ["browser.example.com"],
+        });
         const bytes = await fs.readFile(configPath, "utf8");
+        expect(JSON.parse(bytes).browser).not.toHaveProperty("ssrfPolicy");
         expect(JSON.parse(bytes).agents).toHaveProperty("entries.main");
         expect(JSON.parse(bytes).agents).not.toHaveProperty("list");
         const repeated = await prepareDoctorContext(configPath);

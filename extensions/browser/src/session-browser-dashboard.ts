@@ -14,7 +14,6 @@ import { getBrowserStateRuntime, getOptionalBrowserStateRuntime } from "./browse
 import { resolveCdpControlPolicy } from "./browser/cdp-reachability-policy.js";
 import { isLocalManagedProfile } from "./browser/config.js";
 import { getPwAiModule } from "./browser/pw-ai-module.js";
-import { browserNavigationPolicyForProfile } from "./browser/routes/agent.shared.js";
 import {
   getProfileLifecycle,
   isProfileGenerationCurrent,
@@ -195,8 +194,7 @@ async function createResource(
           authority.assertCurrent();
           assertCurrent();
         },
-        ...browserNavigationPolicyForProfile(context, profileContext),
-        cdpPolicy: resolveCdpControlPolicy(profileContext.profile, state.resolved.ssrfPolicy),
+        cdpPolicy: resolveCdpControlPolicy(profileContext.profile, state.resolved.cdpPolicy),
         signal: signal
           ? AbortSignal.any([signal, session.signal, controller.signal])
           : AbortSignal.any([session.signal, controller.signal]),

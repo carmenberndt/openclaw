@@ -1,10 +1,6 @@
 // Browser tests cover browser proxy mode plugin behavior.
 import { describe, expect, it } from "vitest";
-import {
-  hasChromeProxyControlArg,
-  omitChromeProxyEnv,
-  resolveBrowserNavigationProxyMode,
-} from "./browser-proxy-mode.js";
+import { hasChromeProxyControlArg, omitChromeProxyEnv } from "./browser-proxy-mode.js";
 
 describe("browser proxy mode", () => {
   it("detects Chrome proxy control args", () => {
@@ -23,33 +19,5 @@ describe("browser proxy mode", () => {
       no_proxy: "127.0.0.1",
     });
     expect(env).toEqual({ PATH: "/usr/bin" });
-  });
-
-  it("marks only managed local Chrome with explicit proxy routing as proxy-routed", () => {
-    const resolved = { extraArgs: ["--proxy-server=http://127.0.0.1:7890"] };
-    expect(
-      resolveBrowserNavigationProxyMode({
-        resolved,
-        profile: { driver: "openclaw", cdpIsLoopback: true, attachOnly: false },
-      }),
-    ).toBe("explicit-browser-proxy");
-    expect(
-      resolveBrowserNavigationProxyMode({
-        resolved,
-        profile: { driver: "existing-session", cdpIsLoopback: true, attachOnly: true },
-      }),
-    ).toBe("direct");
-    expect(
-      resolveBrowserNavigationProxyMode({
-        resolved,
-        profile: { driver: "openclaw", cdpIsLoopback: false, attachOnly: true },
-      }),
-    ).toBe("direct");
-    expect(
-      resolveBrowserNavigationProxyMode({
-        resolved,
-        profile: { driver: "openclaw", cdpIsLoopback: true, attachOnly: true },
-      }),
-    ).toBe("direct");
   });
 });

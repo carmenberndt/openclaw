@@ -43,7 +43,7 @@ export function normalizeCdpUrl(raw: string) {
   return raw.replace(/\/$/, "");
 }
 
-export function targetKey(cdpUrl: string, targetId: string) {
+function targetKey(cdpUrl: string, targetId: string) {
   return `${normalizeCdpUrl(cdpUrl)}::${targetId}`;
 }
 

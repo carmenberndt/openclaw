@@ -198,7 +198,7 @@ The Control UI generates device identity with pure-JS Ed25519, so pairing works 
     Control UI and browser:
     - `gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback`
     - `gateway.controlUi.dangerouslyDisableDeviceAuth` (retired, inert)
-    - `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork`
+    - `browser.cdpPolicy.dangerouslyAllowPrivateNetwork`
 
     Channel name-matching (bundled and plugin channels; also per `accounts.<accountId>` where applicable):
     - `channels.discord.dangerouslyAllowNameMatching`

@@ -1,9 +1,9 @@
 ---
-summary: "What giving the model a real browser exposes, and the SSRF policy that bounds it"
+summary: "What giving the model a real browser exposes, and the policy protecting CDP endpoints"
 read_when:
   - Enabling browser control or the Chrome extension relay
   - Deciding which browser profile an agent may drive
-  - Tuning the browser SSRF allow and block lists
+  - Tuning CDP endpoint allow and block lists
 title: "Browser control risks"
 sidebarTitle: "Browser control"
 ---
@@ -47,24 +47,49 @@ Enabling browser control gives the model a real browser. If that profile already
   pairing fallback until an executable native-host path is supported.
 - Run a **node host** on the browser machine and let the Gateway proxy browser actions when the Gateway is remote from the browser (see [Browser tool](/tools/browser)); treat node pairing like admin access, keep Gateway and node host on the same tailnet, and avoid exposing relay/control ports over LAN, public internet, or Tailscale Funnel.
 
-### Browser SSRF policy (strict by default)
+<a id="browser-ssrf-policy-(strict-by-default)" />
+<a id="browser-ssrf-policy-strict-by-default" />
 
-Private/internal destinations stay blocked unless you explicitly opt in.
+### Page navigation and CDP endpoint policy
 
-- Default: `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` unset, so private/internal/special-use destinations stay blocked. Legacy alias `allowPrivateNetwork` still accepted.
-- Opt-in: set `dangerouslyAllowPrivateNetwork: true` to allow those destinations.
-- `browser.ssrfPolicy.blockedHostnames` denies exact hosts and wildcard subdomains before DNS and any allow rule, including private-network exceptions. `*.example.com` does not block the apex `example.com`; add both to block the entire domain. An empty or absent list adds no denials. `tools.web.fetch.ssrfPolicy.blockedHostnames` provides the same policy for guarded fetches, including redirects.
-- In strict mode, use wildcard-aware `allowedHostnames` entries for patterns like `*.example.com` and exact host exceptions, including otherwise-blocked names like `localhost`.
-- Direct navigation requests are preflight checked. During the action and bounded post-action grace, guarded Playwright interactions (click, coordinate click, hover, drag, scroll, select, press, type, form fill, and evaluate) intercept policy-denied top-level and subframe document loads before HTTP request bytes, then best-effort re-check the final `http(s)` URL.
-- Before each fresh managed Chrome launch, OpenClaw best-effort disables network prediction, suppressing Chromium's observed speculative preconnect for those denied loads. This is defense in depth, not a policy boundary: a browser reused across a control-service restart and other browser backends may not share the hardening. Page routing remains request-level interception, not a network firewall: redirect hops, a popup's first request, Service Worker traffic, page code that runs after the bounded guard window, and some background/subresource paths can bypass it. Final-URL checks remain detection/quarantine defense; complete prevention requires owner-side egress isolation or a policy-enforcing proxy.
+Browser pages can reach the networks available to the browser process, including
+localhost and private addresses. OpenClaw does not add IP/DNS preflight checks,
+request interception, or final-URL quarantine. Chromium's native security stays
+enabled. Use host/container network isolation or a policy-enforcing proxy when
+an agent's browser must have restricted egress.
+
+Explicit `open` and `navigate` URLs accept HTTP, HTTPS, and `about:blank`.
+OpenClaw rejects malformed URLs, unsupported schemes, and embedded credentials
+before dispatch. Use `openclaw browser set credentials <username> <password>`
+for HTTP Basic auth or an authenticated browser profile.
+
+`browser.cdpPolicy` protects CDP discovery and control sockets only:
+
+- Private/internal/special-use remote CDP destinations are blocked by default.
+  Set `dangerouslyAllowPrivateNetwork: true` only for trusted CDP endpoints.
+- `allowedHostnames` grants exact-host exceptions without trusting the entire
+  private network.
+- `blockedHostnames` denies exact hosts and wildcard subdomains before DNS and
+  allow rules. `*.example.com` excludes the apex; add `example.com` to deny both.
+- Range allowances apply to trusted fake-IP CDP endpoints, not page traffic.
+- OpenClaw's own local managed Chrome control endpoint is exempt from remote
+  endpoint restrictions.
 
 ```json5
 {
   browser: {
-    ssrfPolicy: {
+    cdpPolicy: {
       dangerouslyAllowPrivateNetwork: false,
-      allowedHostnames: ["*.example.com", "example.com", "localhost"],
+      allowedHostnames: ["browser-control.example.com"],
+      blockedHostnames: ["untrusted-control.example.com"],
     },
   },
 }
 ```
+
+`browser.ssrfPolicy` is retired. `openclaw doctor --fix` preserves its CDP settings
+in `browser.cdpPolicy` and visibly reports that page IP/DNS protection was removed,
+including explicit strict settings. See [Browser configuration](/tools/browser/configuration#cdp-endpoint-policy)
+for transport restrictions and [Config migrations](/gateway/doctor/config-migrations)
+for merge behavior. Guarded HTTP fetches keep their own SSRF policy; for example,
+`tools.web.fetch.ssrfPolicy.blockedHostnames` still applies to web fetch redirects.

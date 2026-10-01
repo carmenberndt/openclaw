@@ -67,17 +67,11 @@ Browser previews require a result from the `browser` tool with a known route.
 Browser-shaped metadata from other tools does not trigger screenshots or change
 the panel's selection. Those results remain ordinary tool output.
 
-When URL validation fails during tab listing, the tab keeps its identity and
-title but returns `url: ""` and `urlUnavailableReason`:
-
-- `navigation_blocked`: navigation rules rejected the address.
-- `navigation_check_failed`: OpenClaw could not validate the address, for example
-  because DNS lookup failed. Refresh to check again.
-
-An empty URL alone does not indicate a policy denial. Navigation-policy errors
-also carry `reason: "navigation_blocked"`. Raw blocked URLs and DNS details are
-not included in that metadata. Tab listings are observations, not authorization:
-every subsequent content read or action still enforces its own checks.
+Tab listings return the browser's observed page URLs, including localhost and
+private-network addresses. Listing a tab does not bypass browser-control
+authentication. Explicit open and navigate requests still validate URL syntax,
+allow only HTTP(S) or `about:blank`, and reject embedded credentials before dispatch.
+URL validation errors carry `reason: "navigation_blocked"`.
 
 If shared-secret gateway auth is configured, browser HTTP routes require auth too:
 
@@ -115,13 +109,13 @@ has no Gateway connection to bind, so its tickets remain TTL-only.
 The plugin shares one CDP screencast per profile and tab. Chrome sends JPEG
 frames on repaint, paced to approximately 20 frames per second. Slow viewers
 skip frames instead of building a queue. Navigation immediately retires the
-capture session. A new CDP session starts only after the address is allowed,
-so delayed frames from the previous document cannot enter the new stream.
-A rejected navigation stops the stream.
+capture session. The old session detaches before a new capture starts for the
+replacement document, so delayed frames from the previous document cannot enter
+the new stream.
 
 Text messages are JSON with `type` in `ready`, `meta`, or `error`. A `ready`
 message includes `targetId`, `url`, and `title`. `meta` updates `url` and `title`
-after allowed navigation and page load. Binary messages contain:
+after navigation and page load. Binary messages contain:
 
 1. A four-byte unsigned big-endian JSON header length.
 2. That many bytes of UTF-8 JSON: `{ "url", "cssWidth", "cssHeight", "scrollX", "scrollY", "ts" }`.
@@ -134,7 +128,6 @@ come from `scrollOffsetX` and `scrollOffsetY`. `ts` is the CDP frame timestamp.
 | Close code | Meaning                                                                                                     |
 | ---------- | ----------------------------------------------------------------------------------------------------------- |
 | 4001       | Token invalid or expired (normally rejected before upgrade with HTTP 401)                                   |
-| 4003       | `navigation_blocked`                                                                                        |
 | 4004       | `target_closed`, including a profile lifecycle change                                                       |
 | 4005       | Unsupported streaming                                                                                       |
 | 4006       | `authority_revoked` (the requesting Gateway connection ended or was invalidated, e.g. device token revoked) |
@@ -571,14 +564,18 @@ These are useful for "make the site behave like X" workflows:
 - Keep the Gateway/node host private (loopback or tailnet-only).
 - Remote CDP endpoints are powerful. Tunnel and protect them.
 
-Strict-mode example (block private/internal destinations by default):
+Browser page navigation uses ordinary Chromium behavior, including HTTP(S)
+localhost and private pages. Explicit URLs reject unsupported schemes and embedded
+credentials; `about:blank` is supported. Native browser security remains enabled.
+
+CDP endpoint policy example (restricts control connections, not page navigation):
 
 ```json5
 {
   browser: {
-    ssrfPolicy: {
+    cdpPolicy: {
       dangerouslyAllowPrivateNetwork: false,
-      allowedHostnames: ["*.example.com", "example.com", "localhost"],
+      allowedHostnames: ["browser-control.example.com"],
     },
   },
 }

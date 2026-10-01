@@ -5,8 +5,7 @@
   "monitored": [
     "auth.profiles.*.mode",
     "auth.profiles.*.provider",
-    "browser.ssrfPolicy.allowPrivateNetwork",
-    "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork",
+    "browser.cdpPolicy.dangerouslyAllowPrivateNetwork",
     "channels.*.accounts.*.dmPolicy",
     "channels.*.accounts.*.groupPolicy",
     "channels.*.accounts.*.groups.*.requireMention",
@@ -120,19 +119,11 @@
   ],
   "classifications": [
     {
-      "pattern": "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork",
+      "pattern": "browser.cdpPolicy.dangerouslyAllowPrivateNetwork",
       "status": "observed",
       "area": "network",
       "policy": "network.privateNetwork.allow",
-      "reason": "Policy observes private-network browser SSRF posture.",
-    },
-    {
-      "pattern": "browser.ssrfPolicy.allowPrivateNetwork",
-      "status": "observed",
-      "area": "network",
-      "policy": "network.privateNetwork.allow",
-      "reason": "Policy observes the legacy browser private-network toggle.",
-      "allowNoSchemaPath": true,
+      "reason": "Policy observes private-network browser CDP endpoint posture.",
     },
     {
       "pattern": "tools.web.fetch.ssrfPolicy.dangerouslyAllowPrivateNetwork",

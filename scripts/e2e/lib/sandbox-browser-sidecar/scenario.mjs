@@ -54,7 +54,7 @@ const config = {
   },
   browser: {
     enabled: true,
-    ssrfPolicy: {
+    cdpPolicy: {
       dangerouslyAllowPrivateNetwork: true,
     },
   },

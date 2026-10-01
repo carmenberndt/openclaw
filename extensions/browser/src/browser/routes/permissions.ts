@@ -181,7 +181,7 @@ export function registerBrowserPermissionRoutes(
           await profileCtx.ensureBrowserAvailable({ signal });
           const cdpPolicy = resolveCdpControlPolicy(
             profileCtx.profile,
-            ctx.state().resolved.ssrfPolicy,
+            ctx.state().resolved.cdpPolicy,
           );
           const endpoint = await getChromeWebSocketEndpoint(
             profileCtx.profile.cdpUrl,

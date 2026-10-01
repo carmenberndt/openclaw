@@ -150,11 +150,11 @@ Example findings:
 {
   "checkId": "policy/network-private-access-enabled",
   "severity": "error",
-  "message": "Network setting 'browser-private-network' allows private-network access.",
+  "message": "Network setting 'browser-cdp-private-network' allows private-network access.",
   "source": "policy",
   "path": "openclaw config",
-  "ocPath": "oc://openclaw.config/browser/ssrfPolicy/dangerouslyAllowPrivateNetwork",
-  "target": "oc://openclaw.config/browser/ssrfPolicy/dangerouslyAllowPrivateNetwork",
+  "ocPath": "oc://openclaw.config/browser/cdpPolicy/dangerouslyAllowPrivateNetwork",
+  "target": "oc://openclaw.config/browser/cdpPolicy/dangerouslyAllowPrivateNetwork",
   "requirement": "oc://policy.jsonc/network/privateNetwork/allow"
 }
 ```

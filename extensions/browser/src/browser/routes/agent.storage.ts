@@ -169,7 +169,6 @@ export function registerBrowserAgentStorageRoutes(
       ctx,
       targetId,
       feature: "cookies",
-      enforceCurrentUrlAllowed: true,
       run: async ({ cdpUrl, tab, pw, signal }) => {
         const result = await pw.cookiesGetViaPlaywright({
           cdpUrl,
@@ -232,7 +231,6 @@ export function registerBrowserAgentStorageRoutes(
       ctx,
       targetId,
       feature: "storage get",
-      enforceCurrentUrlAllowed: true,
       run: async ({ cdpUrl, tab, pw, signal }) => {
         const result = await pw.storageGetViaPlaywright({
           cdpUrl,

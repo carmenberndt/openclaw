@@ -54,7 +54,7 @@ export function makeBrowserServerState(params?: {
     headless: true,
     noSandbox: false,
     attachOnly: false,
-    ssrfPolicy: { allowPrivateNetwork: true },
+    cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
     tabCleanup: {
       enabled: true,
       idleMinutes: 120,

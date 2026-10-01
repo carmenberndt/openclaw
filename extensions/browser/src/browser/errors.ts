@@ -1,5 +1,4 @@
 const BROWSER_ENDPOINT_BLOCKED_MESSAGE = "browser endpoint blocked by policy";
-const BROWSER_NAVIGATION_BLOCKED_MESSAGE = "browser navigation blocked by policy";
 
 export const BROWSER_ERROR_REASONS = {
   noDisplayForHeadedProfile: "no_display_for_headed_profile",
@@ -74,9 +73,8 @@ export class BrowserActionError extends BrowserError {
 
 /**
  * Raised when a browser CDP endpoint (the cdpUrl itself) fails the
- * configured SSRF policy. Distinct from a blocked navigation target so
- * callers see "fix your browser endpoint config" rather than "fix your
- * navigation URL".
+ * configured CDP endpoint policy. The response identifies the control endpoint
+ * so operators can repair its configuration.
  */
 export class BrowserCdpEndpointBlockedError extends BrowserError {
   constructor(options?: ErrorOptions) {
@@ -158,21 +156,6 @@ export function toBrowserErrorResponse(err: unknown): BrowserErrorResponse | nul
   }
   if (err instanceof BrowserError) {
     return { status: err.status, message: err.message };
-  }
-  if (err instanceof Error && err.name === "BlockedBrowserTargetError") {
-    return { status: 409, message: err.message, reason: BROWSER_ERROR_REASONS.navigationBlocked };
-  }
-  if (err instanceof Error && err.name === "SsrFBlockedError") {
-    // SsrFBlockedError from this point is from a navigation-target check
-    // (assertBrowserNavigationAllowed / resolvePinnedHostnameWithPolicy on a
-    // requested URL). CDP endpoint blocks are rethrown as
-    // BrowserCdpEndpointBlockedError by assertCdpEndpointAllowed and handled
-    // by the BrowserError branch above.
-    return {
-      status: 400,
-      message: BROWSER_NAVIGATION_BLOCKED_MESSAGE,
-      reason: BROWSER_ERROR_REASONS.navigationBlocked,
-    };
   }
   if (err instanceof Error && err.name === "InvalidBrowserNavigationUrlError") {
     return { status: 400, message: err.message, reason: BROWSER_ERROR_REASONS.navigationBlocked };

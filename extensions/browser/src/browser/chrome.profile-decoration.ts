@@ -6,8 +6,6 @@ import {
   DEFAULT_OPENCLAW_BROWSER_PROFILE_NAME,
 } from "./constants.js";
 
-const CHROME_NETWORK_PREDICTION_DISABLED = 2;
-
 function safeReadJson(filePath: string): Record<string, unknown> | null {
   return asNullableRecord(loadJsonFile(filePath));
 }
@@ -87,15 +85,6 @@ export function usesOpenClawMockKeychain(userDataDir: string): boolean {
     readNestedRecord(localState, "profile", "info_cache", "Default")?.openclaw_mock_keychain ===
     true
   );
-}
-
-export function ensureProfileNetworkPredictionDisabled(userDataDir: string) {
-  const preferencesPath = path.join(userDataDir, "Default", "Preferences");
-  const prefs = safeReadJson(preferencesPath) ?? {};
-  // Chromium can preconnect before CDP Fetch interception. Disable that source
-  // of target contact before each fresh managed-browser launch.
-  ensureNestedRecord(prefs, "net").network_prediction_options = CHROME_NETWORK_PREDICTION_DISABLED;
-  saveJsonFile(preferencesPath, prefs);
 }
 
 /**

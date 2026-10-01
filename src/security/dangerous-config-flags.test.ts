@@ -170,7 +170,7 @@ describe("collectEnabledInsecureOrDangerousFlags", () => {
         allowRequestSessionKey: true,
       },
       browser: {
-        ssrfPolicy: {
+        cdpPolicy: {
           dangerouslyAllowPrivateNetwork: true,
         },
       },
@@ -183,7 +183,7 @@ describe("collectEnabledInsecureOrDangerousFlags", () => {
 
     expect(flags).toStrictEqual([
       "hooks.allowRequestSessionKey=true",
-      "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork=true",
+      "browser.cdpPolicy.dangerouslyAllowPrivateNetwork=true",
       "tools.fs.workspaceOnly=false",
       "agents.defaults.sandbox.docker.dangerouslyAllowReservedContainerTargets=true",
       "agents.defaults.sandbox.docker.dangerouslyAllowContainerNamespaceJoin=true",

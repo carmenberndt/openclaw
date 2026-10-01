@@ -32,7 +32,7 @@ export function createDashboardRouteContext(
   };
   const state = makeBrowserServerState({
     profile,
-    resolvedOverrides: { evaluateEnabled: options.evaluateEnabled ?? false, ssrfPolicy: undefined },
+    resolvedOverrides: { evaluateEnabled: options.evaluateEnabled ?? false, cdpPolicy: undefined },
   });
   return {
     state: () => state,

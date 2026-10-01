@@ -459,7 +459,7 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
             JSON.stringify({ Authorization: relayAuthorization }),
           ],
         };
-        browserState.resolved.ssrfPolicy = undefined;
+        browserState.resolved.cdpPolicy = undefined;
         const routeContext = createBrowserRouteContext({
           getState: () => browserState,
           refreshConfigFromDisk: false,
@@ -676,8 +676,8 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
             match: selectedTab.webExtensionTabId === nativeSelectedTabId,
           })}\n`,
         );
-        const previousSsrfPolicy = browserState.resolved.ssrfPolicy;
-        browserState.resolved.ssrfPolicy = { allowPrivateNetwork: true };
+        const previousCdpPolicy = browserState.resolved.cdpPolicy;
+        browserState.resolved.cdpPolicy = { dangerouslyAllowPrivateNetwork: true };
         const extensionCdpUrl = routeContext.forProfile("e2e").profile.cdpUrl;
         const proofUrl = `http://127.0.0.1:${gatewayPort}/browser-owner-proof`;
         diagnostic.arm(selectedTab.targetId, unrelatedTab.targetId);
@@ -688,7 +688,7 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
         const actedPage = await getPageForTargetId({
           cdpUrl: extensionCdpUrl,
           targetId: selectedTab.targetId,
-          ssrfPolicy: browserState.resolved.ssrfPolicy,
+          ssrfPolicy: browserState.resolved.cdpPolicy,
         });
         const detachedNavigation = vi.spyOn(actedPage, "goto").mockImplementationOnce(() => {
           diagnostic.mark("injection.used", true);
@@ -723,7 +723,7 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
           const recoveredPage = await getPageForTargetId({
             cdpUrl: extensionCdpUrl,
             targetId: selectedTab.targetId,
-            ssrfPolicy: browserState.resolved.ssrfPolicy,
+            ssrfPolicy: browserState.resolved.cdpPolicy,
           });
           diagnostic.mark("adapter.fresh", recoveredPage !== actedPage);
           expect(recoveredPage).not.toBe(actedPage);
@@ -741,14 +741,14 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
           stopPageObservation();
           diagnostic.flush();
           detachedNavigation.mockRestore();
-          browserState.resolved.ssrfPolicy = previousSsrfPolicy;
+          browserState.resolved.cdpPolicy = previousCdpPolicy;
           probe = await finishNavigationProbe();
         }
         expect(probe.heldReads).toBeGreaterThan(0);
         expect(probe.sawLoad).toBe(true);
 
-        const creationPolicy = browserState.resolved.ssrfPolicy;
-        browserState.resolved.ssrfPolicy = {
+        const creationPolicy = browserState.resolved.cdpPolicy;
+        browserState.resolved.cdpPolicy = {
           dangerouslyAllowPrivateNetwork: false,
           allowedHostnames: ["127.0.0.1"],
         };
@@ -777,7 +777,7 @@ describe.runIf(runE2E)("Chrome native bootstrap Chromium E2E", () => {
                 accessMode: "all",
               }),
           );
-          browserState.resolved.ssrfPolicy = creationPolicy;
+          browserState.resolved.cdpPolicy = creationPolicy;
         }
 
         const registration = status.registrations.find(

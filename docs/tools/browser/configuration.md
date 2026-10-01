@@ -1,9 +1,9 @@
 ---
-summary: "The browser config block, tab cleanup, screenshot vision, ports, SSRF policy, and picking a Chromium binary"
+summary: "The browser config block, tab cleanup, screenshot vision, ports, CDP endpoint policy, and picking a Chromium binary"
 title: "Browser configuration"
 read_when:
   - You are writing the browser block in openclaw.json
-  - You need the CDP port ranges or the SSRF policy options
+  - You need the CDP port ranges or the CDP endpoint policy options
   - You want a text-only model to read browser screenshots
   - You want OpenClaw to launch Brave, Edge, or another Chromium browser
 ---
@@ -13,7 +13,7 @@ read_when:
 Browser settings live in `~/.openclaw/openclaw.json`.
 
 With Gateway hot reload enabled, changing `browser.enabled`,
-`browser.evaluateEnabled`, or `browser.ssrfPolicy` replaces only the Browser
+`browser.evaluateEnabled`, or `browser.cdpPolicy` replaces only the Browser
 control service. Pending browser operations are cancelled and OpenClaw-owned
 Chrome processes close before the new policy applies. The Gateway and other
 plugins keep running. Attached and remote browser processes stay open, but
@@ -26,8 +26,8 @@ Extension relay configuration still requires a Gateway restart.
   browser: {
     enabled: true, // default: true
     evaluateEnabled: true, // default: true; false disables act:evaluate (arbitrary JS)
-    ssrfPolicy: {
-      // dangerouslyAllowPrivateNetwork: true, // opt in only for trusted private-network access
+    cdpPolicy: {
+      // dangerouslyAllowPrivateNetwork: true, // opt in only for trusted private CDP endpoints
       // allowedHostnames: ["localhost"],
       // allowRfc2544BenchmarkRange: true, // trusted fake-IP proxy range
       // allowIpv6UniqueLocalRange: true, // trusted fake-IP proxy IPv6 range
@@ -197,32 +197,53 @@ main model can read the screenshot directly.
 
 </Accordion>
 
-<Accordion title="SSRF policy">
+<a id="ssrf-policy" />
+<a id="cdp-endpoint-policy" />
+<Accordion title="CDP endpoint policy">
 
-- Browser navigation and open-tab requests are preflight checked. During the action and bounded post-action grace, guarded Playwright interactions (click, coordinate click, hover, drag, scroll, select, press, type, form fill, and evaluate) intercept policy-denied top-level and subframe document loads before HTTP request bytes, then best-effort re-check the final `http(s)` URL.
-- Before each fresh OpenClaw-managed Chrome launch, OpenClaw best-effort disables network prediction, suppressing Chromium's observed speculative preconnect for those denied loads. This is defense in depth, not a policy boundary: a browser reused across a control-service restart and other browser backends may not share the hardening. Playwright routing is still not a network firewall and does not intercept redirect hops, a popup's first request, Service Worker traffic, page code that runs after the bounded guard window, or every background/subresource path. Complete egress isolation requires owner-side isolation or a policy-enforcing proxy.
-- In strict SSRF mode, remote CDP endpoint discovery and `/json/version` checks (`cdpUrl`) are checked too.
-- Guarded remote CDP connections now fail closed when the selected driver cannot
-  keep the approved endpoint bound to the actual socket. Use the regular
-  `openclaw` driver for Browserless, Browserbase, Notte, or other guarded
-  remote CDP providers. `existing-session`/Chrome MCP profiles with an explicit
-  `cdpUrl` or `--browserUrl`/`--wsEndpoint` MCP argument are rejected under the
-  default strict Browser policy because Chrome MCP cannot carry OpenClaw's
-  pinned DNS lookup or guarded discovery result across its subprocess boundary.
-  They remain supported only when private-network Browser access is explicitly
-  trusted. Otherwise, omit the explicit endpoint and attach Chrome MCP to a
-  host-local Chrome profile, or switch the profile to the regular driver for
-  guarded CDP.
-- Redirecting CDP discovery to a different authority remains unsupported unless
-  the active policy explicitly allows that authority change. Revalidating a
-  returned hostname is not enough; the WebSocket transport must use the endpoint
-  that passed policy validation.
-- Gateway/provider `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` environment variables do not automatically proxy the OpenClaw-managed browser. Managed Chrome launches direct by default so provider proxy settings do not weaken browser SSRF checks.
-- OpenClaw-managed local CDP readiness checks and DevTools WebSocket connections bypass the managed network proxy for the exact launched loopback endpoint, so `openclaw browser start` still works when an operator proxy blocks loopback egress.
-- To proxy the managed browser itself, pass explicit Chrome proxy flags through `browser.extraArgs`, such as `--proxy-server=...` or `--proxy-pac-url=...`. Strict SSRF mode blocks explicit browser proxy routing unless private-network browser access is intentionally enabled.
-- `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` is off by default; enable only when private-network browser access is intentionally trusted.
-- `browser.ssrfPolicy.allowedHostnames` grants exact hosts while the rest of the private network remains blocked.
-- `browser.ssrfPolicy.allowRfc2544BenchmarkRange` and `browser.ssrfPolicy.allowIpv6UniqueLocalRange` narrowly allow trusted fake-IP proxy ranges.
+`browser.cdpPolicy` protects CDP discovery and control connections, including
+remote `/json/version` probes and DevTools WebSocket connections. It does not
+restrict page navigation, redirects, frames, or browser background traffic.
+
+- Private/internal/special-use remote CDP destinations are blocked by default.
+  `dangerouslyAllowPrivateNetwork: true` trusts private CDP endpoints.
+- `allowedHostnames` grants exact-host exceptions. `blockedHostnames` denies
+  exact hosts or wildcard subdomains before DNS and allow rules, even when
+  private-network access is trusted.
+- `allowRfc2544BenchmarkRange` and `allowIpv6UniqueLocalRange` narrowly allow
+  trusted fake-IP ranges for CDP connections.
+- Guarded remote CDP connections fail closed when the driver cannot keep the
+  approved endpoint bound to the actual socket. Use the regular `openclaw`
+  driver for guarded remote CDP providers. Chrome MCP `existing-session`
+  profiles with an explicit endpoint cannot carry OpenClaw's pinned transport
+  across their subprocess boundary. They require trusted private-network CDP
+  access without additional endpoint restrictions, or host-local auto-connect
+  with no explicit endpoint. See [Custom Chrome MCP launch](/tools/browser/existing-session#custom-chrome-mcp-launch).
+- CDP discovery redirects to a different authority require explicit policy
+  permission; the WebSocket transport must use the approved endpoint.
+- OpenClaw's own local managed Chrome CDP endpoint remains reachable without
+  private-network opt-in. Its probes and WebSocket connections bypass the
+  managed network proxy for that exact launched loopback endpoint.
+
+Page navigation uses ordinary browser behavior. Explicit `open` and `navigate`
+URLs accept HTTP, HTTPS, and `about:blank`; malformed URLs, other schemes, and
+URL-embedded credentials are rejected before dispatch. For HTTP Basic auth, use
+`openclaw browser set credentials <username> <password>` or an authenticated
+profile. OpenClaw adds no page IP/DNS checks or request interception. Chromium's
+native security remains enabled; use host/container network isolation or a
+policy-enforcing proxy when browser egress needs restrictions.
+
+Gateway/provider `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`
+environment variables do not automatically proxy managed Chrome. It launches
+direct by default. To proxy browser traffic, pass explicit Chrome flags through
+`browser.extraArgs`, such as `--proxy-server=...` or `--proxy-pac-url=...`.
+
+The retired `browser.ssrfPolicy` block is accepted only by migration. Run
+`openclaw doctor --fix` to move its CDP settings to `browser.cdpPolicy`. Doctor
+reports that page IP/DNS protection, including explicit strict settings, was
+removed. Discord attachment downloads use Discord's own CDN and configured-endpoint
+rules; old browser host lists and private-network overrides no longer apply to
+those downloads. See [Config migrations](/gateway/doctor/config-migrations).
 
 </Accordion>
 

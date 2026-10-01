@@ -8,7 +8,6 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getPwToolsCoreSessionMocks,
-  getPwToolsCoreNavigationGuardMocks,
   installPwToolsCoreTestHooks,
   setPwToolsCoreCurrentPage,
   setPwToolsCoreCurrentRefLocator,
@@ -29,7 +28,6 @@ vi.mock("./chrome.js", () => chromeMocks);
 vi.mock("./client-fetch.js", () => clientFetchMocks);
 
 const sessionMocks = getPwToolsCoreSessionMocks();
-const navigationGuardMocks = getPwToolsCoreNavigationGuardMocks();
 
 let mod: Pick<
   typeof import("./pw-tools-core.downloads.js"),
@@ -345,96 +343,12 @@ describe("pw-tools-core", () => {
       ]);
       harness.expectArmed();
       expect(click).toHaveBeenCalledWith({ timeout: 1000, signal: expect.any(AbortSignal) });
-      expect(sessionMocks.withPageNavigationRequestGuard).toHaveBeenCalledWith(
-        expect.objectContaining({
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-        }),
-      );
 
       harness.trigger(download);
 
       const res = await p;
-      expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
-        url: "https://example.com/report.pdf",
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-        browserProxyMode: undefined,
-        signal: undefined,
-      });
       await expectAtomicDownloadSave({ saveAs, targetPath, content: "report-content" });
       await expect(fs.realpath(res.path)).resolves.toBe(await fs.realpath(targetPath));
-    });
-  });
-
-  it("rejects a policy-denied waited download before saving it", async () => {
-    await withTempDir(async (tempDir) => {
-      const harness = createDownloadEventHarness();
-      const targetPath = path.join(tempDir, "metadata.bin");
-      const saveAs = vi.fn(async () => {});
-      const cancel = vi.fn(async () => {});
-      navigationGuardMocks.assertBrowserNavigationResultAllowed.mockRejectedValueOnce(
-        new Error("browser navigation blocked by policy"),
-      );
-
-      const pending = mod.waitForDownloadViaPlaywright({
-        ...target,
-        path: targetPath,
-        timeoutMs: 1000,
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-      });
-
-      await Promise.resolve();
-      harness.expectArmed();
-      harness.trigger({
-        url: () => "http://169.254.169.254/latest/meta-data/",
-        suggestedFilename: () => "metadata.bin",
-        saveAs,
-        cancel,
-      });
-
-      await expect(pending).rejects.toThrow("browser navigation blocked by policy");
-      expect(saveAs).not.toHaveBeenCalled();
-      expect(cancel).toHaveBeenCalledOnce();
-      expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
-        url: "http://169.254.169.254/latest/meta-data/",
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-        browserProxyMode: undefined,
-        signal: expect.any(AbortSignal),
-      });
-    });
-  });
-
-  it("propagates a policy-denied clicked download before saving it", async () => {
-    await withTempDir(async (tempDir) => {
-      const harness = createDownloadEventHarness();
-      const click = vi.fn(async () => {});
-      const saveAs = vi.fn(async () => {});
-      const cancel = vi.fn(async () => {});
-      setPwToolsCoreCurrentRefLocator({ click });
-      navigationGuardMocks.assertBrowserNavigationResultAllowed.mockRejectedValueOnce(
-        new Error("browser navigation blocked by policy"),
-      );
-
-      const pending = mod.downloadViaPlaywright({
-        ...target,
-        ref: "e12",
-        path: path.join(tempDir, "metadata.bin"),
-        timeoutMs: 1000,
-        ssrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-      });
-
-      await Promise.resolve();
-      harness.expectArmed();
-      harness.trigger({
-        url: () => "http://169.254.169.254/latest/meta-data/",
-        suggestedFilename: () => "metadata.bin",
-        saveAs,
-        cancel,
-      });
-
-      await expect(pending).rejects.toThrow("browser navigation blocked by policy");
-      expect(click).toHaveBeenCalledOnce();
-      expect(saveAs).not.toHaveBeenCalled();
-      expect(cancel).toHaveBeenCalledOnce();
     });
   });
 

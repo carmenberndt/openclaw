@@ -19,11 +19,10 @@ For the full key index and the other top-level config domains, see [Configuratio
     enabled: true,
     evaluateEnabled: true,
     defaultProfile: "user",
-    ssrfPolicy: {
-      // dangerouslyAllowPrivateNetwork: true, // opt in only for trusted private-network access
-      // allowPrivateNetwork: true, // legacy alias
-      // allowedHostnames: ["*.example.com", "example.com", "localhost"],
-      // blockedHostnames: ["tracker.example.com", "*.ads.example.com"],
+    cdpPolicy: {
+      // dangerouslyAllowPrivateNetwork: true, // opt in only for trusted private CDP endpoints
+      // allowedHostnames: ["browser-control.example.com"],
+      // blockedHostnames: ["untrusted-control.example.com"],
     },
     tabCleanup: {
       enabled: true,
@@ -76,12 +75,20 @@ For the full key index and the other top-level config domains, see [Configuratio
   are not automatically closed after a restart. Older untracked tabs require
   manual closure. Transient failures stay pending for a later retry. See
   [Tab cleanup ownership](/tools/browser/configuration#tab-cleanup-ownership).
-- `ssrfPolicy.dangerouslyAllowPrivateNetwork` is disabled when unset, so browser navigation stays strict by default.
-- Set `ssrfPolicy.dangerouslyAllowPrivateNetwork: true` only when you intentionally trust private-network browser navigation.
-- In strict mode, remote CDP profile endpoints (`profiles.*.cdpUrl`) are subject to the same private-network blocking during reachability/discovery checks.
-- `ssrfPolicy.allowPrivateNetwork` remains supported as a legacy alias.
-- In strict mode, use the wildcard-aware `ssrfPolicy.allowedHostnames` for exact-host and pattern exceptions.
-- `ssrfPolicy.blockedHostnames` denies exact hosts and `*.example.com` subdomains before DNS and allow rules, including private-network exceptions. Wildcards exclude the apex; add `example.com` separately to block it. Empty or unset adds no denials.
+- `cdpPolicy` protects CDP endpoint discovery and control connections only.
+  Private/internal remote CDP endpoints are blocked by default; OpenClaw's own
+  local managed control endpoint stays reachable.
+- `cdpPolicy.dangerouslyAllowPrivateNetwork: true` trusts private CDP endpoints.
+  Prefer exact-host exceptions in `cdpPolicy.allowedHostnames` when possible.
+- `cdpPolicy.blockedHostnames` denies exact hosts and `*.example.com` subdomains
+  before DNS and allow rules. Wildcards exclude the apex; add it separately.
+- Browser page navigation has no OpenClaw IP/DNS checks. HTTP(S) localhost and
+  private pages use ordinary browser behavior with native security enabled.
+  Explicit navigation rejects malformed URLs, unsupported schemes, and embedded
+  credentials; `about:blank` is supported.
+- `browser.ssrfPolicy` is retired. Run `openclaw doctor --fix` to preserve CDP
+  settings in `browser.cdpPolicy`; Doctor reports the removal of page IP/DNS
+  protection, including explicit strict settings.
 - Remote profiles are attach-only (start/stop/reset disabled).
 - `profiles.*.cdpUrl` accepts `http://`, `https://`, `ws://`, and `wss://`.
   Use HTTP(S) when you want OpenClaw to discover `/json/version`; use WS(S)
@@ -123,7 +130,7 @@ For the full key index and the other top-level config domains, see [Configuratio
 - Browser profiles, the default profile, global launch settings,
   `snapshotDefaults`, and `tabCleanup` hot-reload.
   Changed launch settings replace affected managed browsers on their next use;
-  externally attached browsers stay running. Enablement, evaluation, SSRF policy,
+  externally attached browsers stay running. Enablement, evaluation, CDP endpoint policy,
   and extension relay authentication changes replace the Browser control service
   and its owned relay connections without restarting the Gateway. Independently
   running relay daemons keep their own lifecycle and policy.

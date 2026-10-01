@@ -110,7 +110,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_MCP_E2E === "1")("Chrome MCP frame l
           port: 0,
           resolved: resolveBrowserConfig({
             defaultProfile: profileName,
-            ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+            cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
             profiles: {
               [profileName]: {
                 driver: "existing-session",

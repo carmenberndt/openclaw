@@ -3,7 +3,6 @@ import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/retry-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/security-runtime";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/security-runtime";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { raceWithTimeout } from "openclaw/plugin-sdk/time-runtime";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 import { withManagedProxyForCdpUrl, withNoProxyForCdpUrl } from "./cdp-proxy-bypass.js";
@@ -28,8 +27,6 @@ import {
 import { getBorrowedRelayCdpAccess } from "./extension-relay/relay-access.js";
 import { connectOverCdpTransport } from "./pw-session-cdp-transport.js";
 import {
-  blockedPageRefsByCdpUrl,
-  blockedTargetsByCdpUrl,
   cachedByCdpUrl,
   closeConnectionPromises,
   connectingByCdpUrl,
@@ -47,12 +44,7 @@ import {
   markConnectionScopedBrowser,
   pageTargetInfo,
 } from "./pw-session-page-target.js";
-import {
-  bindRoleRefsTarget,
-  ensurePageState,
-  normalizeCdpUrl,
-  targetKey,
-} from "./pw-session-state.js";
+import { bindRoleRefsTarget, ensurePageState, normalizeCdpUrl } from "./pw-session-state.js";
 
 export { pageTargetInfo } from "./pw-session-page-target.js";
 
@@ -90,74 +82,6 @@ function isRecoverableStalePageSelectionError(err: unknown, reusedCachedBrowser:
   return message.toLowerCase().includes("tab not found");
 }
 
-export function isBlockedTarget(cdpUrl: string, targetId?: string): boolean {
-  const normalizedTargetId = normalizeOptionalString(targetId) ?? "";
-  if (!normalizedTargetId) {
-    return false;
-  }
-  return blockedTargetsByCdpUrl.has(targetKey(cdpUrl, normalizedTargetId));
-}
-
-export function markTargetBlocked(cdpUrl: string, targetId?: string): void {
-  const normalizedTargetId = normalizeOptionalString(targetId) ?? "";
-  if (!normalizedTargetId) {
-    return;
-  }
-  blockedTargetsByCdpUrl.add(targetKey(cdpUrl, normalizedTargetId));
-}
-
-export function clearBlockedTarget(cdpUrl: string, targetId?: string): void {
-  const normalizedTargetId = normalizeOptionalString(targetId) ?? "";
-  if (!normalizedTargetId) {
-    return;
-  }
-  blockedTargetsByCdpUrl.delete(targetKey(cdpUrl, normalizedTargetId));
-}
-
-export function clearBlockedTargetsForCdpUrl(cdpUrl?: string): void {
-  if (!cdpUrl) {
-    blockedTargetsByCdpUrl.clear();
-    return;
-  }
-  const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
-  for (const key of blockedTargetsByCdpUrl) {
-    if (key.startsWith(prefix)) {
-      blockedTargetsByCdpUrl.delete(key);
-    }
-  }
-}
-
-function blockedPageRefsForCdpUrl(cdpUrl: string): WeakSet<Page> {
-  const normalized = normalizeCdpUrl(cdpUrl);
-  const existing = blockedPageRefsByCdpUrl.get(normalized);
-  if (existing) {
-    return existing;
-  }
-  const created = new WeakSet<Page>();
-  blockedPageRefsByCdpUrl.set(normalized, created);
-  return created;
-}
-
-export function isBlockedPageRef(cdpUrl: string, page: Page): boolean {
-  return blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.has(page) ?? false;
-}
-
-export function markPageRefBlocked(cdpUrl: string, page: Page): void {
-  blockedPageRefsForCdpUrl(cdpUrl).add(page);
-}
-
-export function clearBlockedPageRefsForCdpUrl(cdpUrl?: string): void {
-  if (!cdpUrl) {
-    blockedPageRefsByCdpUrl.clear();
-    return;
-  }
-  blockedPageRefsByCdpUrl.delete(normalizeCdpUrl(cdpUrl));
-}
-
-export function clearBlockedPageRef(cdpUrl: string, page: Page): void {
-  blockedPageRefsByCdpUrl.get(normalizeCdpUrl(cdpUrl))?.delete(page);
-}
-
 function takeCachedPlaywrightBrowserConnection(cdpUrl: string): ConnectedBrowser | null {
   const normalized = normalizeCdpUrl(cdpUrl);
   const cur = cachedByCdpUrl.get(normalized);
@@ -176,14 +100,6 @@ function takeCachedPlaywrightBrowserConnection(cdpUrl: string): ConnectedBrowser
     cur.browser.off("disconnected", cur.onDisconnected);
   }
   return cur;
-}
-
-/** Raised when a page target has been quarantined after policy denial. */
-class BlockedBrowserTargetError extends Error {
-  constructor() {
-    super("Browser target is unavailable after SSRF policy blocked its navigation.");
-    this.name = "BlockedBrowserTargetError";
-  }
 }
 
 function retainClosingPlaywrightConnection(connection: ConnectedBrowser): void {
@@ -235,8 +151,6 @@ export function retirePlaywrightBrowserConnectionExact(opts: {
   cdpUrl: string;
 }): PlaywrightConnectionRetirement {
   const normalized = normalizeCdpUrl(opts.cdpUrl);
-  clearBlockedTargetsForCdpUrl(normalized);
-  clearBlockedPageRefsForCdpUrl(normalized);
   const connections = new Map<ConnectedBrowser, Promise<void> | undefined>();
   const pendingCollections = new Set<Promise<void>>();
   let retired = false;
@@ -337,8 +251,6 @@ export async function closeConnectionScopedPageBrowser(
 ): Promise<void> {
   const current = cachedByCdpUrl.get(normalizeCdpUrl(cdpUrl));
   if (current?.browser === browser) {
-    clearBlockedTargetsForCdpUrl(cdpUrl);
-    clearBlockedPageRefsForCdpUrl(cdpUrl);
     const owned = takeCachedPlaywrightBrowserConnection(cdpUrl);
     if (owned) {
       await withPlaywrightCloseTimeout(closeTrackedPlaywrightConnection(owned));
@@ -350,16 +262,6 @@ export async function closeConnectionScopedPageBrowser(
   if (browser.isConnected()) {
     await withPlaywrightCloseTimeout(browser.close());
   }
-}
-
-function hasBlockedTargetsForCdpUrl(cdpUrl: string): boolean {
-  const prefix = `${normalizeCdpUrl(cdpUrl)}::`;
-  for (const key of blockedTargetsByCdpUrl) {
-    if (key.startsWith(prefix)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function observeContext(context: BrowserContext) {
@@ -555,80 +457,34 @@ export async function getAllPages(browser: Browser): Promise<Page[]> {
   return browser.contexts().flatMap((context) => context.pages());
 }
 
-async function partitionAccessiblePages(opts: { cdpUrl: string; pages: Page[] }): Promise<{
-  accessible: Array<{ page: Page; targetId: string | null }>;
-  blockedCount: number;
-}> {
-  const accessible: Array<{ page: Page; targetId: string | null }> = [];
-  let blockedCount = 0;
-  const candidates = await Promise.all(
-    opts.pages.map(async (page) => {
-      if (isBlockedPageRef(opts.cdpUrl, page)) {
-        return { page, targetId: null };
-      }
-      ensurePageState(page);
-      const targetId = (await pageTargetInfo(page).catch(() => null))?.targetId ?? null;
-      return { page, targetId };
-    }),
-  );
-  for (const { page, targetId } of candidates) {
-    if (isBlockedPageRef(opts.cdpUrl, page)) {
-      blockedCount += 1;
-      continue;
-    }
-    // Fail closed when we cannot resolve a target id while this session has
-    // quarantined targets; otherwise a blocked tab can become selectable.
-    if (!targetId) {
-      if (hasBlockedTargetsForCdpUrl(opts.cdpUrl)) {
-        blockedCount += 1;
-        continue;
-      }
-      accessible.push({ page, targetId: null });
-      continue;
-    }
-    if (isBlockedTarget(opts.cdpUrl, targetId)) {
-      blockedCount += 1;
-      continue;
-    }
-    bindRoleRefsTarget(page, opts.cdpUrl, targetId);
-    accessible.push({ page, targetId });
-  }
-  return { accessible, blockedCount };
-}
-
 async function getPageForTargetIdOnce(opts: {
   cdpUrl: string;
   targetId?: string;
   ssrfPolicy?: SsrFPolicy;
   relayReference?: RelayOperationReference;
 }): Promise<Page> {
-  if (opts.targetId && isBlockedTarget(opts.cdpUrl, opts.targetId)) {
-    throw new BlockedBrowserTargetError();
-  }
   const { browser } = await connectBrowser(opts.cdpUrl, opts.ssrfPolicy, opts.relayReference);
   const pages = await getAllPages(browser);
   if (!pages.length) {
     throw new Error("No pages available in the connected browser.");
   }
 
-  const { accessible, blockedCount } = await partitionAccessiblePages({
-    cdpUrl: opts.cdpUrl,
-    pages,
-  });
-  if (!accessible.length) {
-    if (blockedCount > 0) {
-      throw new BlockedBrowserTargetError();
-    }
-    throw new Error("No pages available in the connected browser.");
-  }
-  const first = expectDefined(accessible.at(0), "non-empty accessible browser pages");
+  const identifiedPages = await Promise.all(
+    pages.map(async (page) => {
+      ensurePageState(page);
+      const targetId = (await pageTargetInfo(page).catch(() => null))?.targetId ?? null;
+      if (targetId) {
+        bindRoleRefsTarget(page, opts.cdpUrl, targetId);
+      }
+      return { page, targetId };
+    }),
+  );
+  const first = expectDefined(identifiedPages.at(0), "non-empty browser pages");
   if (!opts.targetId) {
-    bindRoleRefsTarget(first.page, opts.cdpUrl, first.targetId);
     return first.page;
   }
-  const found = accessible.find((entry) => entry.targetId === opts.targetId);
+  const found = identifiedPages.find((entry) => entry.targetId === opts.targetId);
   if (found) {
-    bindRoleRefsTarget(found.page, opts.cdpUrl, found.targetId);
     return found.page;
   }
   throw new BrowserTabNotFoundError();

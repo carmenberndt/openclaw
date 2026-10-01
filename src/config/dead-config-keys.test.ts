@@ -52,7 +52,7 @@ describe("dead config keys", () => {
     "browser.tabCleanup.sweepMinutes",
     "browser.color",
     "browser.profiles.chrome.color",
-    "browser.ssrfPolicy.hostnameAllowlist",
+    "browser.ssrfPolicy",
     "agents.defaults.pdfMaxBytesMb",
     "agents.defaults.imageGenerationModel",
     "agents.defaults.videoGenerationModel",

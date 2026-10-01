@@ -82,8 +82,7 @@ export function scanPolicyModelRefs(
 export function scanPolicyNetwork(cfg: Record<string, unknown>): readonly PolicyNetworkEvidence[] {
   return (
     [
-      ["browser-private-network", ["browser", "ssrfPolicy", "dangerouslyAllowPrivateNetwork"]],
-      ["browser-private-network-legacy", ["browser", "ssrfPolicy", "allowPrivateNetwork"]],
+      ["browser-cdp-private-network", ["browser", "cdpPolicy", "dangerouslyAllowPrivateNetwork"]],
       [
         "web-fetch-private-network",
         ["tools", "web", "fetch", "ssrfPolicy", "dangerouslyAllowPrivateNetwork"],

@@ -31,14 +31,8 @@ const ACT_DEFAULT_WAIT_TIMEOUT_MS = 20_000;
 
 /** Grace between the runtime's action budget and an outer transport watchdog. */
 export const BROWSER_ACTION_TRANSPORT_SLACK_MS = 5_000;
-/** Post-action window that keeps navigation policy interception active. */
-export const BROWSER_ACTION_NAVIGATION_GRACE_MS = 250;
-/** Existing-session verification keeps observing after the action settles. */
-export const EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS = [0, 250, 500] as const;
-const EXISTING_SESSION_NAVIGATION_GRACE_MS =
-  EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS.reduce<number>((total, delay) => total + delay, 0) +
-  (EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS.at(-1) ?? 0);
-
+/** Window for a native download event to arrive after its initiating action. */
+export const BROWSER_ACTION_DOWNLOAD_GRACE_MS = 250;
 /** Keep navigation timeouts consistent across transports and browser backends. */
 export function resolveBrowserNavigationTimeoutMs(timeoutMs?: number): number {
   return Math.min(120_000, resolveTimerTimeoutMs(timeoutMs, 20_000, 1_000));
@@ -103,11 +97,16 @@ function resolveInteractionTimeoutMs(request: BrowserActRequest): number {
   );
 }
 
-function addNavigationGraceMs(durationMs: number, count = 1): number {
-  return addExecutionBudgetMs(
-    durationMs,
-    multiplyExecutionBudgetMs(BROWSER_ACTION_NAVIGATION_GRACE_MS, count),
-  );
+/** One capture owner drains native downloads after the complete action or batch. */
+export function browserActMayStartDownload(request: BrowserActRequest): boolean {
+  if (request.kind === "batch") {
+    const actions = Array.isArray(request.actions) ? request.actions.filter(isRecord) : [];
+    return actions.some(browserActMayStartDownload);
+  }
+  if (request.kind === "wait") {
+    return typeof request.fn === "string" && Boolean(request.fn.trim());
+  }
+  return request.kind !== "close" && request.kind !== "resize";
 }
 
 function resolveLeafExecutionBudgetMs(
@@ -117,30 +116,25 @@ function resolveLeafExecutionBudgetMs(
     case "click": {
       const timeoutMs = resolveInteractionTimeoutMs(request);
       const delayMs = Math.min(ACT_MAX_CLICK_DELAY_MS, resolveNonNegativeTimerMs(request.delayMs));
-      const actionMs = delayMs > 0 ? addExecutionBudgetMs(timeoutMs * 2, delayMs) : timeoutMs;
-      return addNavigationGraceMs(actionMs);
+      return delayMs > 0 ? addExecutionBudgetMs(timeoutMs * 2, delayMs) : timeoutMs;
     }
     case "clickCoords": {
       const delayMs = Math.min(ACT_MAX_CLICK_DELAY_MS, resolveNonNegativeTimerMs(request.delayMs));
       const explicitTimeoutMs =
         clampPositiveTimerTimeoutMs(parseTimerInteger(request.timeoutMs)) ?? 0;
-      return addNavigationGraceMs(
-        addExecutionBudgetMs(
-          explicitTimeoutMs,
-          multiplyExecutionBudgetMs(delayMs, request.doubleClick ? 3 : 1),
-        ),
+      return addExecutionBudgetMs(
+        explicitTimeoutMs,
+        multiplyExecutionBudgetMs(delayMs, request.doubleClick ? 3 : 1),
       );
     }
     case "type": {
       const phaseCount = (request.slowly ? 2 : 1) + (request.submit ? 1 : 0);
-      return addNavigationGraceMs(
-        multiplyExecutionBudgetMs(resolveInteractionTimeoutMs(request), phaseCount),
-      );
+      return multiplyExecutionBudgetMs(resolveInteractionTimeoutMs(request), phaseCount);
     }
     case "press":
-      return addNavigationGraceMs(resolveNonNegativeTimerMs(request.delayMs));
+      return resolveNonNegativeTimerMs(request.delayMs);
     case "insertText":
-      return addNavigationGraceMs(0);
+      return 0;
     case "fill": {
       const fields = Array.isArray(request.fields) ? request.fields : [];
       const fieldCount = fields.filter(
@@ -150,18 +144,15 @@ function resolveLeafExecutionBudgetMs(
           typeof field.ref === "string" &&
           Boolean(field.ref.trim()),
       ).length;
-      return addNavigationGraceMs(
-        multiplyExecutionBudgetMs(resolveInteractionTimeoutMs(request), fieldCount),
-        fieldCount,
-      );
+      return multiplyExecutionBudgetMs(resolveInteractionTimeoutMs(request), fieldCount);
     }
     case "evaluate":
     case "scrollIntoView":
-      return addNavigationGraceMs(resolveActWaitTimeoutMs(parseTimerInteger(request.timeoutMs)));
+      return resolveActWaitTimeoutMs(parseTimerInteger(request.timeoutMs));
     case "hover":
     case "drag":
     case "select":
-      return addNavigationGraceMs(resolveInteractionTimeoutMs(request));
+      return resolveInteractionTimeoutMs(request);
     case "resize":
     case "close":
       return 0;
@@ -199,7 +190,7 @@ function resolveExecutionBudgetMs(request: BrowserActRequest): number {
   );
 }
 
-/** Bound logical action and verification phases without renewing every MCP call's budget. */
+/** Bound the logical action without renewing every MCP call's budget. */
 export function resolveExistingSessionActTimeouts(request: BrowserActRequest) {
   const requestedTimeoutMs =
     EXISTING_SESSION_TIMEOUT_OVERRIDE_KINDS.has(request.kind) && "timeoutMs" in request
@@ -223,16 +214,16 @@ export function resolveExistingSessionActTimeouts(request: BrowserActRequest) {
       ? addExecutionBudgetMs(timeMs, Math.max(250, timeoutMs))
       : Math.max(timeMs, timeoutMs);
   }
-  const verificationTimeoutMs =
-    request.kind === "resize" || request.kind === "close"
-      ? 0
-      : addExecutionBudgetMs(timeoutMs, EXISTING_SESSION_NAVIGATION_GRACE_MS);
   return {
     timeoutMs,
     // Waits own their delay and condition deadlines; only the request bounds preparation.
     bodyTimeoutMs: request.kind === "wait" ? undefined : actionTimeoutMs,
-    verificationTimeoutMs,
-    requestTimeoutMs: addExecutionBudgetMs(actionTimeoutMs, verificationTimeoutMs),
+    // A wait can consume its entire delay/condition budget. Let that owner settle
+    // before the request watchdog fires, as with the outer client transport.
+    requestTimeoutMs:
+      request.kind === "wait"
+        ? addExecutionBudgetMs(actionTimeoutMs, BROWSER_ACTION_TRANSPORT_SLACK_MS)
+        : actionTimeoutMs,
   };
 }
 
@@ -241,7 +232,10 @@ export function resolveExistingSessionActTimeouts(request: BrowserActRequest) {
  * Wait phases and batch children execute serially, so maxima would abort valid work midway.
  */
 function resolveBrowserActExecutionBudgetMs(request: BrowserActRequest): number {
-  const executionBudgetMs = resolveExecutionBudgetMs(request);
+  const executionBudgetMs = addExecutionBudgetMs(
+    resolveExecutionBudgetMs(request),
+    browserActMayStartDownload(request) ? BROWSER_ACTION_DOWNLOAD_GRACE_MS : 0,
+  );
   if (request.kind === "wait") {
     return executionBudgetMs;
   }

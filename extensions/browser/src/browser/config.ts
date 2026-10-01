@@ -11,7 +11,6 @@ import type {
   OpenClawConfig,
 } from "openclaw/plugin-sdk/config-contracts";
 import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
-import { mergeSsrFPolicies } from "openclaw/plugin-sdk/ssrf-policy";
 import { isLoopbackHost, type SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   normalizeOptionalString,
@@ -57,6 +56,7 @@ export {
 };
 export { parseBrowserHttpUrl as parseHttpUrl };
 
+/** Browser config after defaults, derived ports, and profile defaults are applied. */
 export type ResolvedBrowserConfig = Omit<ResolvedBrowserConfigContract, "profiles"> & {
   headlessSource?: "config" | "default";
   profiles: Record<string, BrowserProfileConfig>;
@@ -169,21 +169,13 @@ function resolveBrowserTabCleanupConfig(
   };
 }
 
-function resolveBrowserSsrFPolicy(cfg: BrowserConfig | undefined): SsrFPolicy | undefined {
-  const rawPolicy = cfg?.ssrfPolicy;
-  const dangerouslyAllowPrivateNetwork = rawPolicy?.dangerouslyAllowPrivateNetwork;
-  const resolved = mergeSsrFPolicies({
-    ...rawPolicy,
-    // Browser config grants private access only through its canonical flag.
-    allowPrivateNetwork: false,
-    allowedHostnames: normalizeOptionalTrimmedStringList(rawPolicy?.allowedHostnames),
-  });
-  if (dangerouslyAllowPrivateNetwork !== undefined) {
-    return { ...resolved, dangerouslyAllowPrivateNetwork };
+function resolveBrowserCdpPolicy(cfg: BrowserConfig | undefined): SsrFPolicy {
+  const policy = { ...cfg?.cdpPolicy };
+  if (policy.allowedHostnames !== undefined) {
+    policy.allowedHostnames = normalizeOptionalTrimmedStringList(policy.allowedHostnames) ?? [];
   }
-  // Keep an explicit strict object so every browser guard stays fail-closed
-  // even when the operator leaves the shared policy unconfigured.
-  return resolved ?? {};
+  // Remote CDP remains strict when the operator leaves control policy unconfigured.
+  return policy;
 }
 
 /**
@@ -324,7 +316,7 @@ export function resolveBrowserConfig(
     defaultProfile,
     profiles,
     tabCleanup: resolveBrowserTabCleanupConfig(cfg),
-    ssrfPolicy: resolveBrowserSsrFPolicy(cfg),
+    cdpPolicy: resolveBrowserCdpPolicy(cfg),
     extraArgs,
     extensionRelayDefaultPort: controlPort + EXTENSION_RELAY_PORT_OFFSET,
     extensionRelayPorts: resolveExtensionRelayPorts(

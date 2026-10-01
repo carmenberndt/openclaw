@@ -135,9 +135,11 @@ model, OpenClaw retries with each `openai/*` model in `agents.defaults.model`
 Configure `models.providers.openai` explicitly with an API key, custom base
 URL, or Azure endpoint when you want the direct OpenAI Images API route
 instead. If that custom image endpoint is on a trusted LAN/private address,
-also set `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork: true`; OpenClaw
+also set `models.providers.openai.request.allowPrivateNetwork: true`; OpenClaw
 keeps private/internal OpenAI-compatible image endpoints blocked unless this
-opt-in is present.
+opt-in is present. `browser.cdpPolicy` affects browser control endpoints only.
+`openclaw doctor --fix` preserves an old browser private-network opt-in for an
+already-configured native OpenAI image route; explicit provider permission wins.
 
 Generate:
 

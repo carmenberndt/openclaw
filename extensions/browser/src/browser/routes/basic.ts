@@ -1,3 +1,4 @@
+import { resolveCdpControlPolicy } from "../cdp-reachability-policy.js";
 import { redactCdpUrl } from "../cdp.helpers.js";
 import { snapshotAria } from "../cdp.js";
 import { getChromeMcpPid, takeChromeMcpSnapshot } from "../chrome-mcp.js";
@@ -164,7 +165,7 @@ async function buildBrowserStatus(
             httpTimeoutMs: STATUS_CDP_HTTP_TIMEOUT_MS,
             handshakeTimeoutMs: STATUS_CDP_TRANSPORT_TIMEOUT_MS,
             commandTimeoutMs: STATUS_GRAPHICS_COMMAND_TIMEOUT_MS,
-            ssrfPolicy: current.resolved.ssrfPolicy,
+            ssrfPolicy: resolveCdpControlPolicy(profileCtx.profile, current.resolved.cdpPolicy),
           }),
       )
     : null;

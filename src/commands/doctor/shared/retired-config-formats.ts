@@ -58,11 +58,6 @@ export function findRetiredConfigUpgradeRequirement(
       }
     }
   }
-  checkKeys(
-    isRecord(config.browser) ? config.browser.ssrfPolicy : undefined,
-    "browser.ssrfPolicy",
-    ["allowPrivateNetwork"],
-  );
   const checkMemoryStore = (scope: Record<string, unknown>, configPath: string) => {
     checkKeys(
       isRecord(scope.memorySearch) ? scope.memorySearch.store : undefined,

@@ -66,8 +66,8 @@ const unapprovedModel = {
 
 const privateNetwork = {
   checkId: "policy/network-private-access-enabled",
-  message: "Network setting 'browser-private-network' allows private-network access.",
-  ...atConfigPath("browser/ssrfPolicy/dangerouslyAllowPrivateNetwork"),
+  message: "Network setting 'browser-cdp-private-network' allows private-network access.",
+  ...atConfigPath("browser/cdpPolicy/dangerouslyAllowPrivateNetwork"),
   requirement: "oc://policy.jsonc/network/privateNetwork/allow",
   fixHint: "Disable this private-network access setting or update policy after review.",
 };
@@ -112,7 +112,7 @@ describe("model provider conformance receipts", () => {
           },
         },
       },
-      browser: { ssrfPolicy: { dangerouslyAllowPrivateNetwork: true } },
+      browser: { cdpPolicy: { dangerouslyAllowPrivateNetwork: true } },
     } as unknown as OpenClawConfig;
     const original = structuredClone(cfg);
     const evaluation = await evaluatePolicy(ctx(await writePolicyFixture(policy), cfg));

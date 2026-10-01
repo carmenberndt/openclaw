@@ -23,11 +23,10 @@ import {
 import {
   assertInteractionCurrent,
   awaitActionWithAbort,
-  awaitNavigationGuardedInteraction,
+  awaitInteractionWithAbort,
   createAbortPromiseWithListener,
-  type GuardedInteractionOptions,
+  type AbortableInteractionOptions,
   type InteractionTargetOptions,
-  interactionNavigationPolicy,
   reconcileRemoteDialogAfterActionSettled,
   resolveBoundedDelayMs,
   runCancellablePageInteraction,
@@ -70,7 +69,9 @@ async function toPlaywrightFilePayloads(paths: string[]) {
   );
 }
 
-async function resolvePlaywrightUploadFiles(opts: GuardedInteractionOptions & { paths: string[] }) {
+async function resolvePlaywrightUploadFiles(
+  opts: AbortableInteractionOptions & { paths: string[] },
+) {
   return await racePromiseWithAbortSignal(
     (async () => {
       const resolved = await resolveStrictExistingUploadPaths({ requestedPaths: opts.paths });
@@ -127,7 +128,7 @@ function createBrowserWaitPredicate(source: string): (state: BrowserWaitPredicat
 }
 
 export async function waitForViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     timeMs?: number;
     text?: string;
     textGone?: string;
@@ -230,21 +231,15 @@ export async function waitForViaPlaywright(
 
   try {
     // Playwright exposes no per-wait cancellation; retiring the shared
-    // connection would disrupt sibling tabs. Only executable waits need the
-    // request guard, which must own the full sequence before their predicate.
-    // `fn` shares the explicit evaluateEnabled trust contract with evaluate;
-    // this guard owns navigation during the action, not jobs trusted JS schedules later.
+    // connection would disrupt sibling tabs. Executable waits retain their
+    // document handle and stop their sequence after cancellation.
     if (!fn) {
       await runWaitSequence(waitForStep);
       return;
     }
-    await awaitNavigationGuardedInteraction(
+    await awaitInteractionWithAbort(
       {
         action: async () => await runWaitSequence(waitForSettledStep),
-        cdpUrl: opts.cdpUrl,
-        page,
-        ...interactionNavigationPolicy(opts),
-        targetId: opts.targetId,
         assertCurrent: opts.assertCurrent,
       },
       abortPromise,
@@ -561,7 +556,7 @@ async function screenshotWithLabelsOnPage(
 }
 
 export async function setFileChooserFilesViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     page: Page;
     fileChooser: FileChooser;
     paths: string[];
@@ -575,7 +570,7 @@ export async function setFileChooserFilesViaPlaywright(
 }
 
 export async function setInputFilesViaPlaywright(
-  opts: GuardedInteractionOptions & {
+  opts: AbortableInteractionOptions & {
     inputRef?: string;
     element?: string;
     paths: string[];

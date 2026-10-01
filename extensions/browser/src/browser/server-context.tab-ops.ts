@@ -1,5 +1,4 @@
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
-import { resolveBrowserNavigationProxyMode } from "./browser-proxy-mode.js";
 import {
   assertChromeMcpCdpTransportAllowed,
   resolveCdpControlPolicy,
@@ -24,13 +23,7 @@ import { getChromeMcpModule } from "./chrome-mcp.runtime.js";
 import type { BrowserOpenResult } from "./client.types.js";
 import type { ResolvedBrowserProfile } from "./config.js";
 import { resolveBrowserEngine } from "./engines/registry.js";
-import {
-  assertBrowserNavigationAllowed,
-  assertBrowserNavigationResultAllowed,
-  InvalidBrowserNavigationUrlError,
-  requiresInspectableBrowserNavigationRedirectsForUrl,
-  withBrowserNavigationPolicy,
-} from "./navigation-guard.js";
+import { parseBrowserNavigationUrl } from "./navigation-guard.js";
 import { getBrowserProfileCapabilities } from "./profile-capabilities.js";
 import { getPwAiModule } from "./pw-ai-module.js";
 import {
@@ -97,14 +90,7 @@ function normalizeWsUrl(raw: string | undefined, cdpBaseUrl: string): string | u
 export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): ProfileTabOps {
   const cdpHttpBase = normalizeCdpHttpBaseForJsonEndpoints(profile.cdpUrl);
   const capabilities = getBrowserProfileCapabilities(profile);
-  const getCdpControlPolicy = () => resolveCdpControlPolicy(profile, state().resolved.ssrfPolicy);
-  const getNavigationPolicy = () =>
-    withBrowserNavigationPolicy(state().resolved.ssrfPolicy, {
-      browserProxyMode: resolveBrowserNavigationProxyMode({
-        resolved: state().resolved,
-        profile,
-      }),
-    });
+  const getCdpControlPolicy = () => resolveCdpControlPolicy(profile, state().resolved.cdpPolicy);
   const getRemoteCdpActionTimeouts = (): CdpActionTimeouts | undefined => {
     if (profile.cdpIsLoopback && !profile.attachOnly) {
       return undefined;
@@ -327,13 +313,12 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
   const openTab: ProfileTabOps["openTab"] = async (url, opts) => {
     opts?.signal?.throwIfAborted();
     const normalizedLabel = opts?.label === undefined ? undefined : normalizeTabLabel(opts.label);
-    const ssrfPolicyOpts = getNavigationPolicy();
+    parseBrowserNavigationUrl(url);
     const cdpPolicy = getCdpControlPolicy();
     // Runtime shutdown fences state() before draining this operation's cleanup.
     const cleanupTimeoutMs = state().resolved.remoteCdpTimeoutMs;
 
     if (capabilities.usesChromeMcp) {
-      await assertBrowserNavigationAllowed({ url, ...ssrfPolicyOpts });
       assertChromeMcpCdpTransportAllowed(profile, cdpPolicy);
       const { openChromeMcpTab } = await getChromeMcpModule();
       const cdpTimeouts = getRemoteCdpActionTimeouts();
@@ -343,7 +328,6 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
         cdpPolicy,
         ...(cdpTimeouts ? { cdpTimeouts } : {}),
       });
-      await assertBrowserNavigationResultAllowed({ url: page.url, ...ssrfPolicyOpts });
       return adoptValidatedTab(page, { ...opts, label: normalizedLabel });
     }
 
@@ -359,7 +343,6 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
             url,
             cdpPolicy,
             ...(opts?.signal ? { signal: opts.signal } : {}),
-            ...ssrfPolicyOpts,
           });
           closeCreatedPage = page.close;
           createdTargetId = page.targetId;
@@ -378,13 +361,6 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
         }
       }
 
-      if (requiresInspectableBrowserNavigationRedirectsForUrl(url, state().resolved.ssrfPolicy)) {
-        throw new InvalidBrowserNavigationUrlError(
-          "Navigation blocked: strict browser SSRF policy requires Playwright-backed redirect-hop inspection",
-        );
-      }
-
-      await assertBrowserNavigationAllowed({ url, ...ssrfPolicyOpts });
       const cdpActionTimeouts = getRemoteCdpActionTimeouts();
       const createdViaCdp = await createTargetViaCdp({
         cdpUrl: profile.cdpUrl,
@@ -411,17 +387,12 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
             opts,
           );
         }
-        await assertBrowserNavigationResultAllowed({
-          url: createdViaCdp.finalUrl,
-          ...ssrfPolicyOpts,
-        });
         const deadline = Date.now() + OPEN_TAB_DISCOVERY_WINDOW_MS;
         while (Date.now() < deadline) {
           opts?.signal?.throwIfAborted();
           const tabs = await readTabs(opts).catch(() => [] as BrowserTab[]);
           const found = tabs.find((t) => t.targetId === createdViaCdp.targetId);
           if (found) {
-            await assertBrowserNavigationResultAllowed({ url: found.url, ...ssrfPolicyOpts });
             // The attached target owns the committed URL; /json/list supplies the
             // remaining metadata and may briefly lag that exact document snapshot.
             return adoptValidatedTab(
@@ -482,7 +453,6 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
       if (!isSelectableCdpBrowserTarget({ url: resolvedUrl, type: created.type })) {
         throw new Error("Failed to open tab (non-selectable target)");
       }
-      await assertBrowserNavigationResultAllowed({ url: resolvedUrl, ...ssrfPolicyOpts });
       const wsUrl = normalizeWsUrl(created.webSocketDebuggerUrl, profile.cdpUrl);
       const wsPin = wsUrl
         ? await assertCdpEndpointAllowed(wsUrl, getCdpControlPolicy(), {
@@ -501,9 +471,6 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
           })
         : undefined;
       opts?.signal?.throwIfAborted();
-      if (committedUrl) {
-        await assertBrowserNavigationResultAllowed({ url: committedUrl, ...ssrfPolicyOpts });
-      }
       const opened = await withTabOwnership(
         {
           targetId: created.id,

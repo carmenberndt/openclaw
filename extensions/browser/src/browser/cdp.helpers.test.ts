@@ -14,7 +14,6 @@ import {
 } from "./cdp-reachability-policy.js";
 import { resolveCdpReachabilityTimeouts } from "./cdp-timeouts.js";
 import { resolveBrowserConfig, resolveProfile, type ResolvedBrowserProfile } from "./config.js";
-import { assertBrowserNavigationAllowed } from "./navigation-guard.js";
 
 const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
 const sleepWithAbortMock = vi.hoisted(() =>
@@ -257,13 +256,10 @@ const localCdp = { cdpUrl: "http://127.0.0.1:9222", cdpHost: "127.0.0.1", cdpIsL
 const chromeProfile = createProfile({ ...localCdp, driver: "existing-session" });
 
 describe("CDP reachability policy", () => {
-  it("keeps the default remote CDP policy strict without widening browser navigation policy", async () => {
+  it("keeps the default remote CDP policy strict", () => {
     const policy = {};
     expect(resolveCdpReachabilityPolicy(createProfile(), policy)).toBe(policy);
     expect(policy).toStrictEqual({});
-    await expect(
-      assertBrowserNavigationAllowed({ url: "http://172.29.128.1/", ssrfPolicy: policy }),
-    ).rejects.toThrow(/private\/internal\/special-use ip address/i);
   });
 
   it("preserves a private-network policy that rejects the selected CDP host", () => {

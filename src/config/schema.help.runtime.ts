@@ -56,18 +56,18 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
     "Chrome extension relay authentication compatibility settings. Keep the legacy window only while older paired extensions or external CDP clients still need it.",
   "browser.extensionRelay.allowLegacyAuth":
     "Temporarily accepts legacy Bearer, Basic, and token-subprotocol relay authentication. Default: true for one migration window. Set false after every extension and external CDP client uses Browser Relay Authentication v2.",
-  "browser.ssrfPolicy":
-    "Server-side request forgery guardrail settings for browser/network fetch paths that could reach internal hosts. Keep restrictive defaults in production and open only explicitly approved targets.",
-  "browser.ssrfPolicy.dangerouslyAllowPrivateNetwork":
-    "Allows access to private-network address ranges from browser tooling. Default is disabled when unset; enable only for explicitly trusted private-network destinations.",
-  "browser.ssrfPolicy.allowedHostnames":
-    "Exact hostnames or IP literals allowed by browser SSRF policy checks. Keep the list minimal.",
-  "browser.ssrfPolicy.blockedHostnames":
-    'Hostname patterns denied before DNS and allow rules, even with private-network access enabled. Supports exact hosts and "*.example.com" for subdomains only; add "example.com" separately to block the apex. Empty or unset adds no denials.',
-  "browser.ssrfPolicy.allowRfc2544BenchmarkRange":
-    "Allow RFC 2544 benchmark-range IPs (198.18.0.0/15) for trusted fake-IP proxy environments.",
-  "browser.ssrfPolicy.allowIpv6UniqueLocalRange":
-    "Allow IPv6 Unique Local Addresses (fc00::/7) for trusted fake-IP proxy environments.",
+  "browser.cdpPolicy":
+    "Endpoint restrictions for CDP control connections. These settings do not restrict browser page navigation; native browser security remains enabled.",
+  "browser.cdpPolicy.dangerouslyAllowPrivateNetwork":
+    "Allows CDP control connections to private-network address ranges. Enable only for trusted browser-control endpoints; this does not change page navigation.",
+  "browser.cdpPolicy.allowedHostnames":
+    "Exact hostnames or IP literals allowed for CDP control connections. These exceptions do not restrict page navigation.",
+  "browser.cdpPolicy.blockedHostnames":
+    'CDP endpoint hostname patterns denied before DNS and allow rules, even with private-network access enabled. Supports exact hosts and "*.example.com" for subdomains only; add "example.com" separately to block the apex. Empty or unset adds no denials.',
+  "browser.cdpPolicy.allowRfc2544BenchmarkRange":
+    "Allow RFC 2544 benchmark-range IPs (198.18.0.0/15) for CDP connections in trusted fake-IP proxy environments.",
+  "browser.cdpPolicy.allowIpv6UniqueLocalRange":
+    "Allow IPv6 Unique Local Addresses (fc00::/7) for CDP connections in trusted fake-IP proxy environments.",
   "discovery.mdns.mode":
     'mDNS broadcast mode ("minimal" default, "full" includes cliPath/sshPort, "off" disables mDNS).',
   discovery:

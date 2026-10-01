@@ -103,7 +103,7 @@ describe("browser remote profile fallback and attachOnly behavior", () => {
         ]),
       ),
     );
-    state.resolved.ssrfPolicy = { dangerouslyAllowPrivateNetwork: false };
+    state.resolved.cdpPolicy = { dangerouslyAllowPrivateNetwork: false };
 
     await expect(remote.listTabs()).rejects.toBeInstanceOf(deps.BrowserCdpEndpointBlockedError);
   });
@@ -130,7 +130,7 @@ describe("browser remote profile fallback and attachOnly behavior", () => {
       } as unknown as Response;
     });
     const { state, remote } = deps.createRemoteRouteHarness(fetchMock);
-    state.resolved.ssrfPolicy = { dangerouslyAllowPrivateNetwork: false };
+    state.resolved.cdpPolicy = { dangerouslyAllowPrivateNetwork: false };
 
     await expect(remote.openTab("about:blank")).rejects.toBeInstanceOf(
       deps.BrowserCdpEndpointBlockedError,
@@ -163,15 +163,26 @@ describe("browser remote profile fallback and attachOnly behavior", () => {
     expect(state.profiles.get("remote")?.lastTargetId).not.toBe(created.id);
   });
 
-  it("fails closed for remote tab opens in strict mode without Playwright", async () => {
+  it("opens a loopback page through protected remote CDP without Playwright", async () => {
     vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue(null);
-    const { state, remote, fetchMock } = deps.createRemoteRouteHarness();
-    state.resolved.ssrfPolicy = { dangerouslyAllowPrivateNetwork: false };
-
-    await expect(remote.openTab("https://example.com")).rejects.toBeInstanceOf(
-      deps.InvalidBrowserNavigationUrlError,
+    const url = "http://127.0.0.1:3000/";
+    const createTarget = vi
+      .spyOn(deps.cdpModule, "createTargetViaCdp")
+      .mockResolvedValue({ targetId: "LOCAL_PAGE", finalUrl: url });
+    const { state, remote } = deps.createRemoteRouteHarness(
+      vi.fn(async (endpoint) => {
+        return Response.json(
+          String(endpoint).includes("/json/list")
+            ? [rawTab("LOCAL_PAGE", url)]
+            : { webSocketDebuggerUrl: "wss://1.1.1.1:9222/devtools/browser/REMOTE" },
+        );
+      }),
     );
-    expect(fetchMock).not.toHaveBeenCalled();
+    state.resolved.cdpPolicy = { dangerouslyAllowPrivateNetwork: false };
+    await expect(remote.openTab(url)).resolves.toMatchObject({ targetId: "LOCAL_PAGE", url });
+    expect(createTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ url, ssrfPolicy: { dangerouslyAllowPrivateNetwork: false } }),
+    );
   });
 
   it("uses remote-class tab-open timeouts for attachOnly loopback CDP profiles", async () => {
@@ -307,7 +318,7 @@ describe("browser server-context loopback direct WebSocket profiles", () => {
 
     global.fetch = withBrowserFetchPreconnect(fetchMock);
     const state = deps.makeState("openclaw");
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
     state.resolved.profiles.openclaw = {
       cdpUrl: "wss://127.0.0.1:18800/cdp?token=abc",
       color: "#FF4500",
@@ -337,7 +348,7 @@ describe("browser server-context loopback direct WebSocket profiles", () => {
 
     global.fetch = withBrowserFetchPreconnect(fetchMock);
     const state = deps.makeState("openclaw");
-    state.resolved.ssrfPolicy = {
+    state.resolved.cdpPolicy = {
       dangerouslyAllowPrivateNetwork: false,
       allowedHostnames: ["browserless.example.com"],
     };

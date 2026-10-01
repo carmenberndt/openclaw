@@ -136,7 +136,7 @@ const BROWSER_FACADE_SOURCE_CONTRACTS: readonly BrowserFacadeSourceContract[] = 
       "resolveProfile",
     ],
     omits: [
-      "resolveBrowserSsrFPolicy",
+      "resolveBrowserCdpPolicy",
       "ensureDefaultProfile",
       "ensureDefaultUserBrowserProfile",
       "normalizeHexColor",

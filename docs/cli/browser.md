@@ -42,7 +42,7 @@ Agents can run the same readiness check with `browser({ action: "doctor" })`.
 
 ## Quick troubleshooting
 
-If `start` fails with `not reachable after start`, troubleshoot CDP readiness first. If `start` and `tabs` succeed but `open` or `navigate` fails, the browser control plane is healthy and the failure is usually a navigation SSRF policy block.
+If `start` fails with `not reachable after start`, troubleshoot CDP readiness first. If `start` and `tabs` succeed but `open` or `navigate` fails, the browser control plane is healthy and check the URL, browser connection, and target page. Page navigation does not use OpenClaw IP/DNS checks; `browser.cdpPolicy` protects control endpoints only.
 
 Minimal sequence:
 

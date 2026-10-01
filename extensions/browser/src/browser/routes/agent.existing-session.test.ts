@@ -44,12 +44,6 @@ const chromeMcpMocks = vi.hoisted(() => ({
   ),
 }));
 
-const navigationGuardMocks = vi.hoisted(() => ({
-  assertBrowserNavigationAllowed: vi.fn(async () => {}),
-  assertBrowserNavigationResultAllowed: vi.fn(async () => {}),
-  withBrowserNavigationPolicy: vi.fn((ssrfPolicy?: unknown) => (ssrfPolicy ? { ssrfPolicy } : {})),
-}));
-
 vi.mock("../chrome-mcp.js", () => ({
   ...chromeMcpMocks,
   closeChromeMcpTab: vi.fn(async () => {}),
@@ -102,8 +96,6 @@ vi.mock("../cdp.js", () => ({
   snapshotAria: vi.fn(),
 }));
 
-vi.mock("../navigation-guard.js", () => navigationGuardMocks);
-
 vi.mock("../screenshot.js", () => ({
   DEFAULT_BROWSER_SCREENSHOT_MAX_BYTES: 128,
   DEFAULT_BROWSER_SCREENSHOT_MAX_SIDE: 64,
@@ -131,20 +123,20 @@ const { registerBrowserAgentActRoutes } = await import("./agent.act.js");
 const { registerBrowserAgentActHookRoutes } = await import("./agent.act.hooks.js");
 const { registerBrowserAgentSnapshotRoutes } = await import("./agent.snapshot.js");
 
-function getSnapshotGetHandler(ssrfPolicy?: unknown) {
+function getSnapshotGetHandler(cdpPolicy?: unknown) {
   const { app, getHandlers } = createBrowserRouteApp();
   registerBrowserAgentSnapshotRoutes(app, {
-    state: () => ({ resolved: { ssrfPolicy } }),
+    state: () => ({ resolved: { cdpPolicy } }),
   } as never);
   const handler = getHandlers.get("/snapshot");
   expect(handler).toBeTypeOf("function");
   return handler;
 }
 
-function getSnapshotPostHandler(ssrfPolicy?: unknown) {
+function getSnapshotPostHandler(cdpPolicy?: unknown) {
   const { app, postHandlers } = createBrowserRouteApp();
   registerBrowserAgentSnapshotRoutes(app, {
-    state: () => ({ resolved: { ssrfPolicy } }),
+    state: () => ({ resolved: { cdpPolicy } }),
   } as never);
   const handler = postHandlers.get("/screenshot");
   expect(handler).toBeTypeOf("function");
@@ -223,7 +215,6 @@ describe("existing-session browser routes", () => {
       routeState.profileCtx.listTabs,
       vi.mocked(withChromeMcpTarget),
       ...Object.values(chromeMcpMocks),
-      ...Object.values(navigationGuardMocks),
     ]) {
       if ("mockClear" in mock) {
         mock.mockClear();
@@ -478,28 +469,7 @@ describe("existing-session browser routes", () => {
     );
   });
 
-  it("blocks existing-session snapshots when the current URL violates browser navigation policy", async () => {
-    routeState.profileCtx.ensureTabAvailable.mockResolvedValueOnce({
-      targetId: "7",
-      url: "http://127.0.0.1:8080/admin",
-    });
-    navigationGuardMocks.assertBrowserNavigationResultAllowed.mockRejectedValueOnce(
-      new Error("browser navigation blocked by policy"),
-    );
-    const response = await runRoute(getSnapshotGetHandler({ allowPrivateNetwork: false }), {
-      query: { format: "ai" },
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.body).toEqual({ error: "browser navigation blocked by policy" });
-    expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
-      url: "http://127.0.0.1:8080/admin",
-      ssrfPolicy: { allowPrivateNetwork: false },
-    });
-    expect(chromeMcpMocks.takeChromeMcpSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("rejects existing-session snapshot selectors before checking the current URL", async () => {
+  it("rejects existing-session snapshot selectors on private pages", async () => {
     routeState.profileCtx.ensureTabAvailable.mockResolvedValueOnce({
       targetId: "7",
       url: "http://127.0.0.1:8080/admin",
@@ -512,21 +482,7 @@ describe("existing-session browser routes", () => {
     expect(response.body).toEqual({
       error: EXISTING_SESSION_LIMITS.snapshot.snapshotSelector,
     });
-    expect(navigationGuardMocks.assertBrowserNavigationAllowed).not.toHaveBeenCalled();
-    expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).not.toHaveBeenCalled();
     expect(chromeMcpMocks.takeChromeMcpSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("checks existing-session screenshot URL when SSRF policy is configured", async () => {
-    const response = await runRoute(getSnapshotPostHandler({ allowPrivateNetwork: false }), {
-      body: { ref: "btn-1", type: "jpeg" },
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(navigationGuardMocks.assertBrowserNavigationResultAllowed).toHaveBeenCalledWith({
-      url: "https://example.com",
-      ssrfPolicy: { allowPrivateNetwork: false },
-    });
   });
 
   it("rejects selector-based element screenshots for existing-session profiles", async () => {

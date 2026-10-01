@@ -9,7 +9,6 @@ export type RemoteProfileTestDeps = {
   cdpModule: typeof import("./cdp.js");
   chromeModule: typeof import("./chrome.js");
   BrowserCdpEndpointBlockedError: typeof import("./errors.js").BrowserCdpEndpointBlockedError;
-  InvalidBrowserNavigationUrlError: typeof import("./navigation-guard.js").InvalidBrowserNavigationUrlError;
   pwAiModule: typeof import("./pw-ai-module.js");
   closePlaywrightBrowserConnection: typeof import("./pw-session.js").closePlaywrightBrowserConnection;
   createBrowserRouteContext: typeof import("./server-context.js").createBrowserRouteContext;
@@ -28,7 +27,6 @@ const loadRemoteProfileTestDepsOnce = createLazyRuntimeModule(() =>
     const cdpModule = await import("./cdp.js");
     const chromeModule = await import("./chrome.js");
     const { BrowserCdpEndpointBlockedError } = await import("./errors.js");
-    const { InvalidBrowserNavigationUrlError } = await import("./navigation-guard.js");
     const pwAiModule = await import("./pw-ai-module.js");
     const { closePlaywrightBrowserConnection } = await import("./pw-session.js");
     const { createBrowserRouteContext } = await import("./server-context.js");
@@ -44,7 +42,6 @@ const loadRemoteProfileTestDepsOnce = createLazyRuntimeModule(() =>
       cdpModule,
       chromeModule,
       BrowserCdpEndpointBlockedError,
-      InvalidBrowserNavigationUrlError,
       pwAiModule,
       closePlaywrightBrowserConnection,
       createBrowserRouteContext,

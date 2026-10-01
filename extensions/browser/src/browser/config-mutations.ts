@@ -69,7 +69,7 @@ export async function createBrowserProfileConfig(params: {
       let nextProfileConfig: BrowserProfileConfig;
       if (params.parsedCdpUrl) {
         try {
-          await assertCdpEndpointAllowed(params.parsedCdpUrl, latestResolved.ssrfPolicy);
+          await assertCdpEndpointAllowed(params.parsedCdpUrl, latestResolved.cdpPolicy);
         } catch (err) {
           throw new BrowserValidationError(formatErrorMessage(err));
         }

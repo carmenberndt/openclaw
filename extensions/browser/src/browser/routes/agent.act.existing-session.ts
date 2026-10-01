@@ -1,18 +1,8 @@
-/** Existing-session action waits, navigation verification, and deadline ownership. */
+/** Existing-session action waits and deadline ownership. */
 import { setTimeout as sleep } from "node:timers/promises";
-import { EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS } from "../act-policy.js";
 import type { ChromeMcpTargetOperation } from "../chrome-mcp-contracts.js";
-import {
-  ChromeMcpDocumentUnavailableError,
-  evaluateChromeMcpScript,
-  withChromeMcpDocument,
-} from "../chrome-mcp.js";
+import { ChromeMcpDocumentUnavailableError, withChromeMcpDocument } from "../chrome-mcp.js";
 import { normalizeBrowserEvaluateFunctionSource } from "../evaluate-source.js";
-import {
-  assertBrowserNavigationResultAllowed,
-  type BrowserNavigationPolicyOptions,
-  withBrowserNavigationPolicy,
-} from "../navigation-guard.js";
 import { matchBrowserUrlPattern } from "../url-pattern.js";
 
 /** Abort nested operations without racing the route's response/error owner. */
@@ -42,107 +32,6 @@ export function createExistingSessionDeadline(
     },
     cleanup: () => clearTimeout(timer),
   };
-}
-
-async function readExistingSessionLocationHref(params: ChromeMcpTargetOperation): Promise<string> {
-  const currentUrl = await evaluateChromeMcpScript({
-    ...params,
-    fn: "() => window.location.href",
-  });
-  if (typeof currentUrl !== "string") {
-    throw new Error("Location check returned a non-string result");
-  }
-  const normalizedUrl = currentUrl.trim();
-  if (!normalizedUrl) {
-    throw new Error("Location check returned an empty URL");
-  }
-  return normalizedUrl;
-}
-
-export async function assertExistingSessionPostInteractionNavigationAllowed(
-  params: ChromeMcpTargetOperation &
-    BrowserNavigationPolicyOptions & {
-      listTabs: () => Promise<Array<{ targetId: string; url: string }>>;
-      initialTabTargetIds: ReadonlySet<string>;
-    },
-): Promise<void> {
-  const navigationPolicy = withBrowserNavigationPolicy(params.ssrfPolicy, {
-    browserProxyMode: params.browserProxyMode,
-  });
-  if (!navigationPolicy.ssrfPolicy && !navigationPolicy.browserProxyMode) {
-    return;
-  }
-  const listTabs = params.listTabs;
-  const initialTabTargetIds = params.initialTabTargetIds;
-
-  const assertNewTabsAllowed = async () => {
-    const tabs = await listTabs();
-    for (const tab of tabs) {
-      if (initialTabTargetIds.has(tab.targetId)) {
-        continue;
-      }
-      await assertBrowserNavigationResultAllowed({
-        url: tab.url,
-        signal: params.signal,
-        ...navigationPolicy,
-      });
-    }
-  };
-
-  let lastObservedUrl: string | undefined;
-  let sawStableAllowedUrl = false;
-  for (const delayMs of EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS) {
-    if (delayMs > 0) {
-      await sleep(delayMs, undefined, { signal: params.signal });
-    }
-    let currentUrl: string;
-    try {
-      currentUrl = await readExistingSessionLocationHref(params);
-    } catch {
-      params.signal?.throwIfAborted();
-      sawStableAllowedUrl = false;
-      continue;
-    }
-    await assertBrowserNavigationResultAllowed({
-      url: currentUrl,
-      signal: params.signal,
-      ...navigationPolicy,
-    });
-    sawStableAllowedUrl = currentUrl === lastObservedUrl;
-    lastObservedUrl = currentUrl;
-  }
-
-  if (sawStableAllowedUrl) {
-    await assertNewTabsAllowed();
-    return;
-  }
-
-  // If the loop exhausted without confirming stability but we did observe
-  // at least one allowed URL, run a single follow-up probe so a late URL
-  // transition that has already settled is not treated as a false failure.
-  if (lastObservedUrl) {
-    const lastDelay =
-      EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS[
-        EXISTING_SESSION_NAVIGATION_RECHECK_DELAYS_MS.length - 1
-      ];
-    await sleep(lastDelay, undefined, { signal: params.signal });
-    try {
-      const followUpUrl = await readExistingSessionLocationHref(params);
-      await assertBrowserNavigationResultAllowed({
-        url: followUpUrl,
-        signal: params.signal,
-        ...navigationPolicy,
-      });
-      if (followUpUrl === lastObservedUrl) {
-        await assertNewTabsAllowed();
-        return;
-      }
-    } catch {
-      params.signal?.throwIfAborted();
-    }
-  }
-
-  throw new Error("Unable to verify stable post-interaction navigation");
 }
 
 function buildExistingSessionWaitPredicate(params: {
@@ -196,8 +85,6 @@ export async function waitForExistingSessionCondition(
     url?: string;
     loadState?: "load" | "domcontentloaded" | "networkidle";
     fn?: string;
-    ssrfPolicy?: BrowserNavigationPolicyOptions["ssrfPolicy"];
-    browserProxyMode?: BrowserNavigationPolicyOptions["browserProxyMode"];
   },
 ): Promise<void> {
   if (params.timeMs && params.timeMs > 0) {
@@ -216,7 +103,7 @@ export async function waitForExistingSessionCondition(
       try {
         const ready = await withChromeMcpDocument({ ...params, signal }, async (document) => {
           deadline.throwIfAborted();
-          const readAllowedUrl = async () => {
+          const readCurrentUrl = async () => {
             deadline.throwIfAborted();
             const url = await document.evaluate(`(root) => {
             const boundDocument = root?.nodeType === 9 ? root : root?.ownerDocument;
@@ -226,16 +113,9 @@ export async function waitForExistingSessionCondition(
             if (typeof url !== "string" || !url.trim()) {
               return null;
             }
-            await assertBrowserNavigationResultAllowed({
-              url,
-              signal,
-              ...withBrowserNavigationPolicy(params.ssrfPolicy, {
-                browserProxyMode: params.browserProxyMode,
-              }),
-            });
             return url;
           };
-          const currentUrl = await readAllowedUrl();
+          const currentUrl = await readCurrentUrl();
           if (!currentUrl) {
             return false;
           }
@@ -279,7 +159,7 @@ export async function waitForExistingSessionCondition(
           if (!predicateReady || !params.url) {
             return predicateReady;
           }
-          const finalUrl = await readAllowedUrl();
+          const finalUrl = await readCurrentUrl();
           return finalUrl !== null && matchBrowserUrlPattern(params.url, finalUrl);
         });
         deadline.throwIfAborted();

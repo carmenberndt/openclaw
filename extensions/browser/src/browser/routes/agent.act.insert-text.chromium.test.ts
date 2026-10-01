@@ -51,7 +51,7 @@ describe.runIf(process.env.OPENCLAW_BROWSER_PASTE_E2E === "1")("Chromium focused
         resolved: resolveBrowserConfig({
           defaultProfile: "paste",
           evaluateEnabled: false,
-          ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+          cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
           profiles: { paste: { cdpUrl, color: "#123456", attachOnly: true } },
         }),
         profiles: new Map(),

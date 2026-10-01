@@ -84,7 +84,7 @@ function makeState(): BrowserServerState {
     resolvedOverrides: {
       evaluateEnabled: true,
       headless: false,
-      ssrfPolicy: { dangerouslyAllowPrivateNetwork: true },
+      cdpPolicy: { dangerouslyAllowPrivateNetwork: true },
       profiles: {
         "chrome-live": {
           cdpPort: 18801,
@@ -130,7 +130,7 @@ afterEach(() => {
 describe("browser server-context existing-session profile", () => {
   it("fails closed for Chrome MCP endpoint mcpArgs under the default CDP policy", async () => {
     const state = makeState();
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
     state.resolved.profiles["chrome-live"] = {
       ...state.resolved.profiles["chrome-live"],
       mcpArgs: ["--browserUrl", "http://127.0.0.1:9222"],
@@ -154,7 +154,6 @@ describe("browser server-context existing-session profile", () => {
       state.resolved.profiles["chrome-live"],
       "chrome-live browser profile",
     );
-    state.resolved.ssrfPolicy = undefined;
     state.resolved.profiles["chrome-live"] = {
       ...chromeLiveProfile,
       cdpUrl: "http://openclaw:relay-token@127.0.0.1:9222",
@@ -286,52 +285,34 @@ describe("browser server-context existing-session profile", () => {
     );
   });
 
-  it("does not sticky-adopt a Chrome MCP tab when the final URL is policy-blocked", async () => {
+  it("sticky-adopts a Chrome MCP tab redirected to a private URL", async () => {
     const goodTab = tab("chrome-mcp:good:1", "https://example.com/", "Good");
-    const blockedTargetId = "chrome-mcp:blocked:1";
-    vi.mocked(chromeMcp.openChromeMcpTab).mockResolvedValueOnce(goodTab).mockResolvedValueOnce({
-      targetId: blockedTargetId,
-      title: "Blocked",
-      url: "http://127.0.0.1:9/",
-      type: "page",
-    });
-    vi.mocked(chromeMcp.listChromeMcpTabs).mockResolvedValue([
-      goodTab,
-      {
-        targetId: blockedTargetId,
-        title: "Blocked",
-        url: "http://127.0.0.1:9/",
-        type: "page",
-      },
-    ]);
+    const privateTab = tab("chrome-mcp:private:1", "http://127.0.0.1:9/", "Private");
+    vi.mocked(chromeMcp.openChromeMcpTab)
+      .mockResolvedValueOnce(goodTab)
+      .mockResolvedValueOnce(privateTab);
+    vi.mocked(chromeMcp.listChromeMcpTabs).mockResolvedValue([goodTab, privateTab]);
     const state = makeState();
-    state.resolved.ssrfPolicy = {};
+    state.resolved.cdpPolicy = {};
     const live = createBrowserRouteContext({ getState: () => state }).forProfile("chrome-live");
 
-    await expect(live.openTab("https://example.com", { label: "good" })).resolves.toEqual(
-      expect.objectContaining({ targetId: goodTab.targetId }),
-    );
+    await live.openTab("https://example.com", { label: "good" });
     expect(state.profiles.get("chrome-live")?.lastTargetId).toBe(goodTab.targetId);
-
     await expect(
-      live.openTab("https://example.com/redirect", { label: "blocked" }),
-    ).rejects.toThrow(/private|blocked|ssrf/i);
-    const profileState = state.profiles.get("chrome-live");
-    expect(profileState?.lastTargetId).toBe(goodTab.targetId);
-    expect(profileState?.lastTargetId).not.toBe(blockedTargetId);
-    expect(profileState?.tabAliases).toEqual({
-      nextTabNumber: 2,
+      live.openTab("https://example.com/redirect", { label: "private" }),
+    ).resolves.toEqual(
+      expect.objectContaining({ targetId: privateTab.targetId, url: privateTab.url }),
+    );
+    expect(state.profiles.get("chrome-live")?.lastTargetId).toBe(privateTab.targetId);
+    expect(state.profiles.get("chrome-live")?.tabAliases).toEqual({
+      nextTabNumber: 3,
       byTargetId: {
-        [goodTab.targetId]: {
-          tabId: "t1",
-          label: "good",
-          url: goodTab.url,
-        },
+        [goodTab.targetId]: { tabId: "t1", label: "good", url: goodTab.url },
+        [privateTab.targetId]: { tabId: "t2", label: "private", url: privateTab.url },
       },
     });
-
     await expect(live.ensureTabAvailable()).resolves.toEqual(
-      expect.objectContaining({ targetId: goodTab.targetId }),
+      expect.objectContaining({ targetId: privateTab.targetId }),
     );
   });
 
