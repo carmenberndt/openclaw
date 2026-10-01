@@ -78,7 +78,11 @@ import {
   DEFAULT_OPENCLAW_BROWSER_COLOR,
   DEFAULT_OPENCLAW_BROWSER_PROFILE_NAME,
 } from "./constants.js";
-import { BROWSER_ERROR_REASONS, BrowserProfileUnavailableError } from "./errors.js";
+import {
+  BROWSER_ERROR_REASONS,
+  BrowserNativePolicyBlockedError,
+  BrowserProfileUnavailableError,
+} from "./errors.js";
 import { ensureOutputDirectory } from "./output-directories.js";
 import { DEFAULT_DOWNLOAD_DIR } from "./paths.js";
 import type { ManagedBrowserHeadlessSource } from "./profile.types.js";
@@ -91,6 +95,8 @@ const CHROME_SINGLETON_LOCK_PATHS = [
 ] as const;
 const CHROME_SINGLETON_IN_USE_PATTERN = /profile appears to be in use by another chromium process/i;
 const CHROME_MISSING_DISPLAY_PATTERN = /missing x server|\$DISPLAY/i;
+const CHROME_REMOTE_DEBUGGING_BLOCKED_PATTERN =
+  /^DevTools remote debugging is disallowed by (?:the )?system admin\.?\s*$/m;
 const CHROME_GRACEFUL_CLOSE_COMMAND_TIMEOUT_MS = 500;
 const CHROME_LAUNCH_STDERR_TAIL_MAX_BYTES = 64 * 1024;
 const CHROME_STDERR_MARKER_SCAN_TAIL_CHARS = 256;
@@ -115,6 +121,7 @@ function diagnosticShowsChromeHttpDiscovery(diagnostic: ChromeCdpDiagnostic | nu
 type ChromeLaunchStderrSignals = {
   singletonInUse: boolean;
   missingDisplay: boolean;
+  remoteDebuggingBlocked: boolean;
 };
 
 function createChromeLaunchStderrDiagnostics(maxBytes: number) {
@@ -122,6 +129,7 @@ function createChromeLaunchStderrDiagnostics(maxBytes: number) {
   const signals: ChromeLaunchStderrSignals = {
     singletonInUse: false,
     missingDisplay: false,
+    remoteDebuggingBlocked: false,
   };
   let markerScanTail = "";
 
@@ -129,6 +137,7 @@ function createChromeLaunchStderrDiagnostics(maxBytes: number) {
     const scanText = `${markerScanTail}${chunkText}`;
     signals.singletonInUse ||= CHROME_SINGLETON_IN_USE_PATTERN.test(scanText);
     signals.missingDisplay ||= CHROME_MISSING_DISPLAY_PATTERN.test(scanText);
+    signals.remoteDebuggingBlocked ||= CHROME_REMOTE_DEBUGGING_BLOCKED_PATTERN.test(scanText);
     markerScanTail = scanText.slice(-CHROME_STDERR_MARKER_SCAN_TAIL_CHARS);
   };
 
@@ -150,6 +159,7 @@ function createChromeLaunchStderrDiagnostics(maxBytes: number) {
       tail.clear();
       signals.singletonInUse = false;
       signals.missingDisplay = false;
+      signals.remoteDebuggingBlocked = false;
       markerScanTail = "";
     },
   };
@@ -1286,6 +1296,9 @@ export async function launchOpenClawChrome(
             proc.kill("SIGKILL");
           } catch {
             // ignore
+          }
+          if (stderrSignals.remoteDebuggingBlocked) {
+            throw new BrowserNativePolicyBlockedError("remote-debugging");
           }
           throw new Error(
             `Failed to start Chrome CDP on port ${profile.cdpPort} for profile "${profile.name}". ${diagnosticText}${launchHints}${stderrHint}`,

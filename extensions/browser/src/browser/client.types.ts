@@ -5,6 +5,7 @@
  */
 import type { lookup as dnsLookupCb } from "node:dns";
 import type { BrowserEngineDescriptor, BrowserEngineId } from "./engines/types.js";
+import type { NativeBrowserPolicyStatus } from "./native-policy.js";
 import type { ManagedBrowserHeadlessSource } from "./profile.types.js";
 
 type BrowserCdpLookup = typeof dnsLookupCb;
@@ -130,6 +131,7 @@ export type BrowserStatus = {
    * Passive status calls never launch a browser to populate this field.
    */
   graphics?: BrowserGraphicsDiagnostics | null;
+  nativePolicy?: NativeBrowserPolicyStatus;
 };
 
 /** Browser tab record exposed by tab listing and tab mutation endpoints. */

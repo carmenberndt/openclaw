@@ -4,6 +4,8 @@ import {
   BROWSER_ACT_ERROR_CODES,
   BROWSER_ERROR_REASONS,
   BrowserProfileUnavailableError,
+  BrowserActionError,
+  BrowserNativePolicyBlockedError,
   BrowserTabNotFoundError,
   parseBrowserErrorPayload,
   toBrowserErrorResponse,
@@ -42,6 +44,43 @@ describe("browser action errors", () => {
     expect(
       parseBrowserErrorPayload({ error: "failure", reason: "untrusted_reason", details: {} }),
     ).toEqual({ error: "failure" });
+  });
+});
+
+describe("native enterprise policy errors", () => {
+  it("reports a denial established by the native navigation owner", () => {
+    const result = toBrowserErrorResponse(new BrowserNativePolicyBlockedError("navigation"));
+    expect(result).toMatchObject({ status: 403, reason: "native_policy_blocked" });
+    expect(result?.message).toContain("openclaw browser policy");
+    expect(
+      parseBrowserErrorPayload({
+        error: result?.message,
+        reason: result && "reason" in result ? result.reason : undefined,
+      }),
+    ).toMatchObject({ reason: "native_policy_blocked" });
+  });
+
+  it("gives administrator guidance when policy disables browser control", () => {
+    const result = toBrowserErrorResponse(new BrowserNativePolicyBlockedError("remote-debugging"));
+    expect(result).toMatchObject({ status: 403, reason: "native_policy_blocked" });
+    expect(result?.message).toContain("RemoteDebuggingAllowed");
+  });
+
+  it("does not mislabel unrelated network failures", () => {
+    expect(toBrowserErrorResponse(new Error("page.goto: net::ERR_CONNECTION_REFUSED"))).toBeNull();
+    expect(toBrowserErrorResponse(new Error("Access denied"))).toBeNull();
+  });
+
+  it.each([
+    "net::ERR_BLOCKED_BY_ADMINISTRATOR",
+    "DevTools remote debugging is disallowed by the system admin.",
+  ])("preserves an evaluate failure quoting %s", (diagnostic) => {
+    const message = `page.evaluate: Error: Invalid evaluate function: ${diagnostic}`;
+    expect(toBrowserErrorResponse(new Error(message))).toBeNull();
+    expect(toBrowserErrorResponse(new BrowserActionError(message))).toMatchObject({
+      message,
+      code: BROWSER_ACT_ERROR_CODES.operationFailed,
+    });
   });
 });
 

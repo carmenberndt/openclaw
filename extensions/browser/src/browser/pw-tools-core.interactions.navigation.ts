@@ -7,6 +7,7 @@ import {
   withBrowserNavigationPolicy,
 } from "./navigation-guard.js";
 import {
+  assertNativePageNavigationSucceeded,
   assertPageNavigationCompletedSafely,
   getPageForTargetId,
   isBrowserObservedDialogBlockedError,
@@ -284,6 +285,7 @@ async function assertObservedDelayedNavigations(
       ...navigationPolicy,
       targetId: opts.targetId,
     });
+    await assertNativePageNavigationSucceeded(opts.page);
   }
   if (subframeError) {
     throw toErrorObject(subframeError, "Non-Error thrown");
@@ -347,7 +349,7 @@ function scheduleDelayedInteractionNavigationGuard(
       response: null,
       ...navigationPolicy,
       targetId: opts.targetId,
-    });
+    }).then(() => assertNativePageNavigationSucceeded(opts.page));
   }
   if (typeof page.on !== "function" || typeof page.off !== "function") {
     return Promise.resolve();
@@ -410,9 +412,7 @@ async function assertInteractionNavigationCompletedSafely<T>(
   } & BrowserNavigationPolicyOptions,
 ): Promise<T> {
   const navigationPolicy = interactionNavigationPolicy(opts);
-  if (!hasInteractionNavigationPolicy(navigationPolicy)) {
-    return await opts.action();
-  }
+  const hasNavigationPolicy = hasInteractionNavigationPolicy(navigationPolicy);
   // Phase 1: keep a framenavigated listener alive for the entire duration of the
   // action so navigations triggered mid-click or mid-evaluate are not missed.
   // Using a fixed pre-action timer would expire before the action finishes for
@@ -457,14 +457,17 @@ async function assertInteractionNavigationCompletedSafely<T>(
   }
 
   if (navigationObserved) {
-    await assertPageNavigationCompletedSafely({
-      cdpUrl: opts.cdpUrl,
-      page: opts.page,
-      response: null,
-      ...navigationPolicy,
-      targetId: opts.targetId,
-    });
-  } else if (actionError) {
+    if (hasNavigationPolicy) {
+      await assertPageNavigationCompletedSafely({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        response: null,
+        ...navigationPolicy,
+        targetId: opts.targetId,
+      });
+    }
+    await assertNativePageNavigationSucceeded(opts.page);
+  } else if (actionError && hasNavigationPolicy) {
     // Preserve the action-error path semantics: if a rejected click/evaluate still
     // triggers a delayed navigation, the SSRF block must win over the original
     // action error instead of surfacing a stale interaction failure.
@@ -536,6 +539,9 @@ export async function awaitNavigationGuardedInteraction<T>(
   type PolicyCheckOutcome = { state: "allowed" } | { state: "failed"; error: unknown };
   const navigationPolicy = interactionNavigationPolicy(opts);
   const hasNavigationPolicy = hasInteractionNavigationPolicy(navigationPolicy);
+  const popups = new Set<Page>();
+  const observePopup = (popup: Page) => popups.add(popup);
+  opts.page.on("popup", observePopup);
   let observedPolicyError: unknown;
   const activePolicyChecks = new Set<Promise<PolicyCheckOutcome>>();
   let unsafeSourceQuarantine: Promise<void> | undefined;
@@ -610,6 +616,7 @@ export async function awaitNavigationGuardedInteraction<T>(
             ...navigationPolicy,
             targetId: opts.targetId,
           });
+          await assertNativePageNavigationSucceeded(opts.page);
         }
       }
     },
@@ -623,7 +630,17 @@ export async function awaitNavigationGuardedInteraction<T>(
     throw err;
   });
   try {
-    return await awaitActionWithAbort(guardedAction, abortPromise, onActionResolvedAfterAbort);
+    const result = await awaitActionWithAbort(
+      guardedAction,
+      abortPromise,
+      onActionResolvedAfterAbort,
+    );
+    for (const popup of popups) {
+      if (!popup.isClosed()) {
+        await assertNativePageNavigationSucceeded(popup);
+      }
+    }
+    return result;
   } catch (err) {
     if (observedPolicyError === undefined && activePolicyChecks.size > 0) {
       const outcomes = await Promise.all(activePolicyChecks);
@@ -640,6 +657,8 @@ export async function awaitNavigationGuardedInteraction<T>(
       throw toErrorObject(observedPolicyError, "Non-Error thrown");
     }
     throw err;
+  } finally {
+    opts.page.off("popup", observePopup);
   }
 }
 

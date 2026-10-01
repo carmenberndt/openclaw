@@ -15,6 +15,7 @@ import type {
   SystemProfileInfo,
 } from "../browser/client.js";
 import type { BrowserDoctorReport } from "../browser/doctor.js";
+import type { NativeBrowserPolicyReport } from "../browser/native-policy.js";
 import {
   BROWSER_TAB_REFERENCE_HELP,
   callBrowserRequest,
@@ -210,6 +211,21 @@ async function runBrowserDoctor(parent: BrowserParentOpts, profile?: string, dee
   }
 
   if (deep && status.running) {
+    await probe("native-policy", async () => {
+      const policy = await fetchBrowserManagement<NativeBrowserPolicyReport>(
+        parent,
+        "/policy",
+        resolveProfileQuery(profile),
+      );
+      return {
+        ok: policy.state !== "failed",
+        info: policy.state === "unsupported" || policy.state === "unverified",
+        detail:
+          "policies" in policy
+            ? `${policy.browser}: ${Object.keys(policy.policies).length} loaded entries; run openclaw browser policy --json for native diagnostics`
+            : policy.detail,
+      };
+    });
     await probe("live-snapshot", async () => {
       const result = await fetchBrowserManagement<
         | { ok: true; format: "aria"; nodes?: unknown[] }
@@ -305,6 +321,11 @@ export function registerBrowserManageCommands(
               status.headlessSource ? ` (${status.headlessSource})` : ""
             }`,
             `profileColor: ${status.color}`,
+            ...(status.nativePolicy
+              ? [
+                  `nativePolicy: ${status.nativePolicy.state}${"detail" in status.nativePolicy ? `; ${status.nativePolicy.detail}` : ""}`,
+                ]
+              : []),
             ...(status.graphics
               ? [`graphics: ${formatBrowserGraphicsSummary(status.graphics)}`]
               : []),
@@ -317,7 +338,7 @@ export function registerBrowserManageCommands(
   browser
     .command("doctor")
     .description("Check browser plugin readiness")
-    .option("--deep", "Run a live snapshot probe")
+    .option("--deep", "Inspect native enterprise policy and run a live snapshot probe")
     .action(async (opts: { deep?: boolean }, cmd) => {
       const parent = parentOpts(cmd);
       const profile = parent?.browserProfile;

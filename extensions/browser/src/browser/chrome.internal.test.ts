@@ -80,7 +80,12 @@ import {
   stopOwnedOpenClawChrome,
 } from "./chrome.js";
 import type { ResolvedBrowserConfig, ResolvedBrowserProfile } from "./config.js";
-import { BROWSER_ERROR_REASONS, BrowserProfileUnavailableError } from "./errors.js";
+import {
+  BROWSER_ERROR_REASONS,
+  BrowserNativePolicyBlockedError,
+  BrowserProfileUnavailableError,
+  toBrowserErrorResponse,
+} from "./errors.js";
 import { makeBrowserProfile, makeBrowserServerState } from "./server-context.test-harness.js";
 
 const CHROME_TEST_WS_MAX_PAYLOAD_BYTES = 1024 * 1024;
@@ -1428,6 +1433,36 @@ describe("chrome.ts internal", () => {
       } finally {
         await fsp.rm(userDataDir, { recursive: true, force: true });
       }
+    });
+
+    it.each(["system admin", "the system admin"])(
+      "retains a native remote-debugging denial from %s after stderr rolls",
+      async (administrator) => {
+        const { error, proc } = await captureFailedLaunchStderr({
+          port: 55560,
+          chunks: [
+            "DevTools remote debugging is disallowed by ",
+            `${administrator}.\n`,
+            Buffer.alloc(70 * 1024, "x"),
+          ],
+        });
+        expect(error).toBeInstanceOf(BrowserNativePolicyBlockedError);
+        expect(toBrowserErrorResponse(error)).toMatchObject({
+          status: 403,
+          reason: BROWSER_ERROR_REASONS.nativePolicyBlocked,
+          message: expect.stringContaining("RemoteDebuggingAllowed"),
+        });
+        expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+      },
+    );
+
+    it("does not treat a quoted console message as a native launch denial", async () => {
+      const { error } = await captureFailedLaunchStderr({
+        port: 55561,
+        chunks: ['console: "DevTools remote debugging is disallowed by the system admin."\n'],
+      });
+      expect(error).not.toBeInstanceOf(BrowserNativePolicyBlockedError);
+      expect(error.message).toContain("Failed to start Chrome CDP");
     });
 
     it("keeps only a bounded UTF-8-safe newest stderr tail when launch fails after large stderr", async () => {
