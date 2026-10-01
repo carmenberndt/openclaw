@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
@@ -81,7 +82,7 @@ it.each(["settled", "rejected", "pending"] as const)(
     if (outcome === "rejected") {
       observedDispose?.mockRejectedValue(failure);
     } else if (outcome === "pending") {
-      observedDispose?.mockResolvedValue({ errors: [failure] });
+      observedDispose?.mockResolvedValue({ errors: [failure], retainedErrors: [failure] });
     }
     try {
       const release = inspection.release();
@@ -109,6 +110,35 @@ it.each(["settled", "rejected", "pending"] as const)(
     }
   },
 );
+
+it("retains failed module cleanup while its native database remains open", async () => {
+  const fixture = createInspectionFixture();
+  const inspection = await acquirePluginRegistryForInspection({ config: fixture.config });
+  const instance = getPluginInstance(inspection.registry.plugins[0]!);
+  if (!instance) {
+    throw new Error("Missing inspection instance");
+  }
+  const database = new DatabaseSync(":memory:");
+  const failure = new Error("Native module database close failed");
+  const close = vi.spyOn(database, "close").mockImplementationOnce(() => {
+    throw failure;
+  });
+  instance.onModuleDispose(() => database.close());
+  try {
+    const error: unknown = await inspection.release().catch((reason: unknown) => reason);
+    expect(database.isOpen).toBe(true);
+    expect(hasRetainedPluginRuntimeCloseError(error)).toBe(true);
+    expect((await instance.dispose()).retainedErrors).toContain(failure);
+    expect(close).toHaveBeenCalledOnce();
+  } finally {
+    close.mockRestore();
+    if (database.isOpen) {
+      database.close();
+    }
+    await fixture.cleanup(inspection);
+    resetPluginLoaderTestStateForTest();
+  }
+});
 
 it.each([true, false])(
   "keeps workflow admission through registration and retirement (activate: %s)",

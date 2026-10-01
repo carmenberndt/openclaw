@@ -218,10 +218,11 @@ instance may omit them; feature-detect them before relying on instance cleanup.
 The existing `api.lifecycle.registerRuntimeLifecycle(...)` contract remains
 available for plugin-owned host state.
 
-Inspection release reports settled disposal failures without marking the managed
+Inspection release reports settled plugin callback failures without marking the managed
 resources as still retained. Prepared-model shutdown records those failures and
-can finish after cleanup settles. Unfinished disposal and failed host cleanup
-prerequisites still prevent shutdown from reporting a completed resource release.
+can finish after cleanup settles. Unfinished disposal, failed host-owned module/resource
+cleanup, and failed host cleanup prerequisites still prevent shutdown from reporting a
+completed resource release.
 
 Stopping or restarting the Gateway preserves persistent plugin session state and
 runs host cleanup hooks with reason `restart`. Disabling or removing a plugin owns

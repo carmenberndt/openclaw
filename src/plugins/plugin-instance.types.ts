@@ -18,6 +18,8 @@ export type PluginInstanceAdmission = {
 /** Known disposal faults are reported outcomes, never new-call admission failures. */
 export type PluginInstanceDisposalResult = {
   errors: readonly unknown[];
+  /** Failed physical-resource cleanup or unfinished disposal, not ordinary callback faults. */
+  retainedErrors?: readonly unknown[];
   /** Errors seen only in host cleanup, eligible for its named-hook reporting. */
   hostCleanupErrors?: readonly unknown[];
 };
