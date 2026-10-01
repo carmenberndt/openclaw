@@ -92,7 +92,7 @@ export function parseNativePolicyValues(
   }
   const { policyValues } = parsed.data;
   const policies = Object.fromEntries(
-    Object.entries(policyValues.chrome.policies).sort(([a], [b]) => a.localeCompare(b)),
+    Object.entries(policyValues.chrome.policies).toSorted(([a], [b]) => a.localeCompare(b)),
   );
   return {
     state: Object.keys(policies).length ? "effective" : "none",
