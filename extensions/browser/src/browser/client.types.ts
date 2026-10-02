@@ -5,7 +5,6 @@
  */
 import type { lookup as dnsLookupCb } from "node:dns";
 import type { BrowserEngineDescriptor, BrowserEngineId } from "./engines/types.js";
-import type { NativeBrowserPolicyStatus } from "./native-policy.js";
 import type { ManagedBrowserHeadlessSource } from "./profile.types.js";
 
 type BrowserCdpLookup = typeof dnsLookupCb;
@@ -91,6 +90,11 @@ export type BrowserTabOwnership =
         | "browser-identity-unavailable"
         | "browser-identity-lookup-failed";
     };
+
+export type NativeBrowserPolicyStatus = {
+  state: "effective" | "none" | "unverified" | "unsupported" | "failed";
+  detail: string;
+};
 
 /** Browser status response returned by the control server. */
 export type BrowserStatus = {

@@ -3,6 +3,7 @@ import type { SsrFPolicy } from "openclaw/plugin-sdk/security-runtime";
 import { z } from "zod";
 import { redactCdpErrorText, withCdpSocket, type CdpSendFn } from "./cdp.helpers.js";
 import { getChromeWebSocketEndpoint } from "./chrome.js";
+import type { NativeBrowserPolicyStatus } from "./client.types.js";
 import { getBrowserProfileCapabilities } from "./profile-capabilities.js";
 import type { ResolvedBrowserProfile } from "./profile.types.js";
 
@@ -30,10 +31,6 @@ const policyValuesSchema = z.object({
 });
 
 export type NativeBrowserPolicy = z.infer<typeof policyEntrySchema>;
-export type NativeBrowserPolicyStatus = {
-  state: "effective" | "none" | "unverified" | "unsupported" | "failed";
-  detail: string;
-};
 export type NativeBrowserPolicyReport =
   | (z.infer<typeof identitySchema> & {
       state: "effective" | "none";
