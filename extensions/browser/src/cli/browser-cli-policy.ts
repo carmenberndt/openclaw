@@ -9,7 +9,7 @@ export function registerBrowserPolicyCommands(
   browser: Command,
   parentOpts: (cmd: Command) => BrowserParentOpts,
 ): void {
-  const policy = browser
+  const policyCommand = browser
     .command("policy")
     .description("Inspect the running browser's effective native enterprise policy")
     .action(async (_opts, command: Command) => {
@@ -36,5 +36,5 @@ export function registerBrowserPolicyCommands(
         },
       });
     });
-  registerBrowserPolicySetupCommands(policy, parentOpts);
+  registerBrowserPolicySetupCommands(policyCommand, parentOpts);
 }
