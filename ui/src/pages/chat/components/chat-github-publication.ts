@@ -2,5 +2,5 @@ import { createGitHubPublicationRenderer } from "@openclaw/github/control-ui-api
 import "../../../components/tooltip.ts";
 import { githubPresentationHost } from "./github-presentation-host.ts";
 
-export const { renderGitHubPublicationAction, renderGitHubPublicationDetails } =
+export const { renderGitHubPublicationAction } =
   createGitHubPublicationRenderer(githubPresentationHost);

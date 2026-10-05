@@ -1,6 +1,1 @@
-export {
-  decodeGitHubPathSegment,
-  parseGitHubItemPath,
-  parseGitHubLinkTarget,
-  type GitHubLinkTarget,
-} from "@openclaw/github/control-ui-link-preview-api.js";
+export { parseGitHubLinkTarget } from "@openclaw/github/control-ui-link-preview-api.js";

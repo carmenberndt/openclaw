@@ -18,10 +18,6 @@ export type {
   GitHubPublicationOptions,
   GitHubPublicationView,
 } from "@openclaw/github/control-ui-contract.js";
-export {
-  personalGitHubPublicationSelection,
-  selectedGitHubPublisher,
-} from "@openclaw/github/control-ui-contract.js";
 type GitHubPublicationPresentation = {
   canPublishShared: boolean;
   canPublishPersonal: boolean;

@@ -9,7 +9,7 @@ import type { GitHubPresentationHost } from "./presentation-host.js";
 
 export const GITHUB_CHECK_ORDER = { failed: 0, running: 1, passed: 2, skipped: 3 } as const;
 
-export type GitHubCiDetailsProps = {
+type GitHubCiDetailsProps = {
   loading: boolean;
   result?: ControlUiSessionPullRequestCheckDetails;
   error: string | null;

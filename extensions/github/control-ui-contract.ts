@@ -10,7 +10,7 @@ export type GitHubPublicationOptions = Static<typeof SessionGitHubOptionsResultS
 export type GitHubPublicationSelection = NonNullable<
   Static<typeof SessionGitHubPublishParamsSchema>["selection"]
 >;
-export type SessionGitHubPublicationResult = Static<typeof SessionGitHubPublicationResultSchema>;
+type SessionGitHubPublicationResult = Static<typeof SessionGitHubPublicationResultSchema>;
 type SessionGitHubStatusResult = Static<typeof SessionGitHubStatusResultSchema>;
 type GitHubPublicationPublisher = NonNullable<SessionGitHubPublicationResult["publisher"]>;
 type GitHubPublicationActivity = "read" | "publish" | "confirm";
@@ -56,7 +56,5 @@ export type {
   ControlUiSessionPullRequestCheckDetails,
   ControlUiSessionPullRequest,
   ControlUiSessionBranch,
-  ControlUiSessionPullRequests,
   ControlUiSessionPullRequestSnapshot,
-  ControlUiSessionPullRequestsChanged,
 } from "@openclaw/gateway-protocol";

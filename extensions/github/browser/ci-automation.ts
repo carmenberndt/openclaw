@@ -8,7 +8,7 @@ type CronJob = Static<typeof CronJobSchema>;
 type CiAutomationOption = "autoFix" | "autoMerge" | "autoArchive";
 type CiAutomationOptions = Record<CiAutomationOption, boolean>;
 type CiAutomationJobs = Partial<Record<CiAutomationOption, CronJob>>;
-export type ChatCiAutomationProps = {
+type ChatCiAutomationProps = {
   options: CiAutomationOptions;
   pending: Partial<CiAutomationOptions>;
   jobs?: CiAutomationJobs;

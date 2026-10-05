@@ -4,11 +4,4 @@ import { githubIdentityHost } from "./github-identity-host.ts";
 
 registerGitHubEnglish();
 
-export const {
-  renderGitHubUnloadedStatus,
-  renderGitHubHealth,
-  renderGitHubDetails,
-  renderGitHubConnectionError,
-  renderGitHubConnectionSetup,
-  renderGitHubIdentity,
-} = createGitHubIdentityRenderer(githubIdentityHost);
+export const { renderGitHubIdentity } = createGitHubIdentityRenderer(githubIdentityHost);

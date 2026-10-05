@@ -10,10 +10,6 @@ export {
   chatBranchId,
   createGitHubPullRequestDismissals,
 } from "./browser/pull-request-dismissals.js";
-export {
-  personalGitHubPublicationSelection,
-  selectedGitHubPublisher,
-} from "./control-ui-contract.js";
 export type { GitHubPublicationOptions, GitHubPublicationView } from "./control-ui-contract.js";
 export type { GitHubPresentationHost } from "./browser/presentation-host.js";
 export { createGitHubCiDetailsRenderer, GITHUB_CHECK_ORDER } from "./browser/ci-details.js";
