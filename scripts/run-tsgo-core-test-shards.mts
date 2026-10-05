@@ -86,7 +86,7 @@ async function runTsgoCoreTestShards(
   const resultCode = await withDistArtifactOwnership(repoRoot, async () => {
     if (
       executionGraphs.some(
-        ({ config }) => commands.get(config) && needsControlUiPluginArtifacts(config),
+        ({ config }) => commands.get(config) && needsControlUiPluginArtifacts(config, repoRoot),
       )
     ) {
       const { prepareControlUiPluginBoundaryArtifacts } =

@@ -72,7 +72,10 @@ export function prepareTsgoCommand(
 }
 
 /** These graphs can reach Control UI imports directly or through shared test helpers. */
-export function needsControlUiPluginArtifacts(projectConfig: string) {
+export function needsControlUiPluginArtifacts(projectConfig: string, cwd: string) {
+  const root = findRepoRoot(cwd) ?? cwd;
+  const resolvedConfig = path.resolve(cwd, projectConfig);
+  // Nested projects can share these filenames without consuming the UI producers.
   return [
     "tsconfig.json",
     "test/tsconfig/tsconfig.core.test.json",
@@ -80,7 +83,7 @@ export function needsControlUiPluginArtifacts(projectConfig: string) {
       ({ config }) => config,
     ),
     ...TSGO_ROOT_TEST_SHARDS.map(({ config }) => config),
-  ].some((candidate) => path.basename(candidate) === path.basename(projectConfig));
+  ].some((candidate) => path.resolve(root, candidate) === resolvedConfig);
 }
 
 /** The caller holds artifact ownership until this compiler and its output are joined. */
@@ -198,7 +201,11 @@ async function main(): Promise<void> {
   let verified = false;
   process.exitCode = await withDistArtifactOwnership(command.cwd, async () => {
     const config = readFlagValue(command.args, "-p") ?? readFlagValue(command.args, "--project");
-    if (config && !command.args.includes("--showConfig") && needsControlUiPluginArtifacts(config)) {
+    if (
+      config &&
+      !command.args.includes("--showConfig") &&
+      needsControlUiPluginArtifacts(config, command.cwd)
+    ) {
       const { prepareControlUiPluginBoundaryArtifacts } =
         await import("./prepare-extension-package-boundary-artifacts.mts");
       await prepareControlUiPluginBoundaryArtifacts(findRepoRoot(command.cwd) ?? command.cwd);
