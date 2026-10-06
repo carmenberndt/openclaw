@@ -7,6 +7,10 @@ import {
   type SessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
@@ -250,7 +254,7 @@ export async function prepareSessionWorkspaceForRun(params: {
   context: Parameters<typeof emitSessionsChanged>[0] &
     Pick<GatewayRequestHandlerOptions["context"], "logGateway">;
   signal: AbortSignal;
-  assertCurrent: () => void;
+  assertCurrent: SessionSourceAssertion;
   runSetupScript: boolean;
 }): Promise<void> {
   const {
@@ -263,10 +267,13 @@ export async function prepareSessionWorkspaceForRun(params: {
     context,
     signal,
   } = params;
-  const assertRunOwnership = () => {
-    signal.throwIfAborted();
-    params.assertCurrent();
-  };
+  const assertRunOwnership = composeSessionSourceAssertion(
+    [params.assertCurrent],
+    (assertSources) => {
+      signal.throwIfAborted();
+      assertSources();
+    },
+  );
   assertRunOwnership();
   emitAgentRunStatusEvent({
     runId: clientRunId,
@@ -420,7 +427,7 @@ export async function prepareSessionWorkspaceForRun(params: {
             return { pendingWorktree: next };
           },
           {
-            assertCommitAllowed: assertRunOwnership,
+            workerGuard: { source: assertRunOwnership },
             requireWriteSuccess: true,
             skipMaintenance: true,
           },
@@ -459,7 +466,7 @@ export async function prepareSessionWorkspaceForRun(params: {
     }
     let bound;
     try {
-      const bind = async (assertSourceCurrent: () => void) =>
+      const bind = async (assertSourceCurrent: SessionSourceAssertion) =>
         await patchSessionEntryCore(
           target,
           (current) => {
@@ -475,9 +482,8 @@ export async function prepareSessionWorkspaceForRun(params: {
             };
           },
           {
-            assertCommitAllowed: () => {
-              assertRunOwnership();
-              assertSourceCurrent();
+            workerGuard: {
+              source: composeSessionSourceAssertion([assertRunOwnership, assertSourceCurrent]),
             },
             requireWriteSuccess: true,
             skipMaintenance: true,

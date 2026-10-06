@@ -1,5 +1,18 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/auto-reply/reply/session-entry-persistence.test.ts",
+  "src/auto-reply/reply/commands-session-store.test.ts",
+  "src/auto-reply/reply/directive-handling.model.test.ts",
+  "src/auto-reply/reply/agent-runner-cli-dispatch.test.ts",
+  "src/auto-reply/reply/commands-reset-hooks.test.ts",
+  "src/auto-reply/reply/get-reply-native-slash-fast-path.test.ts",
+  "src/auto-reply/reply/dispatch-from-config.source-completion.test.ts",
+  "src/agents/cli-session-store.test.ts",
+  "src/talk/client-voice-session.startup.test.ts",
+  "src/model-picker/apply-session-model-selection-placement.test.ts",
+  "src/plugin-sdk/session-store-history-boundary.test.ts",
+  "src/agents/tools/sessions-list-privacy.test.ts",
+  "src/gateway/server-plugin-in-process-dispatch.commit-guards.test.ts",
   "test/e2e/qa-lab/runtime/gateway-codex-delivery-cache.test.ts",
   "src/channels/feedback-reflection.worker.test.ts",
   "src/config/sessions/session-accessor.sqlite-bounded-context.test.ts",

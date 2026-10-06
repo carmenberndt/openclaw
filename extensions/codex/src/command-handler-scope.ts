@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { PluginCommandContext } from "openclaw/plugin-sdk/plugin-entry";
+import { composeSessionEntryCommitGuards } from "openclaw/plugin-sdk/session-binding-runtime";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveCodexAppServerAuthProfileIdForAgent } from "./app-server/auth-profile.js";
 import { resolveCodexBindingAppServerConnection } from "./app-server/binding-connection.js";
@@ -77,8 +78,7 @@ export async function resolvePreparedCodexCommandAuthority(
         storePath,
       })
     : undefined;
-  // Manual control commands retain the existing synchronous authority contract.
-  // Native turn execution uses the worker-backed authority separately.
+  // Direct checks stay synchronous; entry writes retain the authority's prepared predicates.
   const assertHostCurrent = currentSession?.authority.assertLegacyCurrent ?? (() => {});
   const resolvedTarget =
     target && (!sessionIdentity || !isDeepStrictEqual(target.identity, sessionIdentity))
@@ -91,13 +91,13 @@ export async function resolvePreparedCodexCommandAuthority(
         })
       : currentSession;
   const binding = resolvedTarget?.binding;
-  const assertCurrent = () => {
-    assertHostCurrent();
+  const assertCurrent = composeSessionEntryCommitGuards([assertHostCurrent], (assertSource) => {
+    assertSource();
     if (target && !isDeepStrictEqual(deps.bindingStore.read(target.identity), binding)) {
       throw new Error("Codex command binding changed before dispatch");
     }
-    assertHostCurrent();
-  };
+    assertSource();
+  });
   assertCurrent();
   return {
     target,
@@ -108,14 +108,17 @@ export async function resolvePreparedCodexCommandAuthority(
     storePath,
     assertHostCurrent,
     assertCurrent,
-    assertMutationCurrent: () => {
+    assertMutationCurrent: composeSessionEntryCommitGuards([assertCurrent], (assertSource) => {
       assertCodexHostOwnerCurrent(ctx);
-      assertCurrent();
-    },
-    assertHostMutationCurrent: () => {
-      assertCodexHostOwnerCurrent(ctx);
-      assertHostCurrent();
-    },
+      assertSource();
+    }),
+    assertHostMutationCurrent: composeSessionEntryCommitGuards(
+      [assertHostCurrent],
+      (assertSource) => {
+        assertCodexHostOwnerCurrent(ctx);
+        assertSource();
+      },
+    ),
   };
 }
 

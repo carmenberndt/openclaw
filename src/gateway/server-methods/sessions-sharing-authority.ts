@@ -1,5 +1,6 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
+import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target-paths.js";
 import {
   assertSessionStoreReadCandidate,
@@ -211,10 +212,13 @@ export async function prepareManagedSessionAccess(
       retained?.release();
       return null;
     }
-    const current = (entry?: SessionSharingTarget["entry"]) => {
+    const current = (
+      entry?: SessionSharingTarget["entry"],
+      assertRequest = () => params.sessionMutationAuthorization?.assertCurrent(),
+    ) => {
       // Refuse dirty membership before invoking any additional request authority guard.
       readCurrent(selected);
-      params.sessionMutationAuthorization?.assertCurrent();
+      assertRequest();
       const { target, sharing } = readCurrent(selected);
       if (
         entry &&
@@ -234,9 +238,12 @@ export async function prepareManagedSessionAccess(
       // Lifecycle peers still fence the logical locator; worker I/O retains the physical source.
       lifecycleStorePath: retained?.storageTarget.storePath ?? configuredStorePath,
       current,
-      assertCurrent: () => {
-        current();
-      },
+      assertCurrent: composeSessionSourceAssertion(
+        [params.sessionMutationAuthorization?.assertCurrent],
+        (assertSources) => {
+          current(undefined, assertSources);
+        },
+      ),
       assertEntryManageable: (entry: SessionSharingTarget["entry"]) => {
         current(entry);
       },

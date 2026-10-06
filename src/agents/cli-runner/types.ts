@@ -2,6 +2,7 @@ import type { ProviderModelRef } from "@openclaw/model-catalog-core/model-catalo
 import type { ToolResultContentSource } from "../../../packages/agent-core/src/types.js";
 import type { CliSessionBinding, SessionEntry } from "../../config/sessions.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../../config/types.tools.js";
@@ -166,7 +167,7 @@ export type RunCliAgentParams = {
     openClaw: string[];
   };
   /** Caller-owned authority for credential use; cancellation alone is not authorization. */
-  assertCurrent?: () => void;
+  assertCurrent?: SessionSourceAssertion;
   /** Internal completion caller's representation of operator authorization failures. */
   mapOperatorAuthorizationError?: (error: unknown) => Error;
   onExecutionStarted?: () => unknown;

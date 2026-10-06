@@ -2,6 +2,7 @@
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import { mergeSessionSnapshotChanges } from "../../config/sessions/session-snapshot-merge.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 type PersistSessionEntryParams = {
   agentId: string;
@@ -11,7 +12,7 @@ type PersistSessionEntryParams = {
   initialEntry: SessionEntry;
   entry: SessionEntry;
   creation?: Parameters<typeof buildSessionCreationStamp>[0];
-  assertCommitAllowed?: () => void;
+  assertCommitAllowed?: SessionSourceAssertion;
   shouldPersist?: (entry: SessionEntry | undefined) => boolean;
 };
 

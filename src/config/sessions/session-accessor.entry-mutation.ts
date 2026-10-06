@@ -34,6 +34,10 @@ import type {
   SessionEntryCreateWithTranscriptOptions,
 } from "./session-accessor.types.js";
 import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
+import {
+  captureExternalSessionCommitGuard,
+  type SessionSourceCheck,
+} from "./session-source-authority.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import {
   assertSessionStoreReadCandidate,
@@ -484,7 +488,7 @@ export function resolveSessionAbortTarget(
  * storage-sized operation. Runtime abort side effects remain with callers.
  */
 export async function markSessionAbortTarget(params: {
-  isCurrent?: () => boolean;
+  isCurrent?: SessionSourceCheck;
   resolveAbortCutoff?: (context: SessionAbortTargetContext) => SessionAbortTargetCutoff | undefined;
   scope: SessionAccessScope;
   now?: () => number;
@@ -495,7 +499,7 @@ export async function markSessionAbortTarget(params: {
     const updated = await patchSessionEntryCore(
       params.scope,
       (currentEntry) => {
-        if (params.isCurrent?.() === false) {
+        if (!params.isCurrent?.sessionSource && params.isCurrent?.() === false) {
           return null;
         }
         resolution.target = {
@@ -519,10 +523,15 @@ export async function markSessionAbortTarget(params: {
         skipMaintenance: true,
         // The patch callback yields before BEGIN; the conversation can move without
         // changing this session row, so its snapshot comparison cannot fence Stop.
-        assertCommitAllowed: () => {
-          if (resolution.target && params.isCurrent?.() === false) {
-            throw new Error("The selected session changed before it could be stopped.");
-          }
+        workerGuard: {
+          source:
+            params.isCurrent?.sessionSource ??
+            (params.isCurrent &&
+              captureExternalSessionCommitGuard(() => {
+                if (resolution.target && params.isCurrent?.() === false) {
+                  throw new Error("The selected session changed before it could be stopped.");
+                }
+              })),
         },
       },
     );

@@ -16,6 +16,29 @@ paths are migration debt, not a pattern to extend. The
 [migration inventory](/reference/database-schemas/worker-access-inventory) separates
 candidate main-thread paths from SQL already executing in workers.
 
+Ordinary durable entry patches use the existing agent writer by default. Reply
+settings, compaction accounting, titles, voice sessions, and bundled lifecycle
+producers carry source predicates through preparation into that writer. The worker
+rereads authoritative rows and owns entry normalization, conversation identity,
+and provenance in the synchronous transaction. Host grants retain live caller
+authority at transaction and commit; acknowledged publications and accepted-write
+settlement remain with the existing entry owner. Incognito routing is unchanged.
+The v2026.9.8 `plugin-sdk/session-store-runtime` entry and last-route contracts
+retain their opaque `assertCommitAllowed` callbacks inside the native transaction.
+Released model-selection validators and Stop currentness callbacks likewise keep
+their native adapter; bundled controls carry prepared source checks instead. Cross-store sources
+also retain native atomicity while the released synchronous transcript SDK can
+bypass async queues; revisit that compatibility path at the next SDK major.
+Schemas, retained bytes, durability, and update behavior are unchanged.
+
+Bundled plugins obtain prepared currentness checks and compose entry commit guards
+through the existing private `session-binding-runtime` facade. Its async capture
+retains the selected session generation and optional conversation alternatives;
+only a selected alternative survives through each write. Host callbacks retain
+live channel/run facts, while persisted entry and routing checks become worker
+predicates. Ordinary wrappers must preserve that source carrier. Public SDK
+callbacks keep their released synchronous contract without new public exports.
+
 Reply initialization, agent-turn preparation, and status rendering recover missing
 lifecycle timestamps through the transcript reader. Header reads retain their
 physical database owner and accept results under the existing writer FIFO with a
@@ -848,16 +871,16 @@ snapshot, including both MCP reconstruction passes. Process-held incognito
 databases retain their native owner. There is no synchronous fallback when the
 worker is busy and no retained summary cache.
 
-Audited internal session-entry patches use the agent executor for snapshot reads,
-CAS validation, mutation, and COMMIT. Usage accounting, unguarded compaction
+Bundled session-entry patches use the agent executor for snapshot reads,
+CAS validation, mutation, and COMMIT. Usage accounting, compaction
 accounting, restart cleanup, activity recaps, and the entry owner's prepared
-upsert, replacement, and route-metadata operations select this path explicitly.
+upsert, replacement, and route-metadata operations share this default path.
 The host runs each updater once and retains live authority. Recap transcript
 predicates run inside the write transaction before CAS. Bounded provisional
 result transfers precede the final grant; a compact native receipt certifies the
 exact committed result. Publication, committed callbacks, and identity observers
 settle before the physical database FIFO is released. Unknown writes never replay.
-Incognito, maintenance, opaque plugin callbacks, and unclassified internal guards
+Incognito, maintenance, and released opaque plugin callbacks
 retain native transactions and yielding writer admission. Arbitrary async plugin
 updaters retain their existing nested-admission behavior. Schemas, durability,
 public callback contracts, and update behavior are unchanged.

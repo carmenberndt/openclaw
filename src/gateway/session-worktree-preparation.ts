@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
@@ -21,6 +22,12 @@ import type {
   CreateManagedWorktreeParams,
   WorktreeSourceStage,
 } from "../agents/worktrees/types.js";
+import { getRuntimeConfig } from "../config/config.js";
+import { captureSessionEntrySourceAssertion } from "../config/sessions/session-entry-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { isPathInside } from "../infra/path-guards.js";
@@ -39,6 +46,7 @@ import type {
   PreparedGatewaySessionLifecycle,
 } from "./session-create-service.types.js";
 import { invalidSessionRequest } from "./session-request-error.js";
+import { captureSessionMutationRouting } from "./session-sharing-preparation.js";
 import { resolveExplicitSessionName } from "./session-title-state.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils-store.js";
 
@@ -129,6 +137,33 @@ async function resolveSpawnParentWorktreeSource(
   if (!parent.entry) {
     return undefined;
   }
+  const fields = ["sessionId", "archivedAt", "projectId", "sessionRoot", "worktree"] as const;
+  const refuse = (): never => {
+    throw new SessionWorktreeSourceChangedError(
+      "Spawn parent workspace changed; retry from its current session",
+    );
+  };
+  const assertRouting = captureSessionMutationRouting(parent.cfg, refuse);
+  const parentSource = captureSessionEntrySourceAssertion({
+    scope: { agentId, sessionKey: parent.canonicalKey, storePath: parent.storePath },
+    readSource: parent.capturedReadSource,
+    expected: parent.entry,
+    fields,
+    assertCurrent: () => {
+      const current = loadGatewaySessionEntryReadOnly(parent.canonicalKey, { agentId });
+      if (
+        !current.entry ||
+        fields.some((field) => !isDeepStrictEqual(current.entry?.[field], parent.entry?.[field]))
+      ) {
+        refuse();
+      }
+    },
+    assertHostCurrent: () => {
+      options.signal?.throwIfAborted();
+      assertRouting(getRuntimeConfig());
+    },
+    refuse,
+  });
   if (!parent.entry.worktree) {
     const projectId = normalizeOptionalString(parent.entry.projectId);
     if (!projectId) {
@@ -143,19 +178,14 @@ async function resolveSpawnParentWorktreeSource(
         "Spawn parent project changed; retry from its current session",
       );
     }
-    const parentSessionId = parent.entry.sessionId;
     const assertParentCurrent = (storedRoot: string | undefined, assertCheckout?: () => void) => {
       assertCheckout?.();
-      const current = loadGatewaySessionEntryReadOnly(parent.canonicalKey, { agentId });
       const currentProjectRoot = selection
         ? storedRoot
-        : resolveWorkspaceProject(current.cfg, projectId)?.repoRoot;
+        : resolveWorkspaceProject(getRuntimeConfig(), projectId)?.repoRoot;
       if (
-        current.entry?.sessionId !== parentSessionId ||
-        current.entry.archivedAt !== undefined ||
-        current.entry.projectId !== projectId ||
-        current.entry.sessionRoot !== project.repoRoot ||
-        current.entry.worktree !== undefined ||
+        parent.entry?.archivedAt !== undefined ||
+        parent.entry?.sessionRoot !== project.repoRoot ||
         currentProjectRoot !== project.repoRoot
       ) {
         throw new SessionWorktreeSourceChangedError(
@@ -170,8 +200,10 @@ async function resolveSpawnParentWorktreeSource(
         withRollback: selection.withRollback,
         withCurrent: async (run) =>
           await selection.withCurrent((current) => {
-            const assertCurrent = () =>
+            const assertCurrent = composeSessionSourceAssertion([parentSource], (assertSources) => {
+              assertSources();
               assertParentCurrent(current.project?.repoRoot, current.assertCurrent);
+            });
             return run({
               assertCurrent,
               assertCheckoutCurrent: current.assertCheckoutCurrent,
@@ -180,7 +212,10 @@ async function resolveSpawnParentWorktreeSource(
           }),
       };
     }
-    const assertCurrent = () => assertParentCurrent(undefined);
+    const assertCurrent = composeSessionSourceAssertion([parentSource], (assertSources) => {
+      assertSources();
+      assertParentCurrent(undefined);
+    });
     assertCurrent();
     return {
       workspace: project.repoRoot,
@@ -200,23 +235,10 @@ async function resolveSpawnParentWorktreeSource(
       "Spawn parent managed worktree changed; retry from its current session",
     );
   }
-  const parentSessionId = parent.entry.sessionId;
   // Validate the inherited source through the child creation commit. After that,
   // persisted workspace intent belongs to the child and uses its admitted run.
-  const assertParentCurrent = () => {
-    const current = loadGatewaySessionEntryReadOnly(parent.canonicalKey, { agentId });
-    if (
-      current.entry?.sessionId !== parentSessionId ||
-      current.entry.archivedAt !== undefined ||
-      current.entry.worktree?.id !== worktree.id
-    ) {
-      throw new SessionWorktreeSourceChangedError(
-        "Spawn parent managed worktree changed; retry from its current session",
-      );
-    }
-  };
-  const assertCurrent = () => {
-    assertParentCurrent();
+  const assertCurrent = composeSessionSourceAssertion([parentSource], (assertSources) => {
+    assertSources();
     const currentWorktree = managedWorktrees.findLiveByOwner("session", parent.canonicalKey);
     if (
       currentWorktree?.id !== worktree.id ||
@@ -227,7 +249,7 @@ async function resolveSpawnParentWorktreeSource(
         "Spawn parent managed worktree changed; retry from its current session",
       );
     }
-  };
+  });
   return {
     workspace: worktree.repoRoot,
     source: { kind: "worktree", id: worktree.id },
@@ -236,7 +258,7 @@ async function resolveSpawnParentWorktreeSource(
         assertCurrent,
         signal: options.signal,
         workerAuthority: {
-          assertCurrent: assertParentCurrent,
+          assertCurrent: parentSource,
           predicates: [
             {
               kind: "source-owner",
@@ -499,7 +521,7 @@ export async function prepareSessionWorktree(params: {
         ...(rollback ? { rollback } : {}),
         ...(withSource
           ? {
-              withCommit: async <T>(run: (assertCurrent: () => void) => Promise<T>) =>
+              withCommit: async <T>(run: (assertCurrent: SessionSourceAssertion) => Promise<T>) =>
                 await withSource!((current) => run(current.assertCurrent)),
             }
           : {}),

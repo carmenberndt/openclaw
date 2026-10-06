@@ -455,7 +455,7 @@ describe("maybeGenerateDashboardSessionTitle", () => {
       const patch = await update({ ...baseEntry });
       writePrepared.resolve();
       await releaseWrite.promise;
-      options.assertCommitAllowed?.();
+      options.workerGuard?.source?.();
       loadSessionEntry.mockReturnValue({ ...baseEntry, ...patch });
       return loadSessionEntry();
     });
@@ -678,7 +678,7 @@ describe("worktree title source lifecycle", () => {
     mocks.load.mockReset().mockImplementation(() => ({ ...current }));
     mocks.patch.mockReset().mockImplementation(async (_scope, update, options) => {
       const patch = await update({ ...current });
-      options.assertCommitAllowed?.();
+      options.workerGuard?.source?.();
       if (patch) {
         current = { ...current, ...patch };
       }
@@ -720,7 +720,7 @@ describe("worktree title source lifecycle", () => {
         await Promise.resolve();
         writeContext = context.getStore();
         const before = source.asserted.length;
-        options.assertCommitAllowed?.();
+        options.workerGuard?.source?.();
         writeAssertions = source.asserted.slice(before);
         current = { ...current, ...patch };
         return { ...current };

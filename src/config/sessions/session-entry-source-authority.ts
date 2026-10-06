@@ -1,0 +1,155 @@
+import { isDeepStrictEqual } from "node:util";
+import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
+import {
+  assertExistingDatabaseIdentity,
+  readDatabasePathIdentitySync,
+} from "../../infra/sqlite-worker-identity.js";
+import { isIncognitoSessionKey } from "../../routing/session-key.js";
+import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import {
+  releaseSessionSourceAuthorities,
+  type PreparedSessionSourceAuthority,
+  type SessionSourceAssertion,
+  type SessionSourceConversationPredicate,
+} from "./session-source-authority.js";
+import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
+import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import { retainSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
+import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
+import type { InternalSessionEntry as SessionEntry } from "./types.js";
+
+/** Retain a selected entry's authority while its predicates move into the destination writer. */
+export function captureSessionEntrySourceAssertion(params: {
+  scope: { agentId: string; sessionKey: string; storePath: string; env?: NodeJS.ProcessEnv };
+  readSource?: CapturedSessionEntryReadSource;
+  expected: Partial<SessionEntry> | undefined;
+  fields: readonly (keyof SessionEntry)[];
+  assertCurrent: () => void;
+  assertHostCurrent?: () => void;
+  prepareConversations?: (read: (conversationRef: string) => Promise<string | null>) => Promise<{
+    predicates: readonly SessionSourceConversationPredicate[];
+    assertCurrent: () => void;
+  }>;
+  refuse: () => never;
+}): SessionSourceAssertion {
+  if (isIncognitoSessionKey(params.scope.sessionKey)) {
+    return Object.assign(() => params.assertCurrent(), { nativeSource: true });
+  }
+  const locator = captureSessionStoreReadCandidate(
+    resolveUnsuffixedSqliteTargetFromSessionStorePath(params.scope.storePath).path,
+  );
+  const candidate = params.readSource
+    ? captureSessionStoreReadCandidate(params.readSource.path)
+    : locator;
+  const identity = readDatabasePathIdentitySync(candidate.physicalPath);
+  const source = params.readSource ?? {
+    agentId: params.scope.agentId,
+    path: candidate.physicalPath,
+    databaseIdentity: identity.key.slice("file:".length),
+    databaseBirthtime: identity.birthtime,
+  };
+  const fields = [...params.fields];
+  const expected: Partial<SessionEntry> | undefined = params.expected
+    ? structuredClone(Object.fromEntries(fields.map((field) => [field, params.expected?.[field]])))
+    : undefined;
+  const env = captureSessionTranscriptStorageEnvironment(params.scope.env ?? process.env);
+  const assertCaptured = () => {
+    params.assertHostCurrent?.();
+    if (
+      !identity.key.startsWith("file:") ||
+      typeof source.databaseIdentity !== "string" ||
+      source.path !== candidate.physicalPath ||
+      captureSessionStoreReadCandidate(locator.path).physicalPath !== locator.physicalPath ||
+      captureSessionStoreReadCandidate(candidate.path).physicalPath !== candidate.physicalPath
+    ) {
+      params.refuse();
+    }
+    assertExistingDatabaseIdentity(
+      source.path,
+      `file:${source.databaseIdentity}`,
+      source.databaseBirthtime,
+    );
+  };
+  return Object.assign(() => params.assertCurrent(), {
+    async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
+      assertCaptured();
+      const database = { agentId: source.agentId, path: source.path, env };
+      const native = getOpenClawAgentDatabaseIfOpen(database);
+      const revision = native && readSqliteNativeMutationRevision(native.db);
+      const retained = retainSessionHistoryWorkerDatabase(database);
+      let active = true;
+      let conversations:
+        | Awaited<ReturnType<NonNullable<typeof params.prepareConversations>>>
+        | undefined;
+      const assertCurrent = () => {
+        assertCaptured();
+        retained.owner.assertCurrent();
+        conversations?.assertCurrent();
+        if (
+          !active ||
+          getOpenClawAgentDatabaseIfOpen(database) !== native ||
+          (native &&
+            (native.db.isTransaction ||
+              revision === undefined ||
+              readSqliteNativeMutationRevision(native.db) !== revision))
+        ) {
+          params.refuse();
+        }
+      };
+      try {
+        const result = await retained.owner.readExactEntries({
+          sessionKeys: [params.scope.sessionKey],
+          projection: "full",
+          includeAuthorization: true,
+          env,
+        });
+        assertCurrent();
+        const entry = result.entries.find(
+          (row) => row.sessionKey === params.scope.sessionKey,
+        )?.entry;
+        if (
+          result.databaseIdentity?.identity !== source.databaseIdentity ||
+          result.databaseIdentity?.birthtime !== source.databaseBirthtime ||
+          (entry === undefined) !== (expected === undefined) ||
+          fields.some((field) => !isDeepStrictEqual(entry?.[field], expected?.[field]))
+        ) {
+          params.refuse();
+        }
+        conversations = await params.prepareConversations?.(async (conversationRef) => {
+          const rows = await retained.owner.readConversations({
+            query: { conversationRef, currentBindingOnly: true, limit: 1 },
+            env,
+          });
+          assertCurrent();
+          const row = rows[0];
+          return row?.sessionKey && row.sessionId ? row.sessionKey : null;
+        });
+        assertCurrent();
+        return {
+          assertCurrent,
+          checks: [
+            {
+              predicate: {
+                source,
+                sessionKey: params.scope.sessionKey,
+                fields,
+                expected,
+                ...(conversations ? { conversations: conversations.predicates } : {}),
+              },
+              refuse: params.refuse,
+            },
+          ],
+          release: async () => {
+            active = false;
+            await retained.release();
+          },
+        };
+      } catch (error) {
+        active = false;
+        await releaseSessionSourceAuthorities([retained], [error]);
+        throw error;
+      }
+    },
+  });
+}

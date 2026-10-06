@@ -256,13 +256,14 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
     },
     {
       fallbackEntry: mergeSessionEntry(undefined, {}),
-      assertCommitAllowed: () => {
-        // Provider startup can end while this write is queued or being prepared.
-        // Revalidate at commit so it cannot leave an unusable empty chat.
-        params.assertCommitAllowed?.();
-        if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
-          throw new Error("Realtime browser session expired during startup; try again");
-        }
+      workerGuard: {
+        source: params.assertCommitAllowed,
+        assertCurrent: () => {
+          // Provider startup can end while this write is queued or being prepared.
+          if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
+            throw new Error("Realtime browser session expired during startup; try again");
+          }
+        },
       },
     },
   );

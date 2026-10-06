@@ -12,6 +12,7 @@ import {
   AgentSelectionRequiredError,
   resolveAgentWorkspaceDir,
 } from "../../../agents/agent-scope.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
@@ -325,12 +326,14 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ...(tools.length > 0 ? { tools } : {}),
         ...launchOptions,
       };
-      const assertCommitAllowed = () => {
-        sessionMutationCommitGuard?.();
-        sessionMutationAuthorization?.assertCurrent();
-        replacement?.assertCurrent(target);
-        gatewayControlOwner?.assertOpen();
-      };
+      const assertCommitAllowed = composeSessionSourceAssertion(
+        [sessionMutationCommitGuard, sessionMutationAuthorization?.assertCurrent],
+        (assertSources) => {
+          assertSources();
+          replacement?.assertCurrent(target);
+          gatewayControlOwner?.assertOpen();
+        },
+      );
       let session: Awaited<ReturnType<typeof resolution.provider.createBrowserSession>> | undefined;
       let delivered = false;
       try {

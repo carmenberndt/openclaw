@@ -3,11 +3,18 @@ import { deserialize, serialize } from "node:v8";
 import { MessageChannel } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
-import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  isSessionEntryDataSql,
+  observeHostDataSql,
+} from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
-import { patchSessionEntry } from "../../plugin-sdk/session-store-runtime.js";
+import {
+  getSessionEntry,
+  patchSessionEntry,
+  updateLastRoute,
+} from "../../plugin-sdk/session-store-runtime.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -35,6 +42,7 @@ import { appendExpectedSessionTranscriptTurn } from "./session-accessor.sqlite-t
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
 import { commitSessionEntryPatch } from "./session-entry-patch.worker.js";
 import { readSessionEntryInWorker } from "./session-entry-read-runtime.js";
+import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
 import { SqliteSessionMutationConflictError } from "./session-mutation-conflict-error.js";
 import {
   composeSessionSourceAssertion,
@@ -109,7 +117,7 @@ function patchSessionEntryCore(
   return patchInternalSessionEntry(scope, update, { workerGuard: {}, ...options });
 }
 
-it("skips unchanged cold serialization and preserves snapshot bytes and revisions on metadata patches", async () => {
+it("preserves cold serialization and snapshot revisions for synchronous SDK commit guards", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const f = fixture();
     const cold = {
@@ -153,9 +161,12 @@ it("skips unchanged cold serialization and preserves snapshot bytes and revision
           typeof value === "object" &&
           ("prompt" in value || "files" in value || "systemPrompt" in value),
       ).length;
-    // The native patch path executes this writer in-process, so this spy observes its JSON work.
+    // Released synchronous commit guards retain the native writer, so the spy observes its JSON work.
     const patch = (update: Partial<SessionEntry>) =>
-      patchInternalSessionEntry(f.scope, () => update, { skipMaintenance: true });
+      patchInternalSessionEntry(f.scope, () => update, {
+        skipMaintenance: true,
+        assertCommitAllowed: () => expect(f.database.db.isTransaction).toBe(true),
+      });
     await patch({ label: "metadata only" });
     expect(serializedColdFields()).toBe(0);
     expect(snapshots()).toEqual(saved);
@@ -388,6 +399,65 @@ it.each(["after updater", "final grant"] as const)(
   },
 );
 
+it("refuses a captured entry source changed during planning without reading it on the caller thread", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const scope = { ...f.scope, sessionKey: "agent:main:source-authority" };
+    const expected = { sessionId: "source", updatedAt: 1, label: "original source" };
+    replaceSessionEntrySync(scope, expected);
+    const refusal = new Error("selected source changed");
+    const legacyAssertion = vi.fn(() => {
+      throw new Error("native source read must not run");
+    });
+    const source = captureSessionEntrySourceAssertion({
+      scope,
+      expected,
+      fields: ["sessionId", "label"],
+      assertCurrent: legacyAssertion,
+      refuse: () => {
+        throw refusal;
+      },
+    });
+    const entered = createDeferredCore();
+    const resume = createDeferredCore();
+    const entrySql: string[] = [];
+    let fixtureWrite = false;
+    const sql = observeHostDataSql((query) => {
+      if (!fixtureWrite && isSessionEntryDataSql(query)) {
+        entrySql.push(query);
+      }
+    });
+    const pending = patchSessionEntryCore(
+      f.scope,
+      async () => {
+        entered.resolve();
+        await resume.promise;
+        return { label: "must not persist" };
+      },
+      { workerGuard: { source } },
+    );
+    try {
+      await awaitGateBeforeSettlement(
+        entered.promise,
+        pending,
+        "Source preparation did not admit the updater",
+      );
+      fixtureWrite = true;
+      replaceSessionEntrySync(scope, { ...expected, label: "revoked source" });
+      fixtureWrite = false;
+      resume.resolve();
+      await expect(pending).rejects.toBe(refusal);
+      expect(legacyAssertion).not.toHaveBeenCalled();
+      expect(entrySql).toEqual([]);
+    } finally {
+      resume.resolve();
+      await Promise.allSettled([pending]);
+      sql.restore();
+    }
+    expect(f.read()?.label).toBe("initial");
+  });
+});
+
 it("settles false before CAS and later throwing authority, while null updates still validate CAS", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const f = fixture();
@@ -549,6 +619,25 @@ it("retains nested worker admission for an opaque plugin updater", async ({ sign
     });
     expect(entry?.label).toBe("initial:nested");
     expect(f.read()?.label).toBe("initial:nested");
+  });
+});
+
+it("retains synchronous SDK entry reads inside an opaque last-route commit guard", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const assertCommitAllowed = vi.fn(() => {
+      expect(f.database.db.isTransaction).toBe(true);
+      expect(getSessionEntry(f.scope)?.sessionId).toBe("original");
+    });
+    const entry = await updateLastRoute({
+      storePath: f.scope.storePath,
+      sessionKey: f.scope.sessionKey,
+      channel: "slack",
+      to: "channel:synthetic",
+      assertCommitAllowed,
+    });
+    expect(assertCommitAllowed).toHaveBeenCalledOnce();
+    expect(entry?.sessionId).toBe("original");
   });
 });
 

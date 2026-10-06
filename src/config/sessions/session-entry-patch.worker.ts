@@ -4,6 +4,7 @@ import { createSqliteWorkerTransferOwner } from "../../infra/sqlite-worker-trans
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
+import { selectConversationRowsFromDatabase } from "./session-accessor.sqlite-conversation-read.js";
 import { applySessionEntryPatchInDatabase } from "./session-accessor.sqlite-entry-mutation.js";
 import {
   readLifecycleTargetSnapshot,
@@ -94,6 +95,14 @@ export function readRefusedSessionSource(
     if (
       Boolean(entry) !== Boolean(source.expected) ||
       source.fields.some((field) => !isDeepStrictEqual(entry?.[field], source.expected?.[field])) ||
+      source.conversations?.some((predicate) => {
+        const row = selectConversationRowsFromDatabase(database, {
+          conversationRef: predicate.conversationRef,
+          currentBindingOnly: true,
+          limit: 1,
+        })[0];
+        return (row?.sessionKey && row.sessionId ? row.sessionKey : null) !== predicate.sessionKey;
+      }) ||
       (members !== undefined && !isDeepStrictEqual(members, source.members)) ||
       (source.transcript &&
         !isDeepStrictEqual(

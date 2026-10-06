@@ -285,6 +285,7 @@ export async function persistSessionDirectiveSnapshot(params: {
   hasModelSelection: boolean;
   reassertLiveModelSwitchPending: boolean;
   validateCommit?: () => string | undefined;
+  commitGuard?: Parameters<typeof persistReplySessionEntry>[0]["commitGuard"];
 }): Promise<
   | { status: "applied" | "conflict" | "model-selection-locked" }
   | { status: "commit-rejected"; error: string }
@@ -299,6 +300,7 @@ export async function persistSessionDirectiveSnapshot(params: {
     requireModelSelectionUnlocked: params.hasModelSelection,
     touchedFields: params.touchedFields,
     validateCommit: params.validateCommit,
+    commitGuard: params.commitGuard,
   });
   if (persistence.status !== "current") {
     if (persistence.entry) {

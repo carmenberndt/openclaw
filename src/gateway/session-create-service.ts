@@ -1295,7 +1295,7 @@ export async function createGatewaySession(
         {
           preserveActivity: true,
           requireWriteSuccess: true,
-          ...(params.commitGuard ? { assertCommitAllowed: params.commitGuard } : {}),
+          workerGuard: { source: params.commitGuard },
         },
       );
       if (!finalized) {

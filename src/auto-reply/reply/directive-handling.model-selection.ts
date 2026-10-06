@@ -1,5 +1,6 @@
 import {
   assertOperatorModelAllowed,
+  createOperatorModelSelectionAssertion,
   type AdmittedRunOperatorAuthority,
 } from "../../agents/admitted-run-context.js";
 /** Resolves /model directive selections and auth profile overrides. */
@@ -11,6 +12,10 @@ import {
 } from "../../agents/model-visibility-policy.js";
 import { resolveOperatorModelDefault } from "../../agents/operator-model-policy.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveProfileOverride } from "./directive-handling.auth-profile.js";
@@ -81,6 +86,7 @@ export async function resolveModelSelectionFromDirective(params: {
   errorText?: string;
   validateAuthProfileSelection?: () => string | undefined;
   validateModelSelection?: () => string | undefined;
+  modelSelectionSource?: SessionSourceAssertion;
 }> {
   if (!params.directives.hasModelDirective || !params.directives.rawModelDirective) {
     if (params.directives.rawModelProfile) {
@@ -121,6 +127,10 @@ export async function resolveModelSelectionFromDirective(params: {
         resetToDefault: true,
       },
       validateModelSelection: () => validateOperatorSelection(params.operatorAuthority, selection),
+      modelSelectionSource: createOperatorModelSelectionAssertion(
+        params.operatorAuthority,
+        selection,
+      ),
     };
   }
   const storedNumericProfile =
@@ -209,6 +219,16 @@ export async function resolveModelSelectionFromDirective(params: {
           validateModelSelection: () =>
             validateOperatorSelection(params.operatorAuthority, modelSelection) ??
             validateAuthProfileSelection?.(),
+          modelSelectionSource: composeSessionSourceAssertion(
+            [createOperatorModelSelectionAssertion(params.operatorAuthority, modelSelection)],
+            (assertSource) => {
+              assertSource();
+              const error = validateAuthProfileSelection?.();
+              if (error) {
+                throw new Error(error);
+              }
+            },
+          ),
         }
       : {}),
   };

@@ -79,8 +79,10 @@ import type { CapturedSessionEntryReadSource } from "./session-entry-read-source
 import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";
 import { patchIncognitoSessionEntry } from "./session-incognito-entry-patch.js";
 import {
+  captureExternalSessionCommitGuard,
   prepareSessionSourceAuthority,
   type PreparedSessionSourceAuthority,
+  type SessionSourceAssertion,
 } from "./session-source-authority.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
@@ -102,7 +104,7 @@ export {
 // Public entry API. Async preparation precedes BEGIN; commit revalidates repository snapshots.
 
 type SqliteSessionEntryPatchOptions = SessionEntryPatchOptions & {
-  /** Audited internal updaters: no nested writer admission; guards retain only host authority. */
+  /** Internal source predicates and host authority, carried into the existing worker. */
   workerGuard?: SessionEntryPatchGuard;
   /** Recheck owner cancellation after async preparation, immediately before committing. */
   shouldCommit?: () => boolean;
@@ -468,9 +470,10 @@ async function patchSqliteSessionEntrySnapshot(
     return result.entry;
   }
   let wrote = false;
+  // v2026.9.8 plugin-sdk/session-store-runtime promises opaque commit callbacks
+  // inside a native synchronous transaction. Bundled producers carry workerGuard instead.
   const useWorker =
     isMainThread &&
-    options.workerGuard !== undefined &&
     !options.shouldCommit &&
     !options.assertCommitAllowed &&
     supportsOpenClawAgentDatabaseExecution(databaseOptions);
@@ -664,14 +667,19 @@ export async function updateSessionLastRoute(
 ): Promise<SessionEntry | null> {
   return await updateSessionLastRouteInScope(
     { sessionKey: params.sessionKey, storePath: params.storePath },
-    params,
+    {
+      ...params,
+      assertCommitAllowed: captureExternalSessionCommitGuard(params.assertCommitAllowed),
+    },
   );
 }
 
 /** Internal callers retain their captured storage owner across route preparation. */
 export async function updateSessionLastRouteInScope(
   scope: SessionAccessScope & { databaseAgentId?: string },
-  params: Omit<Parameters<typeof updateSessionLastRoute>[0], "storePath" | "sessionKey">,
+  params: Omit<UpdateSessionLastRouteParams, "storePath" | "sessionKey"> & {
+    assertCommitAllowed?: SessionSourceAssertion;
+  },
 ): Promise<SessionEntry | null> {
   if (params.ctx) {
     normalizeInternalTurnContext(params.ctx);
@@ -703,8 +711,7 @@ export async function updateSessionLastRouteInScope(
     {
       // Route updates must not refresh activity timestamps (#49515).
       preserveActivity: true,
-      workerGuard: {},
-      ...(params.assertCommitAllowed ? { assertCommitAllowed: params.assertCommitAllowed } : {}),
+      workerGuard: { source: params.assertCommitAllowed },
       ...(createIfMissing ? { fallbackEntry: mergeSessionEntry(undefined, {}) } : {}),
     },
     scope.databaseAgentId,

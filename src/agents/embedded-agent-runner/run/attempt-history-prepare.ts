@@ -4,6 +4,7 @@ import { filterHeartbeatTranscriptArtifacts } from "../../../auto-reply/heartbea
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { readSessionEntrySummariesInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
+import type { SessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import { prepareHarnessContextEnginePrompt } from "../../harness/context-engine-lifecycle.js";
@@ -16,7 +17,7 @@ import { loadAttemptSessionEntryAfterQuotaMaintenance } from "./attempt-transcri
 
 export async function prepareEmbeddedAttemptHistory(
   input: EmbeddedAttemptExecutionPhaseInput,
-  assertActive: () => void,
+  assertActive: SessionSourceAssertion,
 ) {
   const { attempt, activeContextEngine, isRawModelRun } = input;
   const {
@@ -114,7 +115,11 @@ export async function prepareEmbeddedAttemptHistory(
               quotaSuspension: { ...entry.quotaSuspension, state: "active" },
             };
           },
-          { skipMaintenance: true, takeCacheOwnership: true, assertCommitAllowed: assertActive },
+          {
+            skipMaintenance: true,
+            takeCacheOwnership: true,
+            workerGuard: { source: assertActive },
+          },
         );
         assertActive();
       }

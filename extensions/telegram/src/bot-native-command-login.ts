@@ -19,6 +19,7 @@ import {
 } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
+import { composeSessionEntryCommitGuards } from "openclaw/plugin-sdk/session-binding-runtime";
 import { patchSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { escapeHtml } from "openclaw/plugin-sdk/text-utility-runtime";
@@ -89,8 +90,11 @@ export async function executeTelegramLoginCommand(params: {
       },
     );
   };
-  const assertCurrent = (config = dispatch.telegramDeps.getRuntimeConfig()) => {
-    dispatch.assertOwnerCurrent?.();
+  const assertCurrent = (
+    config = dispatch.telegramDeps.getRuntimeConfig(),
+    assertOwnerCurrent = dispatch.assertOwnerCurrent,
+  ) => {
+    assertOwnerCurrent?.();
     const authorization = resolveCommandAuthorization({
       cfg: config,
       ctx: dispatch.ownerContext,
@@ -245,10 +249,13 @@ export async function executeTelegramLoginCommand(params: {
             storePath,
             requireWriteSuccess: true,
             skipMaintenance: true,
-            assertCommitAllowed: () => {
-              flowSignal.throwIfAborted();
-              assertCurrent();
-            },
+            assertCommitAllowed: composeSessionEntryCommitGuards(
+              [dispatch.assertOwnerCurrent],
+              (assertSource) => {
+                flowSignal.throwIfAborted();
+                assertCurrent(undefined, assertSource);
+              },
+            ),
             update: (entry) => {
               entryObserved = true;
               adoptionDecision = decideProviderLoginSessionAdoption({

@@ -1,5 +1,6 @@
 /** Prepares the admitted writer context and teardown tracker for one attempt. */
 import { prepareCronRootSessionGeneration } from "../../../config/sessions/session-delivery-generation.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import {
   getOwnedSessionTranscriptInitialWriter,
   type OwnedSessionTranscriptWriteContext,
@@ -96,11 +97,13 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
     sessionKey: attempt.sessionKey,
     sessionTarget: fencedSessionTarget,
     ...(initialWriter ? { initialWriter } : {}),
-    assertCommitAllowed: () => {
-      attempt.abortSignal?.throwIfAborted();
-      assertAdmittedActive?.();
-      generation?.assertCurrent();
-    },
+    assertCommitAllowed: composeSessionSourceAssertion(
+      [assertAdmittedActive, generation?.assertCurrent],
+      (assertSources) => {
+        attempt.abortSignal?.throwIfAborted();
+        assertSources();
+      },
+    ),
     withTranscriptWrite,
   };
   const withOwnedTranscriptWrite: WithOwnedTranscriptWrite = (operation) =>

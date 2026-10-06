@@ -371,7 +371,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
           {
             // Entry patches await preparation before committing. Recheck current
             // sharing authority on the synchronous commit edge, after that await.
-            assertCommitAllowed: access.assertCurrent,
+            workerGuard: { source: access.assertCurrent },
           },
         );
         if (!inspected) {
@@ -447,11 +447,13 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
             return { visibility };
           },
           {
-            assertCommitAllowed: () => {
-              access.assertCurrent();
-              if (!isSessionVisibilityAllowed(context.getRuntimeConfig(), visibility)) {
-                throw new Error(`session visibility is disabled: ${visibility}`);
-              }
+            workerGuard: {
+              source: access.assertCurrent,
+              assertCurrent: () => {
+                if (!isSessionVisibilityAllowed(context.getRuntimeConfig(), visibility)) {
+                  throw new Error(`session visibility is disabled: ${visibility}`);
+                }
+              },
             },
           },
         );

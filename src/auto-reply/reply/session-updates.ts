@@ -349,15 +349,13 @@ export async function incrementCompactionCount(params: {
             sessionStore[sessionKey] = entry;
           }
         },
-        ...(authorize
-          ? {
-              assertCommitAllowed: () => {
-                if (!authorize()) {
-                  throw authorityRevoked;
-                }
-              },
+        workerGuard: {
+          assertCurrent: () => {
+            if (authorize?.() === false) {
+              throw authorityRevoked;
             }
-          : { workerGuard: {} }),
+          },
+        },
       },
     );
   } catch (error) {

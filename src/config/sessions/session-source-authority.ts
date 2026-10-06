@@ -3,6 +3,11 @@ import type { CapturedSessionEntryReadSource } from "./session-entry-read-source
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
+export type SessionSourceConversationPredicate = {
+  conversationRef: string;
+  sessionKey: string | null;
+};
+
 /** Prepared source facts are compared again on the existing writer's connection. */
 export type SessionSourcePredicate = {
   source: CapturedSessionEntryReadSource;
@@ -11,6 +16,7 @@ export type SessionSourcePredicate = {
   expected: Partial<SessionEntry> | undefined;
   members?: readonly string[];
   transcript?: { sessionId: string; version: SessionTranscriptContextVersion };
+  conversations?: readonly SessionSourceConversationPredicate[];
 };
 
 export type SessionSourcePredicateFacts = {
@@ -33,6 +39,9 @@ export type SessionSourceAssertion = (() => void) & {
   nativeSource?: boolean;
   prepareSessionSource?: () => Promise<PreparedSessionSourceAuthority>;
 };
+
+/** Public boolean callbacks stay callable; bundled owners also carry their prepared writer source. */
+export type SessionSourceCheck = (() => boolean) & { sessionSource?: SessionSourceAssertion };
 
 /** Classify request/SDK callbacks before adapters compose them with prepared internal authority. */
 export function captureExternalSessionCommitGuard(guard: SessionSourceAssertion | undefined) {

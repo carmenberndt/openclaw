@@ -1,6 +1,7 @@
 /** Keeps automatic auth profiles stable unless reset, unavailable, or recovering a preference. */
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderModelRouteAuthRequirement } from "../../plugin-sdk/provider-model-types.js";
@@ -119,7 +120,7 @@ async function persistSessionAuthProfileOverrideState(params: {
   sessionKey: string;
   state: SessionAuthProfileOverrideState;
   storePath?: string;
-  assertCommitAllowed?: () => void;
+  assertCommitAllowed?: SessionSourceAssertion;
   expectedSnapshot?: SessionAuthProfileOverrideSnapshot;
 }): Promise<SessionEntry | undefined> {
   const { sessionEntry, sessionStore, sessionKey, state, storePath, expectedSnapshot } = params;
@@ -166,7 +167,7 @@ async function persistSessionAuthProfileOverrideState(params: {
     },
     {
       ...(expectedSnapshot ? {} : { fallbackEntry: sessionEntry }),
-      assertCommitAllowed: params.assertCommitAllowed,
+      workerGuard: { source: params.assertCommitAllowed },
     },
   );
   if (persisted) {
@@ -268,7 +269,7 @@ export async function clearSessionAuthProfileOverride(params: {
   sessionStore: Record<string, SessionEntry>;
   sessionKey: string;
   storePath?: string;
-  assertCommitAllowed?: () => void;
+  assertCommitAllowed?: SessionSourceAssertion;
 }) {
   await persistSessionAuthProfileOverrideState({
     ...params,
@@ -290,7 +291,7 @@ async function resolveSessionAuthProfileOverride(params: {
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
   storePath?: string;
-  assertCommitAllowed?: () => void;
+  assertCommitAllowed?: SessionSourceAssertion;
   isNewSession: boolean;
   acceptedProviderIds?: string[];
   requesterProfileId?: string;
@@ -592,7 +593,7 @@ export async function resolveSessionAuthSelection(params: {
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
   storePath?: string;
-  assertCommitAllowed?: () => void;
+  assertCommitAllowed?: SessionSourceAssertion;
   isNewSession: boolean;
   requesterProfileId?: string;
 }): Promise<SessionAuthSelection | undefined> {

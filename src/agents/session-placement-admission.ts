@@ -1,6 +1,9 @@
 import { registerReplyOperationSuccessorBarrier } from "../auto-reply/reply/reply-run-registry.js";
 import type { SessionTranscriptRuntimeTarget } from "../config/sessions/session-accessor.js";
-import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createAbortError } from "../infra/abort-signal.js";
 import {
@@ -219,7 +222,7 @@ export async function withSessionPlacementTurnAdmission(
 /** Serializes direct CLI turns with every runtime before acquiring placement ownership. */
 export async function withLocalSessionPlacementTurnSettlement(
   claim: LocalTurnPlacementClaim,
-  task: (assertSettlementCurrent: () => void) => Promise<EmbeddedAgentRunResult>,
+  task: (assertSettlementCurrent: SessionSourceAssertion) => Promise<EmbeddedAgentRunResult>,
   options: Pick<
     RunEmbeddedAgentParams,
     | "abortSignal"
@@ -270,14 +273,17 @@ export async function withLocalSessionPlacementTurnSettlement(
           assertCurrent();
           const assertClaimCurrent = resolveSessionPlacementTurnSettlementAssertion();
           let open = true;
-          const assertSettlementCurrent = () => {
-            // Queue reset closes this task even if its callback has not returned.
-            if (!open || !isCommandLaneTaskMarkerCurrent(taskMarker)) {
-              throw createSessionPlacementSettlementClosedAbortError();
-            }
-            assertOwnerCurrent();
-            assertClaimCurrent?.();
-          };
+          const assertSettlementCurrent = composeSessionSourceAssertion(
+            [assertClaimCurrent],
+            (assertSource) => {
+              // Queue reset closes this task even if its callback has not returned.
+              if (!open || !isCommandLaneTaskMarkerCurrent(taskMarker)) {
+                throw createSessionPlacementSettlementClosedAbortError();
+              }
+              assertOwnerCurrent();
+              assertSource();
+            },
+          );
           try {
             assertSettlementCurrent();
             releaseCapacityWait?.();

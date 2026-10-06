@@ -12,6 +12,10 @@ import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
 } from "./session-accessor.sqlite-contract.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "./session-source-authority.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import {
   captureSessionTranscriptStorageEnvironment,
@@ -53,7 +57,7 @@ export type SessionTranscriptWriterFence = Readonly<{
 export type InitialSessionTranscriptWriter = Readonly<{
   writerRunId: string;
   committedFence: SessionTranscriptWriterFence | undefined;
-  assertActive: () => void;
+  assertActive: SessionSourceAssertion;
   recordCommitted: (fence: SessionTranscriptWriterFence) => void;
   withTranscriptWrite: <T>(run: () => Promise<T> | T) => Promise<T>;
 }>;
@@ -75,7 +79,7 @@ export type OwnedSessionTranscriptWriteContext = {
   sessionTarget?: SessionTranscriptWriteTarget;
   initialWriter?: InitialSessionTranscriptWriter;
   /** Revalidate the captured owner, including an absent writer, inside each commit. */
-  assertCommitAllowed?: () => void;
+  assertCommitAllowed?: SessionSourceAssertion;
   withTranscriptWrite: <T>(run: () => Promise<T> | T) => Promise<T>;
   metadataPublication?: { current?: MetadataPublication };
 };
@@ -380,6 +384,10 @@ export function getOwnedSessionTranscriptInitialWriter(
 function assertTranscriptWriteContext(
   context: OwnedSessionTranscriptWriteContext | undefined,
   scope: SessionTranscriptWriteTarget,
+  assertSource = () => {
+    context?.assertCommitAllowed?.();
+    context?.initialWriter?.assertActive();
+  },
 ): void {
   if (!context?.assertCommitAllowed && !context?.initialWriter) {
     return;
@@ -391,8 +399,7 @@ function assertTranscriptWriteContext(
   ) {
     throw new SessionTranscriptWriterClaimReboundError();
   }
-  context.assertCommitAllowed?.();
-  context.initialWriter?.assertActive();
+  assertSource();
 }
 
 /** A guarded context cannot silently become an unfenced write to another target. */
@@ -403,10 +410,13 @@ export function assertOwnedTranscriptWriteCommit(scope: SessionTranscriptWriteTa
 /** Retained post-commit work must revalidate its original owner, not its invocation context. */
 export function captureOwnedTranscriptWriteAssertion(
   scope: SessionTranscriptWriteTarget,
-): () => void {
+): SessionSourceAssertion {
   const context = ownedTranscriptWriteContext.getStore();
   const target = captureWriteTarget(scope);
-  return () => assertTranscriptWriteContext(context, target);
+  return composeSessionSourceAssertion(
+    [context?.assertCommitAllowed, context?.initialWriter?.assertActive],
+    (assertSource) => assertTranscriptWriteContext(context, target, assertSource),
+  );
 }
 
 /** Applies the admitted-run fence inherited by a matching writer. */

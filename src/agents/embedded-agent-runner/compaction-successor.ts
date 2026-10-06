@@ -16,6 +16,10 @@ import {
   readSessionEntryReadOnlyInWorker,
   readSessionEntrySummariesInWorker,
 } from "../../config/sessions/session-entry-read-runtime.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
@@ -203,7 +207,7 @@ export async function acceptCompactionSuccessor(params: {
   currentTarget: SessionTranscriptRuntimeTarget;
   currentSessionFile?: string;
   expectedEntry: CompactionWriterClaim;
-  assertActive: () => void;
+  assertActive: SessionSourceAssertion;
   config?: OpenClawConfig;
   onCommitted?: (accepted: AcceptedCompactionSuccessor) => void;
 }): Promise<AcceptedCompactionSuccessor> {
@@ -235,10 +239,13 @@ export async function acceptCompactionSuccessor(params: {
   if (!params.result.ok || !params.result.compacted) {
     throw new Error("Cannot accept a successor without a successful completed compaction");
   }
-  const assertCommitAllowed = () => {
-    params.assertActive();
-    assertPlacement({ currentTarget, successorSessionId: successor.sessionId });
-  };
+  const assertCommitAllowed = composeSessionSourceAssertion(
+    [params.assertActive],
+    (assertSource) => {
+      assertSource();
+      assertPlacement({ currentTarget, successorSessionId: successor.sessionId });
+    },
+  );
   assertCommitAllowed();
   let committed: AcceptedCompactionSuccessor | undefined;
   try {
@@ -250,7 +257,7 @@ export async function acceptCompactionSuccessor(params: {
       },
       {
         skipMaintenance: true,
-        assertCommitAllowed,
+        workerGuard: { source: assertCommitAllowed },
         onCommitted: (entry) => {
           // Capture the actual commit before identity observers can abort the caller.
           // This sink records facts only; no authority checks or lifecycle hooks.

@@ -2,6 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  isSessionEntryDataSql,
+  observeHostDataSql,
+} from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { resetSessionEntryLifecycle } from "../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { hasOpenClawAgentDatabaseAsyncResources } from "../state/openclaw-agent-db-resources.js";
@@ -15,6 +19,10 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
+import {
+  captureSessionEntryCurrentCheck,
+  composeSessionEntryCommitGuards,
+} from "./session-binding-runtime.js";
 import {
   deleteSessionEntry,
   getConversationSession,
@@ -103,55 +111,120 @@ describe("current conversation session binding", () => {
     expect(getSessionEntry(replacementScope)).toBeUndefined();
   });
 
-  it("rejects a title patch when another session takes its conversation before commit", async () => {
-    const scope = { agentId: "main", storePath, sessionKey: "agent:main:reef:group:room" };
-    const replacementScope = { ...scope, sessionKey: `${scope.sessionKey}:thread:first` };
-    const address = {
-      agentId: "main",
-      storePath,
-      channel: "reef",
-      accountId: "default",
-      kind: "group" as const,
-      peerId: "room",
-      threadId: "first",
-    };
-    const delivery = normalizeSessionDeliveryState({
-      context: { channel: "reef", accountId: "default", to: "group:room", threadId: "first" },
-    });
+  it("keeps prepared guards on the canonical row selected by shorthand and normalized keys", async () => {
+    const scope = { agentId: "main", storePath, sessionKey: "agent:main:main" };
     await upsertSessionEntry({
       ...scope,
-      entry: { sessionId: "original", updatedAt: 100, chatType: "group", delivery },
+      entry: { sessionId: "original", updatedAt: 100 },
     });
-    const original = getSessionEntry(scope);
-    const replacement = {
-      sessionId: "replacement",
-      updatedAt: 200,
-      chatType: "group" as const,
-      delivery,
-    };
-    const rename = patchSessionEntry({
-      ...scope,
-      preserveActivity: true,
-      assertCommitAllowed: () => {
-        if (getConversationSession(address)?.sessionKey !== scope.sessionKey) {
-          throw new Error("Conversation owner changed before title commit");
-        }
-      },
-      update: () => {
-        expect(getConversationSession(address)?.sessionKey).toBe(scope.sessionKey);
-        // Another row can take the address while the SDK awaits this callback's result.
-        queueMicrotask(() => replaceSessionEntrySync(replacementScope, replacement));
-        return { displayName: "Late title for the original owner" };
-      },
-    });
-    await expect(rename).rejects.toThrow("Conversation owner changed before title commit");
-    expect(getSessionEntry(scope)).toEqual(original);
-    expect(getConversationSession(address)).toEqual({
-      sessionKey: replacementScope.sessionKey,
-      sessionId: replacement.sessionId,
-    });
-    expect(getSessionEntry(replacementScope)).not.toHaveProperty("displayName");
+    for (const sessionKey of [" main ", " AGENT:MAIN:main "]) {
+      const current = await captureSessionEntryCurrentCheck({ ...scope, sessionKey });
+      expect(current.isCurrent()).toBe(true);
+      const hostSql = observeHostDataSql();
+      try {
+        await patchSessionEntry({
+          ...scope,
+          sessionKey,
+          skipMaintenance: true,
+          assertCommitAllowed: current.assertCurrent,
+          update: () => ({ displayName: sessionKey }),
+        });
+      } finally {
+        hostSql.restore();
+      }
+      expect(hostSql.queries.filter(isSessionEntryDataSql)).toEqual([]);
+      expect(getSessionEntry(scope)?.displayName).toBe(sessionKey);
+    }
   });
+
+  it.each(["opaque", "prepared", "composed"] as const)(
+    "rejects a %s title guard when another session takes its conversation before commit",
+    async (guardKind) => {
+      const scope = { agentId: "main", storePath, sessionKey: "agent:main:reef:group:room" };
+      const replacementScope = { ...scope, sessionKey: `${scope.sessionKey}:thread:first` };
+      const address = {
+        agentId: "main",
+        storePath,
+        channel: "reef",
+        accountId: "default",
+        kind: "group" as const,
+        peerId: "room",
+        threadId: "first",
+      };
+      const delivery = normalizeSessionDeliveryState({
+        context: { channel: "reef", accountId: "default", to: "group:room", threadId: "first" },
+      });
+      await upsertSessionEntry({
+        ...scope,
+        entry: { sessionId: "original", updatedAt: 100, chatType: "group", delivery },
+      });
+      const current =
+        guardKind !== "opaque"
+          ? await captureSessionEntryCurrentCheck({
+              ...scope,
+              matchGeneration: false,
+              alternatives: [{ conversations: [{ ...address, sessionKey: scope.sessionKey }] }],
+              errorMessage: "Conversation owner changed before title commit",
+            })
+          : undefined;
+      const assertCurrent =
+        current &&
+        (guardKind === "composed"
+          ? composeSessionEntryCommitGuards([current.assertCurrent])
+          : current.assertCurrent);
+      if (current) {
+        const hostSql = observeHostDataSql();
+        try {
+          await patchSessionEntry({
+            ...scope,
+            skipMaintenance: true,
+            preserveActivity: true,
+            assertCommitAllowed: assertCurrent,
+            update: () => ({ displayName: "Current owner title" }),
+          });
+        } finally {
+          hostSql.restore();
+        }
+        expect(
+          hostSql.queries.filter(
+            (sql) =>
+              isSessionEntryDataSql(sql) || /\bconversations\b|\bconversation_sessions\b/.test(sql),
+          ),
+        ).toEqual([]);
+      }
+      const original = getSessionEntry(scope);
+      const replacement = {
+        sessionId: "replacement",
+        updatedAt: 200,
+        chatType: "group" as const,
+        delivery,
+      };
+      const rename = patchSessionEntry({
+        ...scope,
+        preserveActivity: true,
+        assertCommitAllowed:
+          assertCurrent ??
+          (() => {
+            if (getConversationSession(address)?.sessionKey !== scope.sessionKey) {
+              throw new Error("Conversation owner changed before title commit");
+            }
+          }),
+        update: () => {
+          expect(getConversationSession(address)?.sessionKey).toBe(scope.sessionKey);
+          // Another row can take the address while the SDK awaits this callback's result.
+          queueMicrotask(() => replaceSessionEntrySync(replacementScope, replacement));
+          return { displayName: "Late title for the original owner" };
+        },
+      });
+      await expect(rename).rejects.toThrow("Conversation owner changed before title commit");
+      expect(getSessionEntry(scope)).toEqual(original);
+      expect(getConversationSession(address)).toEqual({
+        sessionKey: replacementScope.sessionKey,
+        sessionId: replacement.sessionId,
+      });
+      expect(getSessionEntry(replacementScope)).not.toHaveProperty("displayName");
+    },
+  );
 
   it("resolves an exact conversation through session reset and deletion", async () => {
     const sessionKey = "agent:main:reef:group:room";
