@@ -24,11 +24,12 @@ import { readCommittedIncognitoSessionSharing } from "./session-accessor.sqlite-
 import type { SessionDeliveryGeneration } from "./session-delivery-generation.types.js";
 import { withSessionEntriesFromStoresInWorker } from "./session-entry-read-runtime.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
+import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "./session-source-authority.js";
-import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import { isSessionStoreReadCandidateCurrent } from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 
 class SessionDeliveryGenerationRevokedError extends Error {
@@ -90,6 +91,7 @@ async function prepareSessionGenerationLease(
     throw new SessionDeliveryGenerationUnavailableError();
   }
   const generation = { ...input };
+  const binding = captureIncognitoSessionBinding(generation);
   const releases: Array<() => void> = [];
   const paths = new Set([path.resolve(generation.storePath)]);
   let active = true;
@@ -181,7 +183,15 @@ async function prepareSessionGenerationLease(
     ) {
       return;
     }
-    if (!isPreparedSessionSharingChange(change)) {
+    if (binding && observeIncognito) {
+      try {
+        observeIncognito();
+      } catch (error) {
+        if (!isSessionDeliveryGenerationRevokedError(error)) {
+          invalidated = true;
+        }
+      }
+    } else if (!isPreparedSessionSharingChange(change)) {
       invalidated = true;
     } else if (observeIncognito && change.facts?.kind === "removed") {
       revoked = true;
@@ -204,7 +214,17 @@ async function prepareSessionGenerationLease(
       assertActive();
       return undefined;
     };
-    if (isIncognitoSessionKey(generation.sessionKey)) {
+    if (binding) {
+      const { actor, admissionSignal } = binding;
+      const claim = actor.sessions.captureCurrent(generation.sessionKey);
+      readCurrent = () => {
+        admissionSignal?.throwIfAborted();
+        actor.assertReadable();
+        claim.assertCurrent();
+        checkEntry(actor.sessions.readSharing(generation.sessionKey)?.entry ?? null);
+      };
+      observeIncognito = readCurrent;
+    } else if (isIncognitoSessionKey(generation.sessionKey)) {
       const database = getOpenIncognitoAgentDatabase(generation.agentId, generation.storePath);
       if (!database && generation.sessionId !== null) {
         throw new SessionDeliveryGenerationRevokedError();
@@ -311,10 +331,7 @@ async function prepareSessionGenerationLease(
       const assertSourceCurrent = () => {
         assertActive();
         for (const candidate of candidates) {
-          if (
-            captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath !==
-            candidate.physicalPath
-          ) {
+          if (!isSessionStoreReadCandidateCurrent(candidate)) {
             throw new SessionDeliveryGenerationUnavailableError();
           }
         }

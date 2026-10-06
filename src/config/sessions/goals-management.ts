@@ -68,11 +68,12 @@ export async function mutateSessionGoalInWorker(
       if (isRecord(facts) && facts.kind === "session-entry-patch-validated") {
         // SAFETY: The paired goal kernel supplies its transaction's matched source indices.
         acceptSessionSourceValidation(source, facts.sourceValidation as SessionSourceValidation);
+        source.assertCurrent();
+        return true;
       }
       return false;
     },
     assertCurrent: source.assertCurrent,
-    assertPrepared: source.assertCurrent,
     releaseSource: release,
     assertCandidate(candidate) {
       if (candidate.refusedSource) {

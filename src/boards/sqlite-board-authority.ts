@@ -40,7 +40,6 @@ export async function prepareBoardSourceAuthority(
       if (validation) {
         // SAFETY: The paired Board worker supplies transaction-held source validation.
         acceptSessionSourceValidation(source, validation as SessionSourceValidation);
-        source.assertCurrent();
       }
       return request;
     },

@@ -14,7 +14,10 @@ import {
   type SessionSourceConversationPredicate,
 } from "./session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
-import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import {
+  captureSessionStoreReadCandidate,
+  isSessionStoreReadCandidateCurrent,
+} from "./session-store-read-candidates.js";
 import { retainSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
@@ -63,8 +66,8 @@ export function captureSessionEntrySourceAssertion(params: {
       !identity.key.startsWith("file:") ||
       typeof source.databaseIdentity !== "string" ||
       source.path !== candidate.physicalPath ||
-      captureSessionStoreReadCandidate(locator.path).physicalPath !== locator.physicalPath ||
-      captureSessionStoreReadCandidate(candidate.path).physicalPath !== candidate.physicalPath
+      !isSessionStoreReadCandidateCurrent(locator) ||
+      !isSessionStoreReadCandidateCurrent(candidate)
     ) {
       params.refuse();
     }

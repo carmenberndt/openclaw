@@ -6,8 +6,8 @@ import { resolveSqliteSessionKey } from "./session-accessor.sqlite-scope-helpers
 import {
   captureSessionEntryReadScope,
   isNativeSessionEntryRead,
-  withSessionEntryReadOnlyInWorker,
-} from "./session-entry-read-runtime.js";
+} from "./session-entry-read-request.js";
+import { withSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
 import type { SessionSourceAssertion, SessionSourceCheck } from "./session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
@@ -15,6 +15,7 @@ import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import {
   assertSessionStoreReadCandidate,
   captureSessionStoreReadCandidate,
+  isSessionStoreReadCandidateCurrent,
 } from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 
@@ -117,11 +118,7 @@ export async function captureSessionEntryCurrentCheck(params: {
       }
       try {
         if (
-          inputCandidates.some(
-            (candidate) =>
-              captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath !==
-              candidate.physicalPath,
-          ) ||
+          inputCandidates.some((candidate) => !isSessionStoreReadCandidateCurrent(candidate)) ||
           (selectedStore &&
             assertSessionStoreReadCandidate(selectedStore.path, inputCandidates) !==
               selectedStore.physicalPath)
@@ -194,10 +191,7 @@ export async function captureSessionEntryCurrentCheck(params: {
             }
             for (const alternative of alternatives) {
               for (const { locator } of alternative.conversations) {
-                if (
-                  captureSessionStoreReadCandidate(locator.path).physicalPath !==
-                  locator.physicalPath
-                ) {
+                if (!isSessionStoreReadCandidateCurrent(locator)) {
                   refuse();
                 }
               }
