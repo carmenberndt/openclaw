@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { stableStringify } from "@openclaw/normalization-core";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -30,7 +29,6 @@ import {
   type SessionEntryCreateWithTranscriptOptions,
   deleteSessionEntryLifecycle,
   loadExactSessionEntryFromStoreReadOnly,
-  patchSessionEntryCore,
   resolveSessionEntryAccessTarget,
 } from "../config/sessions/session-accessor.js";
 import { runWithSessionEntryCreationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
@@ -39,7 +37,6 @@ import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/sessio
 import { buildSessionParentLink } from "../config/sessions/session-entry-lineage.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
-import { sessionEntryCommitGuardOptions } from "../config/sessions/session-source-authority.js";
 import {
   createInternalHookEvent,
   hasInternalHookListeners,
@@ -99,7 +96,7 @@ import type {
   GatewaySessionCommitResult,
   PreparedGatewaySessionLifecycle,
 } from "./session-create-service.types.js";
-import { readSessionCreateTarget } from "./session-create-target.js";
+import { finalizeSessionCreateTarget, readSessionCreateTarget } from "./session-create-target.js";
 import { resolveSessionCreateVisibility } from "./session-create-visibility.js";
 import {
   prepareGatewaySessionLifecycleTargets,
@@ -1275,27 +1272,11 @@ export async function createGatewaySession(
     const expectedEntry = structuredClone(stored);
     try {
       await params.afterCreate(initializingSession);
-      const finalized = await patchSessionEntryCore(
-        { sessionKey: initializingSession.key, storePath: initializingSession.storePath },
-        (current) => {
-          if (!isDeepStrictEqual(current, expectedEntry)) {
-            throw new Error(
-              `created session ${initializingSession.key} changed before finalization`,
-            );
-          }
-          return { initializationPending: undefined };
-        },
-        {
-          preserveActivity: true,
-          requireWriteSuccess: true,
-          ...sessionEntryCommitGuardOptions(params.commitGuard),
-        },
+      const finalized = await finalizeSessionCreateTarget(
+        initializingSession,
+        expectedEntry,
+        params.commitGuard,
       );
-      if (!finalized) {
-        throw new Error(
-          `created session ${initializingSession.key} disappeared before finalization`,
-        );
-      }
       return {
         ...result,
         entry: projectPublicSessionEntry(finalized),

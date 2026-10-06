@@ -35,7 +35,7 @@ import type {
   IncognitoSessionRead,
   IncognitoSessionOperations,
 } from "./session-incognito-contract.js";
-import type { IncognitoEntryPatchResult } from "./session-incognito-entry-patch-contract.js";
+import type { IncognitoEntryPatchAuthorizer } from "./session-incognito-entry-patch-contract.js";
 import {
   incognitoHistoryKeys,
   isIncognitoHistoryCommand,
@@ -70,7 +70,6 @@ import type {
   PendingInputMutation,
   PendingInputRead,
 } from "./session-pending-input-operations.types.js";
-import type { SessionSourceValidation } from "./session-source-authority.js";
 
 export type { IncognitoSessionRunner } from "./session-incognito-admission.js";
 
@@ -425,10 +424,7 @@ export function createIncognitoSessionFacts(
           signal?: AbortSignal,
           onCommitted?: (value: IncognitoEntryOperations[Key]["output"]) => void,
           onRead?: (value: IncognitoEntryOperations[Key]["output"]) => void,
-          authorizePrepared?: (
-            refused?: IncognitoEntryPatchResult["refusedSource"],
-            validation?: SessionSourceValidation,
-          ) => void,
+          authorizePrepared?: IncognitoEntryPatchAuthorizer,
         ): Promise<IncognitoEntryOperations[Key]["output"]> =>
           perform(
             authority,

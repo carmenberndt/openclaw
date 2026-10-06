@@ -21,7 +21,7 @@ import type {
 import type { IncognitoEntryCreationOperations } from "./session-incognito-entry-creation-contract.js";
 import type {
   IncognitoEntryPatchOperations,
-  IncognitoEntryPatchResult,
+  IncognitoEntryPatchAuthorizer,
 } from "./session-incognito-entry-patch-contract.js";
 import type { SessionSourceValidation } from "./session-source-authority.js";
 
@@ -51,10 +51,7 @@ export function readIncognitoGrantFacts(
 /** Entry receipts publish the paired kernel's acknowledged result without replay. */
 export function incognitoEntryPublication<Key extends keyof IncognitoEntryOperations>(
   type: Key,
-  authorizePrepared?: (
-    refused?: IncognitoEntryPatchResult["refusedSource"],
-    validation?: SessionSourceValidation,
-  ) => void,
+  authorizePrepared?: IncognitoEntryPatchAuthorizer,
 ) {
   let receiver: ReturnType<typeof createSqliteWorkerTransferReceiver> | undefined;
   let transferId: number | undefined;
