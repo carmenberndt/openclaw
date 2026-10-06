@@ -7,6 +7,7 @@ import {
 } from "../../../config/sessions/session-entry-provenance.js";
 import { captureSessionEntrySourceAssertion } from "../../../config/sessions/session-entry-source-authority.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../../config/sessions/session-source-authority.js";
@@ -292,15 +293,9 @@ export async function createInitialSubagentSession(params: {
               : {}),
           }),
         },
-        {
-          workerGuard: {
-            source: composeSessionSourceAssertion([
-              params.assertActive,
-              source,
-              assertSourceCurrent,
-            ]),
-          },
-        },
+        sessionEntryCommitGuardOptions(
+          composeSessionSourceAssertion([params.assertActive, source, assertSourceCurrent]),
+        ),
       );
     };
     const entry = preparedWorktree?.withCommit

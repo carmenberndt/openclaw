@@ -16,12 +16,17 @@ export type SessionSourcePredicate = {
   expected: Partial<SessionEntry> | undefined;
   members?: readonly string[];
   transcript?: { sessionId: string; version: SessionTranscriptContextVersion };
-  conversations?: readonly SessionSourceConversationPredicate[];
+  conversationAlternatives?: readonly (readonly SessionSourceConversationPredicate[])[];
 };
 
 export type SessionSourcePredicateFacts = {
   entry: SessionEntry | undefined;
   members?: readonly string[];
+};
+
+export type SessionSourceValidation = {
+  refusedSource?: { index: number; facts: SessionSourcePredicateFacts };
+  conversationMatches: Array<{ index: number; alternatives: number[] }>;
 };
 
 export type PreparedSessionSourceAuthority = {
@@ -31,6 +36,7 @@ export type PreparedSessionSourceAuthority = {
   checks: {
     predicate: SessionSourcePredicate;
     refuse: (facts: SessionSourcePredicateFacts) => never;
+    acceptConversationMatches?: (alternatives: readonly number[]) => void;
   }[];
   release?: () => void | Promise<void>;
 };
@@ -42,6 +48,40 @@ export type SessionSourceAssertion = (() => void) & {
 
 /** Public boolean callbacks stay callable; bundled owners also carry their prepared writer source. */
 export type SessionSourceCheck = (() => boolean) & { sessionSource?: SessionSourceAssertion };
+
+export function sessionEntryCommitGuardOptions(source: SessionSourceAssertion | undefined) {
+  return source?.nativeSource ? { assertCommitAllowed: source } : { workerGuard: { source } };
+}
+
+/** Install transaction facts before composed host assertions recheck their live alternatives. */
+export function acceptSessionSourceValidation(
+  source: PreparedSessionSourceAuthority,
+  validation: SessionSourceValidation | undefined,
+): void {
+  const refused = validation?.refusedSource;
+  if (refused) {
+    source.checks[refused.index]?.refuse(refused.facts);
+    throw new Error("Session source refusal omitted its prepared assertion");
+  }
+  for (const [index, check] of source.checks.entries()) {
+    if (!check.acceptConversationMatches) {
+      continue;
+    }
+    const matched = validation?.conversationMatches.find((entry) => entry.index === index);
+    if (
+      !matched ||
+      matched.alternatives.some(
+        (alternative) =>
+          !Number.isSafeInteger(alternative) ||
+          alternative < 0 ||
+          alternative >= (check.predicate.conversationAlternatives?.length ?? 0),
+      )
+    ) {
+      throw new Error("Session source validation omitted its matching alternatives");
+    }
+    check.acceptConversationMatches(matched.alternatives);
+  }
+}
 
 /** Classify request/SDK callbacks before adapters compose them with prepared internal authority. */
 export function captureExternalSessionCommitGuard(guard: SessionSourceAssertion | undefined) {
@@ -78,7 +118,7 @@ export function createDynamicSessionSourceAssertion(
   select: () => SessionSourceAssertion | undefined,
   refuse: () => never,
 ): SessionSourceAssertion {
-  return Object.assign(() => select()?.(), {
+  const assertion = Object.assign(() => select()?.(), {
     prepareSessionSource() {
       const selected = select();
       return prepareSessionSourceAuthority(
@@ -91,6 +131,10 @@ export function createDynamicSessionSourceAssertion(
       );
     },
   });
+  return Object.defineProperty(assertion, "nativeSource", {
+    enumerable: true,
+    get: () => select()?.nativeSource,
+  });
 }
 
 /** Preserve each owner's error/lifetime wrapper while preparing its storage-dependent sources. */
@@ -98,7 +142,7 @@ export function composeSessionSourceAssertion(
   sources: readonly (SessionSourceAssertion | undefined)[],
   check: (assertSources: () => void) => void = (assertSources) => assertSources(),
 ): SessionSourceAssertion {
-  return Object.assign(() => check(() => sources.forEach((source) => source?.())), {
+  const assertion = Object.assign(() => check(() => sources.forEach((source) => source?.())), {
     async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
       const prepared: PreparedSessionSourceAuthority[] = [];
       const release = () => releaseSessionSourceAuthorities(prepared);
@@ -110,8 +154,8 @@ export function composeSessionSourceAssertion(
           nativeSource: prepared.some((source) => source.nativeSource),
           assertCurrent: () => check(() => prepared.forEach((source) => source.assertCurrent())),
           checks: prepared.flatMap((source, index) =>
-            source.checks.map(({ predicate, refuse }) => ({
-              predicate,
+            source.checks.map(({ refuse, ...preparedCheck }) => ({
+              ...preparedCheck,
               refuse: (facts) => {
                 check(() => {
                   prepared.slice(0, index).forEach((previous) => previous.assertCurrent());
@@ -137,5 +181,9 @@ export function composeSessionSourceAssertion(
         throw failure;
       }
     },
+  });
+  return Object.defineProperty(assertion, "nativeSource", {
+    enumerable: true,
+    get: () => sources.some((source) => source?.nativeSource),
   });
 }

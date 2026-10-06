@@ -4,7 +4,10 @@ import { filterHeartbeatTranscriptArtifacts } from "../../../auto-reply/heartbea
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { readSessionEntrySummariesInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
-import type { SessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  type SessionSourceAssertion,
+} from "../../../config/sessions/session-source-authority.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import { prepareHarnessContextEnginePrompt } from "../../harness/context-engine-lifecycle.js";
@@ -118,7 +121,7 @@ export async function prepareEmbeddedAttemptHistory(
           {
             skipMaintenance: true,
             takeCacheOwnership: true,
-            workerGuard: { source: assertActive },
+            ...sessionEntryCommitGuardOptions(assertActive),
           },
         );
         assertActive();

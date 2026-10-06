@@ -166,6 +166,8 @@ export type SessionEntryPublicationRecord = {
       kind: "metadata";
       sharingChange: "changed" | "unchanged";
       prepared: PreparedSessionEntryChanges;
+      /** Row delivery rechecks and folds synchronous writes made by earlier listeners. */
+      readCurrentEntry?: (sessionKey: string) => SessionEntry | undefined;
     }
   | { kind: "placeholder"; sharingChange: "changed"; receipt: PlaceholderReceipt }
 );

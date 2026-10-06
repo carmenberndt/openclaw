@@ -3,6 +3,7 @@ import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js
 import { sessionSnapshotChangesApplied } from "../../config/sessions/session-snapshot-merge.js";
 import {
   captureExternalSessionCommitGuard,
+  sessionEntryCommitGuardOptions,
   type SessionSourceCheck,
 } from "../../config/sessions/session-source-authority.js";
 import { applyAbortCutoffToSessionEntry, type AbortCutoff } from "./abort-cutoff.js";
@@ -123,16 +124,15 @@ export async function persistAbortTargetEntry(params: {
         replaceEntry: true,
         skipMaintenance: true,
         // Reassignment can leave the selected row unchanged across the patch await.
-        workerGuard: {
-          source:
-            params.isCurrent?.sessionSource ??
+        ...sessionEntryCommitGuardOptions(
+          params.isCurrent?.sessionSource ??
             (params.isCurrent &&
               captureExternalSessionCommitGuard(() => {
                 if (applied && params.isCurrent?.() === false) {
                   throw new Error("The selected session changed before it could be stopped.");
                 }
               })),
-        },
+        ),
       },
     );
     return applied;

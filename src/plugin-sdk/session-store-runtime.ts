@@ -21,7 +21,10 @@ import {
   updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
 import { readSessionUpdatedAtInWorker } from "../config/sessions/session-entry-read-runtime.js";
-import { captureExternalSessionCommitGuard } from "../config/sessions/session-source-authority.js";
+import {
+  captureExternalSessionCommitGuard,
+  sessionEntryCommitGuardOptions,
+} from "../config/sessions/session-source-authority.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { normalizeResolvedMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
 import type { ResolvedSessionMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
@@ -236,7 +239,9 @@ export async function patchSessionEntry(
       return preserveGenerationPrivateFields(persistedEntry, projectPluginSessionEntryPatch(patch));
     },
     {
-      workerGuard: { source: captureExternalSessionCommitGuard(params.assertCommitAllowed) },
+      ...sessionEntryCommitGuardOptions(
+        captureExternalSessionCommitGuard(params.assertCommitAllowed),
+      ),
       fallbackEntry: params.fallbackEntry
         ? projectPluginSessionEntry(params.fallbackEntry)
         : undefined,

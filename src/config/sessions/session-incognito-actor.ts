@@ -67,6 +67,7 @@ import type {
   PendingInputMutation,
   PendingInputRead,
 } from "./session-pending-input-operations.types.js";
+import type { SessionSourceValidation } from "./session-source-authority.js";
 
 export type { IncognitoSessionRunner } from "./session-incognito-admission.js";
 
@@ -400,7 +401,10 @@ export function createIncognitoSessionFacts(
           signal?: AbortSignal,
           onCommitted?: (value: IncognitoEntryOperations[Key]["output"]) => void,
           onRead?: (value: IncognitoEntryOperations[Key]["output"]) => void,
-          authorizePrepared?: (refused?: IncognitoEntryPatchResult["refusedSource"]) => void,
+          authorizePrepared?: (
+            refused?: IncognitoEntryPatchResult["refusedSource"],
+            validation?: SessionSourceValidation,
+          ) => void,
         ): Promise<IncognitoEntryOperations[Key]["output"]> =>
           perform(
             authority,

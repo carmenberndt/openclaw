@@ -2,6 +2,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { CliSessionBinding, InternalSessionEntry, SessionEntry } from "../config/sessions.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
@@ -65,7 +66,7 @@ async function patchCliSessionBindingInStore(
     },
     {
       fallbackEntry: params.fallbackEntry,
-      workerGuard: { source: params.assertCommitAllowed },
+      ...sessionEntryCommitGuardOptions(params.assertCommitAllowed),
       preserveActivity: params.preserveActivity,
       skipMaintenance: params.skipMaintenance,
       onCommitted: (entry) => {

@@ -3,6 +3,7 @@ import { resolveConfiguredGitHubHost } from "../agents/github-host.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { captureSessionEntrySourceAssertion } from "../config/sessions/session-entry-source-authority.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
@@ -312,9 +313,9 @@ export async function materializeSessionRepositoryWorkspaceOnGateway(params: {
         },
         {
           replaceEntry: true,
-          workerGuard: {
-            source: composeSessionSourceAssertion([assertCurrent, assertSourceCurrent]),
-          },
+          ...sessionEntryCommitGuardOptions(
+            composeSessionSourceAssertion([assertCurrent, assertSourceCurrent]),
+          ),
           requireWriteSuccess: true,
           skipMaintenance: true,
           onCommitted: () => {

@@ -39,6 +39,7 @@ import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/sessio
 import { buildSessionParentLink } from "../config/sessions/session-entry-lineage.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
+import { sessionEntryCommitGuardOptions } from "../config/sessions/session-source-authority.js";
 import {
   createInternalHookEvent,
   hasInternalHookListeners,
@@ -1295,7 +1296,7 @@ export async function createGatewaySession(
         {
           preserveActivity: true,
           requireWriteSuccess: true,
-          workerGuard: { source: params.commitGuard },
+          ...sessionEntryCommitGuardOptions(params.commitGuard),
         },
       );
       if (!finalized) {

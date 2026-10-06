@@ -12,6 +12,7 @@ import { invalidateOpenClawAgentWritableProjections } from "../../state/openclaw
 import { invalidateOpenClawAgentReadOnlyProjections } from "../../state/openclaw-agent-db-readonly-scope.js";
 import {
   applyPendingSessionEntryOwnerChanges,
+  applySessionEntryOwnerChange,
   pendingSessionEntryPublications,
   preparedSharingReads,
   publishRetainedSessionEntryChange,
@@ -105,12 +106,20 @@ export function readPreparedSessionEntryChange(change: object, sessionKey: strin
     return undefined;
   }
   const { prepared } = record;
-  const entry = prepared.entries.get(sessionKey);
+  const entry = record.readCurrentEntry
+    ? record.readCurrentEntry(sessionKey)
+    : prepared.entries.get(sessionKey);
+  if (record.readCurrentEntry && !entry) {
+    return undefined;
+  }
   return {
     source: prepared.source,
     entry,
     sharing:
-      prepared.sharing?.get(sessionKey) ?? (entry ? projectSessionSharingEntry(entry) : undefined),
+      record.readCurrentEntry && entry
+        ? projectSessionSharingEntry(entry)
+        : (prepared.sharing?.get(sessionKey) ??
+          (entry ? projectSessionSharingEntry(entry) : undefined)),
   };
 }
 
@@ -508,9 +517,10 @@ export function retainSessionEntryWorkerPublication(params: {
       if (!pending) {
         return undefined;
       }
+      const foldedOwnerChanges = new Map(owner.ownerChanges);
       const replacement = applyPendingSessionEntryOwnerChanges(
         receipt?.kind === "session-entry-replacements" ? receipt : undefined,
-        owner.ownerChanges,
+        foldedOwnerChanges,
       );
       const initialization =
         receipt?.kind === "session-transcript-initialized" ? receipt : undefined;
@@ -610,13 +620,35 @@ export function retainSessionEntryWorkerPublication(params: {
               ? { entry: sharingEntry, membership: previous.membership }
               : undefined;
         }
+        const committedEntry = prepared?.entries.get(sessionKey);
+        const previousEntry = replacement?.previous.get(sessionKey);
+        const committedFacts: SessionRowFacts | undefined =
+          replacement?.previous.has(sessionKey) && !replacement.current.has(sessionKey)
+            ? { kind: "removed" }
+            : !unknown && committedEntry && !membershipInvalidated.has(sessionKey)
+              ? {
+                  kind: "entry",
+                  previousSessionId: previousEntry?.sessionId,
+                  sessionId: committedEntry.sessionId,
+                  category: committedEntry.category?.trim() || null,
+                  clearMembers:
+                    previousEntry !== undefined &&
+                    previousEntry.sessionId !== committedEntry.sessionId,
+                }
+              : undefined;
+        const currentMetadata = (key: string) => current(key) && !owner.metadataSuperseded.has(key);
+        // Synchronous listeners can publish newer facts before the next listener consumes this one.
+        const currentFacts = () => (currentMetadata(sessionKey) ? committedFacts : undefined);
         const change: SessionRowChange = {
           agentId: params.agentId,
           storePath: ownsCreation ? creationSource.path : params.storePath,
           sessionKey,
-          ...(replacement?.previous.has(sessionKey) && !replacement.current.has(sessionKey)
-            ? { facts: { kind: "removed" } as const }
-            : { factsInvalidated: true as const }),
+          get facts() {
+            return currentFacts();
+          },
+          get factsInvalidated() {
+            return currentFacts() ? undefined : true;
+          },
           ...(receipt && !unknown ? { scope: "session-entry" as const } : {}),
         };
         if (receipt) {
@@ -642,7 +674,21 @@ export function retainSessionEntryWorkerPublication(params: {
                 }
               : prepared &&
                   (replacement?.previous.has(sessionKey) || replacement?.current.has(sessionKey))
-                ? { kind: "metadata", sharingChange, prepared }
+                ? {
+                    kind: "metadata",
+                    sharingChange,
+                    prepared,
+                    readCurrentEntry(key) {
+                      if (!currentMetadata(key)) {
+                        return undefined;
+                      }
+                      const entry = prepared.entries.get(key);
+                      const change = owner.ownerChanges.get(key);
+                      return entry && change && change !== foldedOwnerChanges.get(key)
+                        ? applySessionEntryOwnerChange(entry, change)
+                        : entry;
+                    },
+                  }
                 : { kind: "marker", sharingChange, databaseIdentity: params.databaseIdentity },
           );
         } else {

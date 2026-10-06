@@ -16,7 +16,7 @@ import {
 import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
 import {
-  readRefusedSessionSource,
+  readSessionSourceValidation,
   transferSessionEntryWorkerCandidate,
 } from "./session-entry-patch.worker.js";
 import type { SessionSourcePredicate } from "./session-source-authority.js";
@@ -30,7 +30,10 @@ export type SessionGoalManagementCandidate = {
   publication?: SessionEntryReplacementPublication;
 } & (
   | { result: SessionGoalManagementResult; refusedSource?: never }
-  | { result?: never; refusedSource: NonNullable<ReturnType<typeof readRefusedSessionSource>> }
+  | {
+      result?: never;
+      refusedSource: NonNullable<ReturnType<typeof readSessionSourceValidation>["refusedSource"]>;
+    }
 );
 
 export type SessionGoalManagementOperations = {
@@ -76,7 +79,8 @@ export function bindSqliteWorkerBackend(
           }
           admit("transaction");
           const assertSources = () => {
-            const refusedSource = readRefusedSessionSource(current, request.sources);
+            const validation = readSessionSourceValidation(current, request.sources);
+            const { refusedSource } = validation;
             if (refusedSource) {
               const refused: SessionGoalManagementCandidate = {
                 kind: "session-goal-management",
@@ -84,6 +88,12 @@ export function bindSqliteWorkerBackend(
               };
               transferSessionEntryWorkerCandidate(current, admit, refused);
               throw new Error("Goal source refusal was not rejected");
+            }
+            if (validation.conversationMatches.length) {
+              admit("transaction", {
+                kind: "session-entry-patch-validated",
+                sourceValidation: validation,
+              });
             }
           };
           assertSources();

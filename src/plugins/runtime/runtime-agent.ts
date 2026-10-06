@@ -29,7 +29,10 @@ import {
   type SessionAccessScope,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
-import { captureExternalSessionCommitGuard } from "../../config/sessions/session-source-authority.js";
+import {
+  captureExternalSessionCommitGuard,
+  sessionEntryCommitGuardOptions,
+} from "../../config/sessions/session-source-authority.js";
 import { normalizeResolvedMaintenanceConfigInput } from "../../config/sessions/store-maintenance.js";
 import type { SessionAcpMeta, SessionEntry } from "../../config/sessions/types.js";
 import {
@@ -97,7 +100,9 @@ const listSessionEntries: RuntimeSession["listSessionEntries"] = (params = {}) =
 
 const patchSessionEntry: RuntimeSession["patchSessionEntry"] = async (params) => {
   return await patchAccessorSessionEntry(toSessionAccessScope(params), params.update, {
-    workerGuard: { source: captureExternalSessionCommitGuard(params.assertCommitAllowed) },
+    ...sessionEntryCommitGuardOptions(
+      captureExternalSessionCommitGuard(params.assertCommitAllowed),
+    ),
     fallbackEntry: params.fallbackEntry,
     maintenanceConfig:
       params.maintenanceConfig !== undefined
@@ -468,7 +473,7 @@ async function createSessionEntry(
             {
               preserveActivity: true,
               requireWriteSuccess: true,
-              workerGuard: { source: creationOwner.assertCurrent },
+              ...sessionEntryCommitGuardOptions(creationOwner.assertCurrent),
             },
           );
           if (!finalized) {

@@ -13,7 +13,10 @@ import {
   waitForSessionTranscriptProjection,
 } from "../../config/sessions/session-accessor.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
-import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  composeSessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { withSessionTranscriptReadSource } from "../../config/sessions/session-transcript-read-source.js";
@@ -89,6 +92,23 @@ export async function prepareCliHistoryBoundary(
     assertPhysicalSource();
   });
   assertCurrent();
+  const commitGuard = sessionEntryCommitGuardOptions(
+    composeSessionSourceAssertion([
+      assertCurrent,
+      composeSessionSourceAssertion([assertOwned], (assertSource) => {
+        // Planning may yield. Recheck foreign liveness at commit, then adopt the
+        // CLI claim so a later reuse of the dead run ID remains a visible takeover.
+        if (
+          snapshot.activeWriterRunId !== undefined &&
+          snapshot.activeWriterRunId !== writerRunId &&
+          hasLiveAgentRunContext(snapshot.activeWriterRunId)
+        ) {
+          throw new Error("CLI history owner changed before preparation");
+        }
+        assertSource();
+      }),
+    ]),
+  );
   const committed = await patchSessionEntryCore(
     target,
     (current: InternalSessionEntry) => {
@@ -117,23 +137,10 @@ export async function prepareCliHistoryBoundary(
           callerEntry.activeWriterRunId = entry.activeWriterRunId;
         }
       },
+      ...commitGuard,
       workerGuard: {
+        ...commitGuard.workerGuard,
         cliHistory: { sessionId: target.sessionId, admission: capturedAdmission, watermark },
-        source: composeSessionSourceAssertion([
-          assertCurrent,
-          composeSessionSourceAssertion([assertOwned], (assertSource) => {
-            // Planning may yield. Recheck foreign liveness at commit, then adopt the
-            // CLI claim so a later reuse of the dead run ID remains a visible takeover.
-            if (
-              snapshot.activeWriterRunId !== undefined &&
-              snapshot.activeWriterRunId !== writerRunId &&
-              hasLiveAgentRunContext(snapshot.activeWriterRunId)
-            ) {
-              throw new Error("CLI history owner changed before preparation");
-            }
-            assertSource();
-          }),
-        ]),
       },
     },
   );

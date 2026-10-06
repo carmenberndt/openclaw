@@ -20,6 +20,7 @@ import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-
 import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
 import { listSessionMembersInWorker } from "../../config/sessions/session-sharing-store.js";
 import type { SessionMember as StoredSessionMember } from "../../config/sessions/session-sharing-store.kernel.js";
+import { sessionEntryCommitGuardOptions } from "../../config/sessions/session-source-authority.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
@@ -371,7 +372,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
           {
             // Entry patches await preparation before committing. Recheck current
             // sharing authority on the synchronous commit edge, after that await.
-            workerGuard: { source: access.assertCurrent },
+            ...sessionEntryCommitGuardOptions(access.assertCurrent),
           },
         );
         if (!inspected) {
@@ -435,6 +436,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         // replacement still cannot inherit this visibility change.
         let inspected = false;
         let changed = false;
+        const commitGuard = sessionEntryCommitGuardOptions(access.assertCurrent);
         await patchSessionEntryCore(
           scope,
           (entry) => {
@@ -447,8 +449,9 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
             return { visibility };
           },
           {
+            ...commitGuard,
             workerGuard: {
-              source: access.assertCurrent,
+              ...commitGuard.workerGuard,
               assertCurrent: () => {
                 if (!isSessionVisibilityAllowed(context.getRuntimeConfig(), visibility)) {
                   throw new Error(`session visibility is disabled: ${visibility}`);

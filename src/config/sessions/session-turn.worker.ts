@@ -14,7 +14,7 @@ import { readCommittedTranscriptMessageSequence } from "./session-accessor.sqlit
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
 import {
-  readRefusedSessionSource,
+  readSessionSourceValidation,
   transferSessionEntryWorkerCandidate,
 } from "./session-entry-patch.worker.js";
 import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
@@ -177,7 +177,7 @@ export function commitSessionTurn(input: SessionTurnPlan, context: AgentWorkerOp
                   context.admit("transaction", {
                     kind: "session-turn-fresh",
                     index,
-                    refusedSource: readRefusedSessionSource(database, append.sources),
+                    sourceValidation: readSessionSourceValidation(database, append.sources),
                   });
                 }
               },

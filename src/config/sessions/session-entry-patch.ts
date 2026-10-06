@@ -35,8 +35,10 @@ import type {
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
 import {
+  acceptSessionSourceValidation,
   prepareSessionSourceAuthority,
   type PreparedSessionSourceAuthority,
+  type SessionSourceValidation,
 } from "./session-source-authority.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
@@ -66,6 +68,13 @@ export async function patchSessionEntryInWorker(params: {
     ...params,
     releaseSource,
     candidateKind: "session-entry-patch",
+    onTransactionFacts(facts) {
+      if (source && isRecord(facts) && facts.kind === "session-entry-patch-validated") {
+        // SAFETY: The paired kernel supplies the source indices from this transaction.
+        acceptSessionSourceValidation(source, facts.sourceValidation as SessionSourceValidation);
+      }
+      return false;
+    },
     assertPrepared: () => {
       params.guard?.assertCurrent?.();
       source?.assertCurrent();

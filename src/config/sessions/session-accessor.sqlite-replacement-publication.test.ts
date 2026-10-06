@@ -98,6 +98,7 @@ it.each([
   "callback failure",
   "release failure",
   "newer native write",
+  "facts then newer native write",
   "newer native write after reset",
   "late writer",
 ] as const)("preserves replacement publication through %s", async (boundary) => {
@@ -124,7 +125,10 @@ it.each([
       boundary === "newer native write after reset" ||
       boundary === "metadata then newer native reset";
     const newerNative =
-      boundary === "newer native write" || boundary === "metadata then newer native write" || reset;
+      boundary === "newer native write" ||
+      boundary === "metadata then newer native write" ||
+      boundary === "facts then newer native write" ||
+      reset;
     const original = {
       sessionId: "settlement",
       lifecycleRevision: "initial-lifecycle",
@@ -133,6 +137,20 @@ it.each([
       label: "before",
       category: "before",
     };
+    const replaceWithNewerEntry = () =>
+      replaceSessionEntrySync(
+        { agentId: "main", storePath: database.path, sessionKey },
+        {
+          ...readExactSessionEntryRow(database, sessionKey)!.entry,
+          updatedAt: 3,
+          visibility: "draft",
+          label: "newer",
+          category: "newer",
+          ...(boundary === "metadata then newer native reset"
+            ? { lifecycleRevision: "next-lifecycle" }
+            : {}),
+        },
+      );
     writeSessionEntry(database, sessionKey, original);
     const identity = readOpenClawAgentDatabaseIdentity(database).identity;
     if (typeof identity !== "string") {
@@ -157,7 +175,17 @@ it.each([
       { ...options, storePath: database.path, ...readOpenClawAgentDatabaseIdentity(database) },
     ]);
     let callbackPublication: ReturnType<typeof readPreparedSessionEntryChange>;
+    let replacedDuringFacts = false;
     const stopFacts = sessionChanges.subscribeFacts((change) => {
+      if (
+        boundary === "facts then newer native write" &&
+        !replacedDuringFacts &&
+        "sessionKey" in change &&
+        change.sessionKey === sessionKey
+      ) {
+        replacedDuringFacts = true;
+        replaceWithNewerEntry();
+      }
       projection.invalidate(change);
       if (
         boundary === "callback failure" &&
@@ -197,20 +225,8 @@ it.each([
       if (boundary === "lost result") {
         throw failure;
       }
-      if (newerNative) {
-        replaceSessionEntrySync(
-          { agentId: "main", storePath: database.path, sessionKey },
-          {
-            ...readExactSessionEntryRow(database, sessionKey)!.entry,
-            updatedAt: 3,
-            visibility: "draft",
-            label: "newer",
-            category: "newer",
-            ...(boundary === "metadata then newer native reset"
-              ? { lifecycleRevision: "next-lifecycle" }
-              : {}),
-          },
-        );
+      if (newerNative && boundary !== "facts then newer native write") {
+        replaceWithNewerEntry();
       }
     };
     if (boundary === "release failure") {
@@ -319,11 +335,18 @@ it.each([
       expect(readExactSessionEntryRow(writer, sessionKey)?.entry.label).toBe(
         newerNative ? "newer" : "worker",
       );
+      if (boundary === "metadata only") {
+        expect(projection.needsPreparation).toBe(false);
+      }
       await projection.prepare();
       expect([...projection.groupTargets()]).toEqual([
         [newerNative ? "newer" : "worker", [{ sessionKey, agentId: "main" }]],
       ]);
-      expect(observed).toEqual([reset ? undefined : newerNative ? "draft" : workerVisibility]);
+      expect(observed).toEqual(
+        boundary === "facts then newer native write"
+          ? ["draft", "draft"]
+          : [reset ? undefined : newerNative ? "draft" : workerVisibility],
+      );
       if (boundary === "late writer") {
         expect(caches).toEqual([undefined]);
       }
@@ -343,6 +366,8 @@ it.each([
 it.each([
   { boundary: "reply", reset: false },
   { boundary: "reply", reset: true },
+  { boundary: "facts", reset: false },
+  { boundary: "facts", reset: true },
   { boundary: "observer", reset: false },
   { boundary: "observer", reset: true },
 ])(
@@ -418,11 +443,22 @@ it.each([
       };
       let stop = () => {};
       let stopIdentity = () => {};
+      let stopFacts = () => {};
       try {
         await projection.ensureMaterialized();
         expect(projection.capture(query)?.storedEntry?.owner).toEqual(initialOwner);
         expect(sharing.readCurrent()?.entry?.owner).toEqual(initialOwner);
         generation.assertCurrent();
+        stopFacts = sessionChanges.subscribeFacts((change) => {
+          if (
+            boundary === "facts" &&
+            !ownerAssigned &&
+            "sessionKey" in change &&
+            change.sessionKey === scope.sessionKey
+          ) {
+            assignNewOwner();
+          }
+        });
         stop = sessionChanges.subscribe((change) => {
           if (!("sessionKey" in change) || change.sessionKey !== scope.sessionKey) {
             return;
@@ -519,6 +555,7 @@ it.each([
         delivery.afterResult = undefined;
         stop();
         stopIdentity();
+        stopFacts();
         projection.dispose();
         sharing.release();
         generation.release();

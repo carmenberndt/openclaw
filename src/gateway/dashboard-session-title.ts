@@ -12,6 +12,7 @@ import type { WorktreeSourceStage } from "../agents/worktrees/types.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../config/sessions/session-source-authority.js";
@@ -363,7 +364,7 @@ export async function maybeGenerateSessionTitle(params: SessionTitleParams): Pro
         },
         {
           requireWriteSuccess: true,
-          workerGuard: { source: assertCommitAllowed },
+          ...sessionEntryCommitGuardOptions(assertCommitAllowed),
         },
       );
       return persisted;

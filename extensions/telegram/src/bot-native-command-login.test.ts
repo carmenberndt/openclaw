@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
@@ -7,15 +6,13 @@ import {
 } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import {
-  observeHostDataSql,
-  useSessionStoreTempDirs,
-} from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLoginResult,
   createOwnerLoginConfig,
   exerciseDeferredModelAccess,
+  prepareTelegramLoginSessionStore,
   registerLoginCommand,
   type TelegramLoginFlow,
 } from "./bot-native-command-login.test-support.js";
@@ -671,38 +668,20 @@ describe("registerTelegramNativeCommands /login", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
   it("persists the Telegram login account without caller-thread entry SQL", async () => {
-    const store = await vi.importActual<typeof import("openclaw/plugin-sdk/session-store-runtime")>(
-      "openclaw/plugin-sdk/session-store-runtime",
-    );
-    const scope = {
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      storePath: path.join(sessionDirs.make(), "sessions.sqlite"),
-    };
-    await store.upsertSessionEntry({
-      ...scope,
-      entry: { sessionId: "telegram-login", updatedAt: 1, authProfileOverride: "openai:prior" },
-    });
-    loginSessionMocks.getSessionEntry.mockImplementation(() => store.getSessionEntry(scope));
-    loginSessionMocks.resolveStorePath.mockReturnValue(scope.storePath);
-    const queries: string[] = [];
-    loginSessionMocks.patchSessionEntry.mockImplementationOnce(
-      async (write: Parameters<typeof store.patchSessionEntry>[0]) => {
-        const sql = observeHostDataSql();
-        try {
-          return await store.patchSessionEntry(write);
-        } finally {
-          queries.push(...sql.queries);
-          sql.restore();
-        }
-      },
+    const { store, scope, queries } = await prepareTelegramLoginSessionStore(
+      sessionDirs.make(),
+      loginSessionMocks,
     );
     const { handler } = registerLoginCommand({
+      accountId: "default",
       cfg: createOwnerLoginConfig(),
       loginFlow: vi.fn<TelegramLoginFlow>(async () => createLoginResult("openai:saved")),
     });
     await handler(createPrivateCommandContext({ match: "codex", userId: 200 }));
     expect(loginSessionMocks.patchSessionEntry).toHaveBeenCalledOnce();
+    expect(loginSessionMocks.patchSessionEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: scope.sessionKey, storePath: scope.storePath }),
+    );
     expect(store.getSessionEntry(scope)?.authProfileOverride).toBe("openai:saved");
     expect(
       queries.filter((query) =>

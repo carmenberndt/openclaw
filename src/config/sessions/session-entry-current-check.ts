@@ -203,35 +203,48 @@ export async function captureSessionEntryCurrentCheck(params: {
               }
             }
           },
-          async prepareConversations(readConversation) {
-            const rows = new Map<string, string | null>();
-            for (const alternative of alternatives) {
-              if (alternative.isActive?.() === false) {
-                continue;
-              }
-              let matches = true;
-              for (const { predicate } of alternative.conversations) {
-                if (!rows.has(predicate.conversationRef)) {
-                  rows.set(
-                    predicate.conversationRef,
-                    await readConversation(predicate.conversationRef),
-                  );
-                }
-                matches &&= rows.get(predicate.conversationRef) === predicate.sessionKey;
-              }
-              if (matches && alternative.isActive?.() !== false) {
-                return {
-                  predicates: alternative.conversations.map(({ predicate }) => predicate),
-                  assertCurrent: () => {
-                    assertActive();
-                    if (alternative.isActive?.() === false) {
-                      refuse();
-                    }
-                  },
-                };
-              }
+          async prepareConversations(readConversations) {
+            const predicates = alternatives.map((alternative) =>
+              alternative.conversations.map(({ predicate }) => predicate),
+            );
+            const refs = [
+              ...new Set(
+                predicates.flatMap((alternative) =>
+                  alternative.map(({ conversationRef }) => conversationRef),
+                ),
+              ),
+            ];
+            const rows = await readConversations(refs);
+            if (
+              !alternatives.some(
+                (alternative, index) =>
+                  alternative.isActive?.() !== false &&
+                  predicates[index]!.every(
+                    (predicate) =>
+                      (rows.get(predicate.conversationRef) ?? null) === predicate.sessionKey,
+                  ),
+              )
+            ) {
+              refuse();
             }
-            return refuse();
+            let matches: readonly number[] | undefined;
+            return {
+              alternatives: predicates,
+              acceptMatches: (validated) => {
+                matches = validated;
+              },
+              assertCurrent: () => {
+                assertActive();
+                if (
+                  !alternatives.some(
+                    (alternative, index) =>
+                      (!matches || matches.includes(index)) && alternative.isActive?.() !== false,
+                  )
+                ) {
+                  refuse();
+                }
+              },
+            };
           },
           refuse,
         });

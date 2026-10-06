@@ -80,6 +80,7 @@ import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-evict
 import { patchIncognitoSessionEntry } from "./session-incognito-entry-patch.js";
 import {
   captureExternalSessionCommitGuard,
+  sessionEntryCommitGuardOptions,
   prepareSessionSourceAuthority,
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
@@ -711,7 +712,7 @@ export async function updateSessionLastRouteInScope(
     {
       // Route updates must not refresh activity timestamps (#49515).
       preserveActivity: true,
-      workerGuard: { source: params.assertCommitAllowed },
+      ...sessionEntryCommitGuardOptions(params.assertCommitAllowed),
       ...(createIfMissing ? { fallbackEntry: mergeSessionEntry(undefined, {}) } : {}),
     },
     scope.databaseAgentId,

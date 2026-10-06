@@ -9,7 +9,10 @@ import {
   loadSessionEntryReadOnly,
   patchSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  type SessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import { isRecoverableTerminalSessionStatus } from "../../config/sessions/terminal-status.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -147,7 +150,7 @@ async function restoreArchivedDispatchSession(params: {
             ? { archivedAt: undefined, archivedBy: undefined, archiveReason: undefined }
             : null,
         // The writer may have waited; revalidate the prepared binding at the actual commit edge.
-        { workerGuard: { source: assertCommitAllowed } },
+        sessionEntryCommitGuardOptions(assertCommitAllowed),
       );
       return updatedEntry ?? undefined;
     },

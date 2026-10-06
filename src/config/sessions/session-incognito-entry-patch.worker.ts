@@ -4,13 +4,14 @@ import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.
 import { applySessionEntryPatchInDatabase } from "./session-accessor.sqlite-entry-mutation.js";
 import { sessionEntryPatchPredicateMatches } from "./session-entry-patch-guard.js";
 import {
-  readRefusedSessionSource,
+  readSessionSourceValidation,
   readSessionEntryPatchSnapshot,
 } from "./session-entry-patch.worker.js";
 import type {
   IncognitoEntryPatchOperations,
   IncognitoEntryPatchResult,
 } from "./session-incognito-entry-patch-contract.js";
+import type { SessionSourceValidation } from "./session-source-authority.js";
 
 export function createIncognitoEntryPatchWorker(
   database: OpenClawAgentDatabase,
@@ -19,7 +20,11 @@ export function createIncognitoEntryPatchWorker(
   admit: (
     stage: "transaction" | "commit",
     keys: readonly string[],
-    receipt: { guarded: boolean; value?: IncognitoEntryPatchResult },
+    receipt: {
+      guarded: boolean;
+      value?: IncognitoEntryPatchResult;
+      sourceValidation?: SessionSourceValidation;
+    },
   ) => void,
 ) {
   return {
@@ -44,6 +49,7 @@ export function createIncognitoEntryPatchWorker(
             throw new Error("Incognito entry patch lost its native owner");
           }
           let guarded = false;
+          let sourceValidation: SessionSourceValidation | undefined;
           admit("transaction", keys, { guarded });
           let result: IncognitoEntryPatchResult = { entry: null, wrote: false };
           if (sessionEntryPatchPredicateMatches(database, sessionKey, input.shouldCommitIf)) {
@@ -55,11 +61,12 @@ export function createIncognitoEntryPatchWorker(
                 providerReviewMutation: input.providerReviewMutation,
                 workerGuard: { cliHistory: input.cliHistory },
                 assertCommitAllowed() {
-                  const refusedSource = readRefusedSessionSource(
+                  sourceValidation = readSessionSourceValidation(
                     database,
                     input.sources,
                     incarnation,
                   );
+                  const { refusedSource } = sourceValidation;
                   if (refusedSource) {
                     admit("commit", keys, {
                       guarded: false,
@@ -68,13 +75,13 @@ export function createIncognitoEntryPatchWorker(
                     throw new Error("Session source refusal was not rejected");
                   }
                   guarded = true;
-                  admit("transaction", keys, { guarded });
+                  admit("transaction", keys, { guarded, sourceValidation });
                 },
               },
             });
             result = { entry: mutation.entry, wrote: Boolean(mutation.identity) };
           }
-          admit("commit", keys, { guarded, value: result });
+          admit("commit", keys, { guarded, value: result, sourceValidation });
           return result;
         },
         { agentId: database.agentId, path: database.path, env },

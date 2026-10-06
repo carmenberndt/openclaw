@@ -6,6 +6,7 @@ import {
   sessionSnapshotTouchedFieldsConflict,
 } from "../../config/sessions/session-snapshot-merge.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
@@ -110,7 +111,7 @@ export async function persistReplySessionEntry(
         skipMaintenance: params.skipMaintenance,
         ...(params.nativeCommitValidation
           ? { assertCommitAllowed: commitGuard }
-          : { workerGuard: { source: commitGuard } }),
+          : sessionEntryCommitGuardOptions(commitGuard)),
       },
     );
   } catch (error) {

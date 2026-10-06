@@ -21,6 +21,7 @@ import type {
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
+import type { SessionSourceValidation } from "./session-source-authority.js";
 
 export function readSessionEntryPatchSnapshot(
   database: OpenClawAgentDatabase,
@@ -49,13 +50,17 @@ export function commitSessionEntryPatch(
           providerReviewMutation: input.providerReviewMutation,
           workerGuard: { cliHistory: input.cliHistory },
           assertCommitAllowed: () => {
-            const refusedSource = readRefusedSessionSource(database, input.sources);
+            const validation = readSessionSourceValidation(database, input.sources);
+            const { refusedSource } = validation;
             if (refusedSource) {
               result = { kind: "session-entry-patch", entry: null, refusedSource };
               transferSessionEntryWorkerCandidate(database, admit, result);
               throw new Error("Session source refusal was not rejected");
             }
-            admit("transaction", { kind: "session-entry-patch-validated" });
+            admit("transaction", {
+              kind: "session-entry-patch-validated",
+              sourceValidation: validation,
+            });
           },
         },
       });
@@ -76,14 +81,15 @@ export function commitSessionEntryPatch(
   });
 }
 
-export function readRefusedSessionSource(
+export function readSessionSourceValidation(
   database: OpenClawAgentDatabase,
   sources: SessionEntryPatchCommit["sources"],
   identity = readOpenClawAgentDatabaseIdentity(database).identity,
-): SessionEntryPatchCommitted["refusedSource"] {
+): SessionSourceValidation {
+  const validation: SessionSourceValidation = { conversationMatches: [] };
   for (const [index, source] of (sources ?? []).entries()) {
     if (identity !== source.source.databaseIdentity) {
-      return { index, facts: { entry: undefined } };
+      return { ...validation, refusedSource: { index, facts: { entry: undefined } } };
     }
     const entry = readExactSessionEntryRowValidated(database, source.sessionKey)?.entry;
     const members =
@@ -92,17 +98,40 @@ export function readRefusedSessionSource(
         : listSessionMembersInDatabase(database, source.sessionKey).map(
             (member) => member.identityId,
           );
+    const alternatives = source.conversationAlternatives;
+    let matching: number[] | undefined;
+    if (alternatives) {
+      const refs = [
+        ...new Set(
+          alternatives.flatMap((alternative) =>
+            alternative.map(({ conversationRef }) => conversationRef),
+          ),
+        ),
+      ];
+      const rows = refs.length
+        ? selectConversationRowsFromDatabase(database, {
+            conversationRefs: refs,
+            currentBindingOnly: true,
+          })
+        : [];
+      const selected = new Map(
+        rows.map((row) => [
+          row.conversationRef,
+          row.sessionKey && row.sessionId ? row.sessionKey : null,
+        ]),
+      );
+      matching = alternatives.flatMap((alternative, alternativeIndex) =>
+        alternative.every(
+          (predicate) => (selected.get(predicate.conversationRef) ?? null) === predicate.sessionKey,
+        )
+          ? [alternativeIndex]
+          : [],
+      );
+    }
     if (
       Boolean(entry) !== Boolean(source.expected) ||
       source.fields.some((field) => !isDeepStrictEqual(entry?.[field], source.expected?.[field])) ||
-      source.conversations?.some((predicate) => {
-        const row = selectConversationRowsFromDatabase(database, {
-          conversationRef: predicate.conversationRef,
-          currentBindingOnly: true,
-          limit: 1,
-        })[0];
-        return (row?.sessionKey && row.sessionId ? row.sessionKey : null) !== predicate.sessionKey;
-      }) ||
+      matching?.length === 0 ||
       (members !== undefined && !isDeepStrictEqual(members, source.members)) ||
       (source.transcript &&
         !isDeepStrictEqual(
@@ -110,10 +139,13 @@ export function readRefusedSessionSource(
           source.transcript.version,
         ))
     ) {
-      return { index, facts: { entry, members } };
+      return { ...validation, refusedSource: { index, facts: { entry, members } } };
+    }
+    if (matching) {
+      validation.conversationMatches.push({ index, alternatives: matching });
     }
   }
-  return undefined;
+  return validation;
 }
 
 export function transferSessionEntryWorkerCandidate(

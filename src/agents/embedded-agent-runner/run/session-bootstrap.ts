@@ -13,7 +13,10 @@ import {
   type SessionTranscriptRuntimeTarget,
 } from "../../../config/sessions/session-accessor.js";
 import { readSessionEntryInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
-import type { SessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  type SessionSourceAssertion,
+} from "../../../config/sessions/session-source-authority.js";
 import { resolvePersistedSessionStoreOwnerForTarget } from "../../../config/sessions/session-store-owner.js";
 import { prepareSessionEntryPresenceRead } from "../../../config/sessions/session-transcript-worker-runtime.js";
 import {
@@ -184,7 +187,7 @@ export async function resetNoRealConversationTokenSnapshot(params: {
       {
         skipMaintenance: true,
         takeCacheOwnership: true,
-        workerGuard: { source: params.assertActive },
+        ...sessionEntryCommitGuardOptions(params.assertActive),
       },
     );
     params.assertActive();

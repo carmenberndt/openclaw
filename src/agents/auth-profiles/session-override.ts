@@ -1,7 +1,10 @@
 /** Keeps automatic auth profiles stable unless reset, unavailable, or recovering a preference. */
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
-import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  type SessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ProviderModelRouteAuthRequirement } from "../../plugin-sdk/provider-model-types.js";
@@ -167,7 +170,7 @@ async function persistSessionAuthProfileOverrideState(params: {
     },
     {
       ...(expectedSnapshot ? {} : { fallbackEntry: sessionEntry }),
-      workerGuard: { source: params.assertCommitAllowed },
+      ...sessionEntryCommitGuardOptions(params.assertCommitAllowed),
     },
   );
   if (persisted) {

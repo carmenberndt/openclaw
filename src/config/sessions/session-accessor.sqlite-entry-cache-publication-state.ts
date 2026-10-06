@@ -118,6 +118,20 @@ export function recordCommittedSessionOwnerPublication(
   }
 }
 
+export function applySessionEntryOwnerChange(
+  entry: SessionEntry,
+  change: Extract<SessionRowFacts, { kind: "owner" }>,
+): SessionEntry | undefined {
+  if (
+    entry.sessionId !== change.sessionId ||
+    (entry.lifecycleRevision ?? null) !== change.lifecycleRevision
+  ) {
+    return undefined;
+  }
+  const { owner: _previousOwner, ...metadata } = entry;
+  return freezeJsonSnapshot({ ...metadata, ...(change.owner ? { owner: change.owner } : {}) });
+}
+
 export function applyPendingSessionEntryOwnerChanges(
   replacement: SessionEntryReplacementPublication | undefined,
   ownerChanges: PendingSessionEntryPublication["ownerChanges"],
@@ -128,18 +142,10 @@ export function applyPendingSessionEntryOwnerChanges(
   const current = new Map(replacement.current);
   for (const [sessionKey, change] of ownerChanges) {
     const entry = current.get(sessionKey);
-    if (
-      !entry ||
-      entry.sessionId !== change.sessionId ||
-      (entry.lifecycleRevision ?? null) !== change.lifecycleRevision
-    ) {
-      continue;
+    const updated = entry && applySessionEntryOwnerChange(entry, change);
+    if (updated) {
+      current.set(sessionKey, updated);
     }
-    const { owner: _previousOwner, ...metadata } = entry;
-    current.set(
-      sessionKey,
-      freezeJsonSnapshot({ ...metadata, ...(change.owner ? { owner: change.owner } : {}) }),
-    );
   }
   return { ...replacement, current };
 }

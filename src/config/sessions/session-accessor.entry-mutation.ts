@@ -36,6 +36,7 @@ import type {
 import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
 import {
   captureExternalSessionCommitGuard,
+  sessionEntryCommitGuardOptions,
   type SessionSourceCheck,
 } from "./session-source-authority.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
@@ -523,16 +524,15 @@ export async function markSessionAbortTarget(params: {
         skipMaintenance: true,
         // The patch callback yields before BEGIN; the conversation can move without
         // changing this session row, so its snapshot comparison cannot fence Stop.
-        workerGuard: {
-          source:
-            params.isCurrent?.sessionSource ??
+        ...sessionEntryCommitGuardOptions(
+          params.isCurrent?.sessionSource ??
             (params.isCurrent &&
               captureExternalSessionCommitGuard(() => {
                 if (resolution.target && params.isCurrent?.() === false) {
                   throw new Error("The selected session changed before it could be stopped.");
                 }
               })),
-        },
+        ),
       },
     );
     return updated && resolution.target

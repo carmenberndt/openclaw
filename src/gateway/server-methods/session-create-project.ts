@@ -8,6 +8,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { loadSessionEntry, patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
@@ -427,7 +428,7 @@ export async function prepareSessionWorkspaceForRun(params: {
             return { pendingWorktree: next };
           },
           {
-            workerGuard: { source: assertRunOwnership },
+            ...sessionEntryCommitGuardOptions(assertRunOwnership),
             requireWriteSuccess: true,
             skipMaintenance: true,
           },
@@ -482,9 +483,9 @@ export async function prepareSessionWorkspaceForRun(params: {
             };
           },
           {
-            workerGuard: {
-              source: composeSessionSourceAssertion([assertRunOwnership, assertSourceCurrent]),
-            },
+            ...sessionEntryCommitGuardOptions(
+              composeSessionSourceAssertion([assertRunOwnership, assertSourceCurrent]),
+            ),
             requireWriteSuccess: true,
             skipMaintenance: true,
           },

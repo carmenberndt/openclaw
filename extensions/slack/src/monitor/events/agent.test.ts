@@ -764,9 +764,15 @@ describe("registerSlackAgentEvents", () => {
     }
   });
 
-  it.each(["finished", "replacement", "recorded"] as const)(
-    "revalidates a proven DM parent after its publisher is %s before the title write",
-    async (state) => {
+  it.each([
+    { state: "finished", phase: "before preparation" },
+    { state: "replacement", phase: "before preparation" },
+    { state: "recorded", phase: "before preparation" },
+    { state: "finished", phase: "after preparation" },
+    { state: "replacement", phase: "after preparation" },
+  ] as const)(
+    "revalidates a proven DM parent after its publisher is $state $phase",
+    async ({ state, phase }) => {
       const harness = createSessionEventHarness();
       harness.ctx.isSlackAgentView = async () => false;
       const route = resolveAgentRoute({
@@ -779,7 +785,7 @@ describe("registerSlackAgentEvents", () => {
       await harness.recordSession({ sessionKey: route.sessionKey, peerId: "U123" });
       const release = registerSlackSessionRun(harness.ctx, { channelId: "D123", threadTs }, route);
       let releaseReplacement: (() => void) | undefined;
-      patchSessionEntry.mockImplementation(async (params) => {
+      const finishPublisher = () => {
         release();
         if (state !== "finished") {
           releaseReplacement = registerSlackSessionRun(
@@ -788,6 +794,18 @@ describe("registerSlackAgentEvents", () => {
             { ...route, sessionKey: "replacement-session" },
           );
         }
+      };
+      patchSessionEntry.mockImplementation(async (params) => {
+        if (phase === "after preparation") {
+          return patchStoredSessionEntry({
+            ...params,
+            update: (entry, context) => {
+              finishPublisher();
+              return params.update(entry, context);
+            },
+          });
+        }
+        finishPublisher();
         if (state === "recorded") {
           await harness.recordSession({
             sessionKey: route.sessionKey,

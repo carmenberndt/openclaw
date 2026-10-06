@@ -14,7 +14,10 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { captureSessionEntrySourceAssertion } from "../../config/sessions/session-entry-source-authority.js";
-import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  composeSessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import { importSkillLibrary, uploadSkillLibrary } from "../../skills/library/import.js";
 import {
   assertPreparedSkillLibrarySelection,
@@ -157,7 +160,7 @@ export async function activateLibrarySelection(
       // Existing runs keep their prepared snapshot; the next turn rebuilds against the new pins.
       return { skillLibrarySelections: selections, updatedAt: Date.now() };
     },
-    { workerGuard: { source: assertCurrent } },
+    sessionEntryCommitGuardOptions(assertCurrent),
   );
   if (!entry) {
     throw new SkillLibraryError(

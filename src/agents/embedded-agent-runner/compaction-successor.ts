@@ -17,6 +17,7 @@ import {
   readSessionEntrySummariesInWorker,
 } from "../../config/sessions/session-entry-read-runtime.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
@@ -257,7 +258,7 @@ export async function acceptCompactionSuccessor(params: {
       },
       {
         skipMaintenance: true,
-        workerGuard: { source: assertCommitAllowed },
+        ...sessionEntryCommitGuardOptions(assertCommitAllowed),
         onCommitted: (entry) => {
           // Capture the actual commit before identity observers can abort the caller.
           // This sink records facts only; no authority checks or lifecycle hooks.

@@ -2,6 +2,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import {
+  sessionEntryCommitGuardOptions,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
@@ -189,12 +190,12 @@ async function switchLoginSessionProfile(params: {
           return persistedDecision.status === "patch" ? persistedDecision.patch : null;
         },
         {
-          workerGuard: {
-            source: composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
+          ...sessionEntryCommitGuardOptions(
+            composeSessionSourceAssertion([params.assertCurrent], (assertSource) => {
               params.signal.throwIfAborted();
               assertSource();
             }),
-          },
+          ),
           requireWriteSuccess: true,
           skipMaintenance: true,
         },

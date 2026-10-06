@@ -8,6 +8,7 @@ import {
   publishTranscriptUpdate,
 } from "../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
+import { sessionEntryCommitGuardOptions } from "../config/sessions/session-source-authority.js";
 import { mergeSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -239,6 +240,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   assertCommitAllowed?: () => void;
   creation?: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
 }): Promise<string> {
+  const commitGuard = sessionEntryCommitGuardOptions(params.assertCommitAllowed);
   const created = await patchSessionEntryCore(
     params,
     (_entry, context) => {
@@ -256,8 +258,9 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
     },
     {
       fallbackEntry: mergeSessionEntry(undefined, {}),
+      ...commitGuard,
       workerGuard: {
-        source: params.assertCommitAllowed,
+        ...commitGuard.workerGuard,
         assertCurrent: () => {
           // Provider startup can end while this write is queued or being prepared.
           if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {

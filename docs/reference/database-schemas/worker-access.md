@@ -23,6 +23,9 @@ rereads authoritative rows and owns entry normalization, conversation identity,
 and provenance in the synchronous transaction. Host grants retain live caller
 authority at transaction and commit; acknowledged publications and accepted-write
 settlement remain with the existing entry owner. Incognito routing is unchanged.
+Confirmed entry receipts publish exact membership and category facts instead of
+forcing a new membership read. Delivery rechecks synchronous listener writes;
+unknown outcomes, moved membership, and superseded metadata still invalidate.
 The v2026.9.8 `plugin-sdk/session-store-runtime` entry and last-route contracts
 retain their opaque `assertCommitAllowed` callbacks inside the native transaction.
 Released model-selection validators and Stop currentness callbacks likewise keep
@@ -34,10 +37,13 @@ Schemas, retained bytes, durability, and update behavior are unchanged.
 Bundled plugins obtain prepared currentness checks and compose entry commit guards
 through the existing private `session-binding-runtime` facade. Its async capture
 retains the selected session generation and optional conversation alternatives;
-only a selected alternative survives through each write. Host callbacks retain
-live channel/run facts, while persisted entry and routing checks become worker
-predicates. Ordinary wrappers must preserve that source carrier. Public SDK
-callbacks keep their released synchronous contract without new public exports.
+the writer checks all alternatives in one batched conversation read and publishes
+the matching branches through its existing transaction grant. Host callbacks
+recheck live channel/run facts among those matches through commit, so a finishing
+publisher can yield to a recorded parent without losing a valid title update.
+Ordinary wrappers preserve that source carrier. Public SDK callbacks keep their
+released synchronous contract and existing incognito callback route without new
+public exports.
 
 Reply initialization, agent-turn preparation, and status rendering recover missing
 lifecycle timestamps through the transcript reader. Header reads retain their

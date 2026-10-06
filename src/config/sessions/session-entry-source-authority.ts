@@ -27,9 +27,12 @@ export function captureSessionEntrySourceAssertion(params: {
   fields: readonly (keyof SessionEntry)[];
   assertCurrent: () => void;
   assertHostCurrent?: () => void;
-  prepareConversations?: (read: (conversationRef: string) => Promise<string | null>) => Promise<{
-    predicates: readonly SessionSourceConversationPredicate[];
+  prepareConversations?: (
+    read: (conversationRefs: readonly string[]) => Promise<ReadonlyMap<string, string | null>>,
+  ) => Promise<{
+    alternatives: readonly (readonly SessionSourceConversationPredicate[])[];
     assertCurrent: () => void;
+    acceptMatches: (alternatives: readonly number[]) => void;
   }>;
   refuse: () => never;
 }): SessionSourceAssertion {
@@ -75,7 +78,9 @@ export function captureSessionEntrySourceAssertion(params: {
     async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
       assertCaptured();
       const database = { agentId: source.agentId, path: source.path, env };
-      const native = getOpenClawAgentDatabaseIfOpen(database);
+      const native = params.prepareConversations
+        ? undefined
+        : getOpenClawAgentDatabaseIfOpen(database);
       const revision = native && readSqliteNativeMutationRevision(native.db);
       const retained = retainSessionHistoryWorkerDatabase(database);
       let active = true;
@@ -88,11 +93,12 @@ export function captureSessionEntrySourceAssertion(params: {
         conversations?.assertCurrent();
         if (
           !active ||
-          getOpenClawAgentDatabaseIfOpen(database) !== native ||
-          (native &&
-            (native.db.isTransaction ||
-              revision === undefined ||
-              readSqliteNativeMutationRevision(native.db) !== revision))
+          (!params.prepareConversations &&
+            (getOpenClawAgentDatabaseIfOpen(database) !== native ||
+              (native &&
+                (native.db.isTransaction ||
+                  revision === undefined ||
+                  readSqliteNativeMutationRevision(native.db) !== revision))))
         ) {
           params.refuse();
         }
@@ -116,14 +122,23 @@ export function captureSessionEntrySourceAssertion(params: {
         ) {
           params.refuse();
         }
-        conversations = await params.prepareConversations?.(async (conversationRef) => {
+        // Complete alternative predicates are revalidated by the writer; unrelated native
+        // writes cannot revoke a still-matching branch through a whole-store revision.
+        conversations = await params.prepareConversations?.(async (conversationRefs) => {
+          if (conversationRefs.length === 0) {
+            return new Map();
+          }
           const rows = await retained.owner.readConversations({
-            query: { conversationRef, currentBindingOnly: true, limit: 1 },
+            query: { conversationRefs, currentBindingOnly: true },
             env,
           });
           assertCurrent();
-          const row = rows[0];
-          return row?.sessionKey && row.sessionId ? row.sessionKey : null;
+          return new Map(
+            rows.map((row) => [
+              row.conversationRef,
+              row.sessionKey && row.sessionId ? row.sessionKey : null,
+            ]),
+          );
         });
         assertCurrent();
         return {
@@ -135,9 +150,10 @@ export function captureSessionEntrySourceAssertion(params: {
                 sessionKey: params.scope.sessionKey,
                 fields,
                 expected,
-                ...(conversations ? { conversations: conversations.predicates } : {}),
+                ...(conversations ? { conversationAlternatives: conversations.alternatives } : {}),
               },
               refuse: params.refuse,
+              acceptConversationMatches: conversations?.acceptMatches,
             },
           ],
           release: async () => {

@@ -6,7 +6,10 @@ import {
   patchSessionEntryCore,
 } from "../../../config/sessions/session-accessor.js";
 import { readSessionEntryInWorker } from "../../../config/sessions/session-entry-read-runtime.js";
-import type { SessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import {
+  sessionEntryCommitGuardOptions,
+  type SessionSourceAssertion,
+} from "../../../config/sessions/session-source-authority.js";
 import { resolveQuotaSuspensionEntryMaintenance } from "../../../config/sessions/store-maintenance.js";
 import type { SessionEntry as ConfigSessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -109,7 +112,7 @@ export async function loadAttemptSessionEntryAfterQuotaMaintenance(
     {
       skipMaintenance: true,
       takeCacheOwnership: true,
-      workerGuard: { source: assertCurrent },
+      ...sessionEntryCommitGuardOptions(assertCurrent),
     },
   );
   assertCurrent();

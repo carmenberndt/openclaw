@@ -390,6 +390,7 @@ export function createNativeSessionBindingAuthority(
     assertLegacyCurrent,
   } satisfies NativeSessionBindingAuthority;
   Object.assign(authority.assertLegacyCurrent, {
+    nativeSource: lineage.some(({ read }) => isIncognitoSessionKey(read.sessionKey)),
     prepareSessionSource: async () => (await authority.prepareMutation()).sessionSource,
   });
   return authority;
