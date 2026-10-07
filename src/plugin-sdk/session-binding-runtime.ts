@@ -1,13 +1,18 @@
 // Bundled runtime authority for selected sessions and conversation bindings.
-import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
+import {
+  captureExternalSessionCommitGuard,
+  composeSessionSourceAssertion,
+} from "../config/sessions/session-source-authority.js";
 
 export { captureSessionEntryCurrentCheck } from "../config/sessions/session-entry-current-check.js";
 
-/** Preserve prepared entry sources while adding short, non-entry-SQL live checks. */
-export const composeSessionEntryCommitGuards: (
+/** Compose prepared sources; opaque callbacks retain their native transaction visibility. */
+export function composeSessionEntryCommitGuards(
   sources: readonly ((() => void) | undefined)[],
   check?: (assertSources: () => void) => void,
-) => () => void = composeSessionSourceAssertion;
+): () => void {
+  return composeSessionSourceAssertion(sources.map(captureExternalSessionCommitGuard), check);
+}
 
 export {
   testing as __testing,

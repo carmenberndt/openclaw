@@ -9,9 +9,10 @@ import { readConfigFileSnapshotForWrite } from "openclaw/plugin-sdk/config-mutat
 import type { ModelsAuthLoginFlowResult } from "openclaw/plugin-sdk/provider-auth-login-flow-runtime";
 import { clearRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
+import type { patchSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { observeHostDataSql } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
-import { expect, vi } from "vitest";
+import { expect, type Mock, vi } from "vitest";
 import type { TelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
 import { registerTelegramNativeCommands } from "./bot-native-commands.js";
 import {
@@ -51,7 +52,7 @@ export async function prepareTelegramLoginSessionStore(
   mocks: {
     getSessionEntry: ReturnType<typeof vi.fn>;
     resolveStorePath: ReturnType<typeof vi.fn>;
-    patchSessionEntry: ReturnType<typeof vi.fn>;
+    patchSessionEntry: Mock<typeof patchSessionEntry>;
   },
 ) {
   const store = await vi.importActual<typeof import("openclaw/plugin-sdk/session-store-runtime")>(

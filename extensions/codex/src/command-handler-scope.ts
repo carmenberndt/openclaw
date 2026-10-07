@@ -79,7 +79,8 @@ export async function resolvePreparedCodexCommandAuthority(
       })
     : undefined;
   // Direct checks stay synchronous; entry writes retain the authority's prepared predicates.
-  const assertHostCurrent = currentSession?.authority.assertLegacyCurrent ?? (() => {});
+  const assertHostCurrent =
+    currentSession?.authority.assertLegacyCurrent ?? composeSessionEntryCommitGuards([]);
   const resolvedTarget =
     target && (!sessionIdentity || !isDeepStrictEqual(target.identity, sessionIdentity))
       ? await resolveCodexSessionBinding({

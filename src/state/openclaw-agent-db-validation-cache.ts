@@ -37,6 +37,7 @@ export type OpenClawAgentDatabaseValidation = {
   /** Canonical admission, separately revoked by local DDL without discarding integrity proof. */
   schema?: { facts: SqliteSchemaFacts; valid: SharedArrayBuffer };
 };
+export type OpenClawAgentDatabaseReadValidation = Omit<OpenClawAgentDatabaseValidation, "schema">;
 type ValidationDatabase = { db: DatabaseSync; path: string; agentId: string };
 type CanonicalValidationDatabase = { db: DatabaseSync; path?: string; agentId: string };
 type ValidationEntry = {
@@ -232,6 +233,33 @@ export function getOpenClawAgentDatabaseValidationForTransfer(
     return undefined;
   }
   return entry.validation;
+}
+
+/** Readers borrow physical/canonical proof without copying the schema catalog or opening a host handle. */
+export function captureOpenClawAgentDatabaseReadValidation(
+  database: Pick<ValidationDatabase, "agentId" | "path">,
+) {
+  const current = getOpenClawAgentDatabaseValidationForTransfer(database);
+  if (!current) {
+    return undefined;
+  }
+  const { agentId, identity, valid, canonicalReady } = current;
+  const validation: OpenClawAgentDatabaseReadValidation = {
+    agentId,
+    identity,
+    valid,
+    canonicalReady,
+  };
+  return {
+    validation,
+    inputBytes:
+      JSON.stringify(validation).length * 2 + valid.byteLength + canonicalReady.byteLength,
+    assertCurrent() {
+      if (getOpenClawAgentDatabaseValidationForTransfer(database) !== current) {
+        throw new Error("Session reader validation is no longer current");
+      }
+    },
+  };
 }
 
 /** Native admission supplies the checked file identity; no host SQLite handle is needed. */

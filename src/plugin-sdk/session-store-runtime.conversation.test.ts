@@ -137,6 +137,36 @@ describe("current conversation session binding", () => {
     }
   });
 
+  it("preserves native transaction visibility for composed opaque SDK commit guards", async () => {
+    const scope = { agentId: "main", storePath, sessionKey: "agent:main:main" };
+    await upsertSessionEntry({
+      ...scope,
+      entry: { sessionId: "original", updatedAt: 100, displayName: "Original title" },
+    });
+    const observed: Array<{ inTransaction: boolean; displayName: string | undefined }> = [];
+    const refusal = new Error("Opaque SDK guard refused the title change");
+    await expect(
+      patchSessionEntry({
+        ...scope,
+        skipMaintenance: true,
+        assertCommitAllowed: composeSessionEntryCommitGuards([
+          () => {
+            observed.push({
+              inTransaction:
+                getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: storePath })?.db
+                  .isTransaction === true,
+              displayName: getSessionEntry(scope)?.displayName,
+            });
+            throw refusal;
+          },
+        ]),
+        update: () => ({ displayName: "Rejected title" }),
+      }),
+    ).rejects.toThrow(refusal);
+    expect(observed).toEqual([{ inTransaction: true, displayName: "Original title" }]);
+    expect(getSessionEntry(scope)?.displayName).toBe("Original title");
+  });
+
   it.each(["opaque", "prepared", "composed"] as const)(
     "rejects a %s title guard when another session takes its conversation before commit",
     async (guardKind) => {

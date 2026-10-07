@@ -45,6 +45,12 @@ Ordinary wrappers preserve that source carrier. Public SDK callbacks keep their
 released synchronous contract and existing incognito callback route without new
 public exports.
 
+History readers can borrow existing physical and canonical admission without an
+open host reader. The receiving scope checks its actual file and the live receipt;
+current policy, pending canonical validation, and foreign-commit freshness remain
+with the reader. When physical admission is already known, the first canonical
+read enters its snapshot before policy reads, avoiding discarded probes.
+
 Reply initialization, agent-turn preparation, and status rendering recover missing
 lifecycle timestamps through the transcript reader. Header reads retain their
 physical database owner and accept results under the existing writer FIFO with a

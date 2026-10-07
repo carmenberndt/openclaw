@@ -90,11 +90,8 @@ export async function executeTelegramLoginCommand(params: {
       },
     );
   };
-  const assertCurrent = (
-    config = dispatch.telegramDeps.getRuntimeConfig(),
-    assertOwnerCurrent = dispatch.assertOwnerCurrent,
-  ) => {
-    assertOwnerCurrent?.();
+  const assertCurrent = (config = dispatch.telegramDeps.getRuntimeConfig()) => {
+    dispatch.assertOwnerCurrent?.();
     const authorization = resolveCommandAuthorization({
       cfg: config,
       ctx: dispatch.ownerContext,
@@ -249,13 +246,10 @@ export async function executeTelegramLoginCommand(params: {
             storePath,
             requireWriteSuccess: true,
             skipMaintenance: true,
-            assertCommitAllowed: composeSessionEntryCommitGuards(
-              [dispatch.assertOwnerCurrent],
-              (assertSource) => {
-                flowSignal.throwIfAborted();
-                assertCurrent(undefined, assertSource);
-              },
-            ),
+            assertCommitAllowed: composeSessionEntryCommitGuards([], () => {
+              flowSignal.throwIfAborted();
+              assertCurrent();
+            }),
             update: (entry) => {
               entryObserved = true;
               adoptionDecision = decideProviderLoginSessionAdoption({

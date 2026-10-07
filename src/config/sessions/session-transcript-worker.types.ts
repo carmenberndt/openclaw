@@ -12,9 +12,15 @@ import type {
 } from "../../gateway/session-row-transcript-backfill.types.js";
 import type { SessionPreviewItem, SessionTitleFields } from "../../gateway/session-utils.types.js";
 import type { SessionCostUsageCacheReadResult } from "../../infra/session-cost-usage-cache-read.js";
+import type {
+  UsageCostWorkerInput,
+  UsageCostWorkerResult,
+} from "../../infra/session-cost-usage-worker.types.js";
+import type { WorkerTaskOptions } from "../../infra/worker-task-pool.types.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawRegisteredAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import type { OpenClawAgentDatabaseReadValidation } from "../../state/openclaw-agent-db-validation-cache.js";
 import type { VoiceSessionMatch } from "../../talk/client-voice-session-store.js";
 import type {
   SessionActivitySummaryBatchInput,
@@ -384,6 +390,26 @@ export type SessionTranscriptWorkerInput =
   | SessionContextMessagesWorkerInput
   | SessionEntryWorkerInput
   | SessionResetRecallWorkerInput;
+
+/** Only the dispatch owner attaches live physical proof; caller-prepared inputs cannot supply it. */
+export type SessionTranscriptWorkerRequest = SessionTranscriptWorkerInput & {
+  validation?: OpenClawAgentDatabaseReadValidation;
+};
+
+export type SessionCostUsageWorkerOptions = Pick<
+  WorkerTaskOptions<UsageCostWorkerInput>,
+  "signal" | "onRequest" | "inputBytes" | "timeoutMs" | "transferList" | "onInputConsumed"
+> & { beforeDispatch?: () => void };
+
+export type SessionCostUsageWorkerScope = {
+  assertCurrent: () => void;
+  run: (
+    input: UsageCostWorkerInput,
+    options: SessionCostUsageWorkerOptions,
+  ) => Promise<UsageCostWorkerResult>;
+  /** Register before acquisition can wait; a failed cleanup stays owned for close retry. */
+  retainCleanup: (close: () => Promise<void>) => () => void;
+};
 
 type SessionHistoryDatabaseWorkerInput = Extract<SessionHistoryWorkerInput, { database: unknown }>;
 

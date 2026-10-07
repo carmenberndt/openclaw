@@ -13,6 +13,7 @@ import type { WorkerTaskOptions, WorkerTaskResponse } from "../../infra/worker-t
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
+import { captureOpenClawAgentDatabaseReadValidation } from "../../state/openclaw-agent-db-validation-cache.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { resolveStateDir } from "../state-dir.js";
@@ -52,6 +53,9 @@ import {
 import type {
   SessionHistoryWorkerDatabase,
   SessionHistoryWorkerInput,
+  SessionCostUsageWorkerOptions,
+  SessionCostUsageWorkerScope,
+  SessionTranscriptWorkerRequest,
   SessionRowPresenceWorkerInput,
 } from "./session-transcript-worker.types.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
@@ -135,21 +139,6 @@ export async function prewarmSessionHistoryWorker(
     log.debug(`Session history worker prewarm failed: ${String(error)}`);
   }
 }
-
-type SessionCostUsageWorkerOptions = Pick<
-  WorkerTaskOptions<UsageCostWorkerInput>,
-  "signal" | "onRequest" | "inputBytes" | "timeoutMs" | "transferList" | "onInputConsumed"
-> & { beforeDispatch?: () => void };
-
-export type SessionCostUsageWorkerScope = {
-  assertCurrent: () => void;
-  run: (
-    input: UsageCostWorkerInput,
-    options: SessionCostUsageWorkerOptions,
-  ) => Promise<UsageCostWorkerResult>;
-  /** Register before acquisition can wait; a failed cleanup stays owned for close retry. */
-  retainCleanup: (close: () => Promise<void>) => () => void;
-};
 
 /** Capture the exact metadata owner before initial-writer admission can wait. */
 export function prepareSessionEntryPresenceRead(input: SessionAccessScope): Readonly<{
@@ -242,29 +231,38 @@ export function retainSessionHistoryWorkerDatabase(
       onRequest,
     ) => {
       assertCurrent();
+      const validation = captureOpenClawAgentDatabaseReadValidation(database);
+      const assertRequestCurrent = () => {
+        assertCurrent();
+        validation?.assertCurrent();
+      };
       const deadline = performance.now() + 60_000;
       let sequence = 0;
       let executionRetired = false;
       try {
         const reply = await lane.pool.run(
           () => {
-            assertCurrent();
+            assertRequestCurrent();
             const input = prepare();
-            assertCurrent();
+            assertRequestCurrent();
             sequence = ++lane.nativeSequence;
             owned.nativeSequences.set(lane, sequence);
-            return { ...input, database };
+            return {
+              ...input,
+              database,
+              validation: validation?.validation,
+            } satisfies SessionTranscriptWorkerRequest;
           },
           {
-            inputBytes,
+            inputBytes: inputBytes + (validation?.inputBytes ?? 0),
             timeoutMs: 60_000,
             signal,
             onRequest: onRequest
               ? async (value, context) => {
                   context.signal.throwIfAborted();
-                  assertCurrent();
+                  assertRequestCurrent();
                   onRequest(value);
-                  assertCurrent();
+                  assertRequestCurrent();
                   const remaining = deadline - performance.now();
                   if (remaining <= 0) {
                     throw new WorkerTaskError("worker task timed out", "timeout");
@@ -306,12 +304,13 @@ export function retainSessionHistoryWorkerDatabase(
           // Retain the identity that actually supplied the row, not a later stat of its locator.
           entryReadSource = source;
         }
+        assertRequestCurrent();
         const value = receive(received);
         if (reply.ok && reply.closedHistoryDatabase) {
           // A later dispatched request may already hold this target's next native custody.
           clearClosedDatabaseCustody(lane, sequence, [reply.closedHistoryDatabase]);
         }
-        assertCurrent();
+        assertRequestCurrent();
         return value;
       } catch (error) {
         if (sequence > 0 && !executionRetired) {
