@@ -3,8 +3,10 @@ import { vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
+import { drainGlobalSingletonLifecycleState } from "../../../shared/global-singleton.js";
 import * as clientVoiceSession from "../../../talk/client-voice-session.js";
 import type { RealtimeVoiceBridge } from "../../../talk/provider-types.js";
+import { prepareTalkConnectionClose } from "../session-registry.js";
 import { stopTalkRealtimeRelaySession } from "./operations.js";
 import { drainingRelaySessions, relaySessions } from "./state.js";
 
@@ -58,6 +60,16 @@ export async function drainRelayTestSessions(activeRelaySessions: Map<string, st
     ),
   );
   activeRelaySessions.clear();
+}
+
+/** Match the Gateway prelude: finish provider finals before retiring shared dependencies. */
+export function prepareRelayTestRestart(connId: string, log: { warn: (message: string) => void }) {
+  const talkClose = prepareTalkConnectionClose([{ connId }], log);
+  return async () => {
+    talkClose.beginClose();
+    await talkClose.drain();
+    await drainGlobalSingletonLifecycleState("restart");
+  };
 }
 
 export function ensureActiveRelayTurnId(relaySessionId: string): string {

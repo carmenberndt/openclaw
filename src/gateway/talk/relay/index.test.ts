@@ -13,7 +13,6 @@ import {
 import type { OpenClawConfig } from "../../../config/types.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
-import { drainGlobalSingletonLifecycleState } from "../../../shared/global-singleton.js";
 import { captureOpenClawStateDatabaseReadAdmission } from "../../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
 import {
@@ -50,6 +49,7 @@ import {
   ensureActiveRelayTurnId,
   makeRelayTransport,
   observeRelayTranscriptFailures,
+  prepareRelayTestRestart,
 } from "./index.test-support.js";
 import { resolveTalkRealtimeRelayPresentation } from "./issues.js";
 import {
@@ -2900,6 +2900,7 @@ describe("talk realtime gateway relay", () => {
       });
       let closing: void | Promise<void> = undefined;
       let drain: Promise<void> | undefined;
+      const restart = prepareRelayTestRestart("conn-relay-drain", logGateway);
       try {
         if (start === "explicit-close") {
           closing = stopTalkRealtimeRelaySession({
@@ -2909,7 +2910,7 @@ describe("talk realtime gateway relay", () => {
         }
         cleanupTalkConnection("conn-relay-drain", logGateway);
         let drained = false;
-        drain = drainGlobalSingletonLifecycleState("restart").then(() => {
+        drain = restart().then(() => {
           drained = true;
         });
         await nextEventLoopTurn();
@@ -2924,7 +2925,7 @@ describe("talk realtime gateway relay", () => {
         ).toBe(false);
       } finally {
         finishProvider.resolve();
-        await Promise.allSettled([closing, drain]);
+        await Promise.allSettled([closing, drain ?? restart()]);
       }
     },
   );

@@ -791,7 +791,8 @@ describe("Talk client agent consult admission", () => {
       expect(mocks.controlRealtimeVoiceAgentRun).not.toHaveBeenCalled();
       ready.resolve();
       await steering;
-      expect(assertCurrent).toHaveBeenCalledTimes(3);
+      // Voice registration rechecks live ownership before and after its worker wait.
+      expect(assertCurrent).toHaveBeenCalledTimes(5);
       expect(mocks.consultRealtimeVoiceAgent).toHaveBeenCalledOnce();
       expect(mocks.controlRealtimeVoiceAgentRun).toHaveBeenCalledOnce();
       finish.resolve();
@@ -839,7 +840,7 @@ describe("Talk client agent consult admission", () => {
     await expect(
       createRunner().runArgs({ question: "first task" }, undefined, assertCurrent),
     ).rejects.toThrow("not active");
-    expect(assertCurrent).toHaveBeenCalledTimes(2);
+    expect(assertCurrent).toHaveBeenCalledTimes(4);
     expect(mocks.prepareAgentRunAdmission).not.toHaveBeenCalled();
   });
 

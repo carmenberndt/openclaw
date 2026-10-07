@@ -67,6 +67,10 @@ export function enqueueRelayVoiceTranscript(
   const { agentId, sessionKey, canonicalKey, storePath } = session.sessionTarget;
   let accepted = false;
   let rejection: string | undefined;
+  const reportFailure = (error: unknown) => {
+    session.confirmationReadiness.fail(error);
+    logRelayVoiceFailure(session, "realtime relay transcript append failed", error);
+  };
   const completion = withClientVoiceSessionSettlement(async () => {
     const writer = captureClientVoiceSessionWriter({ agentId });
     try {
@@ -114,15 +118,12 @@ export function enqueueRelayVoiceTranscript(
         return;
       }
       session.voiceTranscriptSeq = transcriptSeq;
-      await admission.completion;
+      await admission.completion.then(observed?.persisted, reportFailure);
     } finally {
       await writer.release();
     }
   });
-  void completion.then(accepted ? observed?.persisted : undefined, (error: unknown) => {
-    session.confirmationReadiness.fail(error);
-    logRelayVoiceFailure(session, "realtime relay transcript append failed", error);
-  });
+  void completion.catch(reportFailure);
   if (!accepted) {
     session.confirmationReadiness.fail(
       new Error("Realtime voice transcript queue is closed or full"),

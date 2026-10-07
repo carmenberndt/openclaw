@@ -522,6 +522,14 @@ function openAgentDatabaseBackend(
         return domain.prepare(command);
       }
       const preparing = registry.prepare(command.type);
+      if (command.type === "session.turn.commit" && command.input.options.voiceTranscript) {
+        return Promise.all([
+          preparing,
+          import("../config/sessions/session-turn.worker.js").then((turn) =>
+            turn.prepareVoiceTranscriptCommit(),
+          ),
+        ]).then(() => {});
+      }
       const nativeBindings =
         command.type === "session.nativeBindings.delete"
           ? command.input

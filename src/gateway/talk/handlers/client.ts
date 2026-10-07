@@ -10,6 +10,7 @@ import {
 import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
 import { createPluginRuntime } from "../../../plugins/runtime/index.js";
 import { withOpenClawAgentDatabaseRuntime } from "../../../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../../../state/openclaw-agent-write-admission.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   parseRealtimeVoiceAgentConsultArgs,
@@ -89,15 +90,18 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      let confirmationGrant: ClientVoiceConfirmationGrant | undefined;
-      let voiceSessionId: string;
-      try {
+      const prepareVoiceSession = async (assertStoreCurrent?: () => void) => {
+        let confirmationGrant: ClientVoiceConfirmationGrant | undefined;
         await withOpenClawAgentDatabaseRuntime(
           { agentId },
           () => undefined,
-          () => request.sessionMutationAuthorization?.assertCurrent(),
+          () => {
+            assertStoreCurrent?.();
+            request.sessionMutationAuthorization?.assertCurrent();
+          },
           request.signal,
         );
+        assertStoreCurrent?.();
         request.sessionMutationAuthorization?.assertCurrent();
         // Shipped clients may consult without ever creating a voice session (old app,
         // restarted gateway, ambiguous open records). Implicitly create one instead of
@@ -115,14 +119,18 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           selectedVoiceSessionId =
             (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined) ?? inferred;
         }
+        assertStoreCurrent?.();
         request.sessionMutationAuthorization?.assertCurrent();
-        voiceSessionId =
+        const voiceSessionId =
           selectedVoiceSessionId ??
           (await createOrResumeClientVoiceSession({
             agentId,
             sessionKey: params.sessionKey,
             origin: "client",
-            assertCurrent: readGatewayRequestMutationAuthority(request).assertPreparationCurrent,
+            assertCurrent: () => {
+              assertStoreCurrent?.();
+              readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
+            },
           }));
         if (relaySessionId && connId) {
           await ensureClientVoiceAgentSessionEntry({
@@ -137,6 +145,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           });
           await flushTalkRealtimeRelayVoiceWrites({ relaySessionId, connId });
         }
+        assertStoreCurrent?.();
         request.sessionMutationAuthorization?.assertCurrent();
         const parsedArgs = parseRealtimeVoiceAgentConsultArgs(params.args ?? {});
         const origin = assertClientVoiceSessionOpen({
@@ -160,10 +169,21 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         if (connId && !relaySessionId) {
           rememberLegacyVoiceBinding({ connId, sessionKey: params.sessionKey, voiceSessionId });
         }
+        return { voiceSessionId, confirmationGrant };
+      };
+      let preparedVoiceSession: Awaited<ReturnType<typeof prepareVoiceSession>>;
+      try {
+        // Legacy selection and publication share the writer FIFO; relay flushes cannot hold it.
+        preparedVoiceSession = relaySessionId
+          ? await prepareVoiceSession()
+          : await runOpenClawAgentWriteAdmission({ agentId }, (_identity, assertCurrent) =>
+              prepareVoiceSession(assertCurrent),
+            );
       } catch (err) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
         return;
       }
+      const { voiceSessionId, confirmationGrant } = preparedVoiceSession;
 
       const result = await startTalkRealtimeAgentConsult(request, {
         sessionTarget: target,

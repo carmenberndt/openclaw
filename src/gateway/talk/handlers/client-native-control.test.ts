@@ -368,14 +368,11 @@ describe("native Talk through the public OpenAI plugin registration", () => {
       const ready = createDeferredCore();
       const release = createDeferredCore();
       const lookup = voiceSessionReads.lookupClientVoiceSessions;
-      let lookups = 0;
       const reader = vi
         .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
         .mockImplementation(async (request) => {
           const matches = await lookup(request);
-          if (++lookups === 2) {
-            ready.resolve();
-          }
+          ready.resolve();
           await release.promise;
           return matches;
         });
@@ -401,10 +398,11 @@ describe("native Talk through the public OpenAI plugin registration", () => {
         await awaitGateBeforeSettlement(
           ready.promise,
           calls,
-          "Both legacy lookups must reach the worker before either creates a call",
+          "The first legacy lookup must reach the worker while both requests are pending",
         );
         release.resolve();
         await calls;
+        expect(consult).toHaveBeenCalledTimes(2);
         const binding = readLegacyVoiceBinding(CONNECTION_ID, SESSION_KEY);
         expect(binding).toBeTypeOf("string");
         expect(

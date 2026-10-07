@@ -2,7 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { ensureSessionGoalOperationsSchema } from "../../state/openclaw-agent-goal-operations-schema.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
-import { mutateVoiceSessionInDatabase } from "../../talk/client-voice-session-write.kernel.js";
 import { runWithCliHistoryWriter } from "./cli-history-boundary.js";
 import { applySessionGoalOperation, readSessionGoalOperationReceipt } from "./goals-operations.js";
 import {
@@ -27,6 +26,11 @@ import {
 } from "./session-turn.kernel.js";
 import type { SessionTurnCommitted, SessionTurnPlan } from "./session-turn.types.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
+
+let voiceKernel: typeof import("../../talk/client-voice-session-write.kernel.js") | undefined;
+export async function prepareVoiceTranscriptCommit() {
+  voiceKernel ??= await import("../../talk/client-voice-session-write.kernel.js");
+}
 
 function inCustody<T>(
   input: SessionTurnPlan,
@@ -221,7 +225,10 @@ export function commitSessionTurn(input: SessionTurnPlan, context: AgentWorkerOp
         },
       });
       if (input.options.voiceTranscript && committed.result.appendedMessages.length === 1) {
-        committed.result.voiceSession = mutateVoiceSessionInDatabase(database, {
+        if (!voiceKernel) {
+          throw new Error("Voice transcript commit was not prepared");
+        }
+        committed.result.voiceSession = voiceKernel.mutateVoiceSessionInDatabase(database, {
           ...input.options.voiceTranscript,
           kind: "confirm",
           now: Date.now(),
