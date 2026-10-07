@@ -5,6 +5,8 @@ import {
   UsageCostWorkerReplyError,
   type UsageCostWorkerInput,
   type UsageCostWorkerResult,
+  type SessionCostUsageWorkerOptions,
+  type SessionCostUsageWorkerScope,
 } from "../../infra/session-cost-usage-worker.types.js";
 import { withSqliteWorkerCleanupFailure } from "../../infra/sqlite-worker-broker-reply.js";
 import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
@@ -53,8 +55,6 @@ import {
 import type {
   SessionHistoryWorkerDatabase,
   SessionHistoryWorkerInput,
-  SessionCostUsageWorkerOptions,
-  SessionCostUsageWorkerScope,
   SessionTranscriptWorkerRequest,
   SessionRowPresenceWorkerInput,
 } from "./session-transcript-worker.types.js";
