@@ -4,6 +4,7 @@ import { createSqliteWorkerTransferOwner } from "../../infra/sqlite-worker-trans
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
+import { captureTrajectoryRuntimeRetentionEntryPatch } from "../../trajectory/runtime-retention.sqlite.js";
 import { selectConversationRowsFromDatabase } from "./session-accessor.sqlite-conversation-read.js";
 import { applySessionEntryPatchInDatabase } from "./session-accessor.sqlite-entry-mutation.js";
 import {
@@ -42,6 +43,9 @@ export function commitSessionEntryPatch(
       // A false predicate precedes CAS and the throwing guard, including for a null patch.
       result = { kind: "session-entry-patch", entry: null };
     } else {
+      const publishRetention = input.next
+        ? captureTrajectoryRuntimeRetentionEntryPatch(database.db)
+        : undefined;
       const mutation = applySessionEntryPatchInDatabase(database, {
         ...input,
         readSnapshot: (current) => readSessionEntryPatchSnapshot(current, input.selection),
@@ -75,6 +79,7 @@ export function commitSessionEntryPatch(
             database,
           )
         : undefined;
+      publishRetention?.();
       result = { kind: "session-entry-patch", entry: mutation.entry, publication };
     }
     return transferSessionEntryWorkerCandidate(database, admit, result);

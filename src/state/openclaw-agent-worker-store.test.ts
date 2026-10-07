@@ -85,10 +85,7 @@ beforeEach(() => {
   root = fs.realpathSync(tempDirs.make("agent-worker-publication-"));
   options = { agentId: "main", path: path.join(root, "agent.sqlite") };
 });
-async function setup(
-  input?: Parameters<typeof bindSqliteWorkerBackend>[0],
-  retainExecutionUntilClose?: true,
-) {
+async function setup(input?: Parameters<typeof bindSqliteWorkerBackend>[0]) {
   const { db } = openOpenClawAgentDatabase(options);
   db.exec("CREATE TABLE worker_proof (value TEXT NOT NULL)");
   const execution =
@@ -102,7 +99,6 @@ async function setup(
     {
       moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
       input: { ...input, receiptBroadcastName: receipts.broadcastName },
-      retainExecutionUntilClose,
     },
   );
   workers.add(worker);
@@ -173,10 +169,14 @@ it("retains an idle agent executor for thirty minutes and renews the window afte
   }
 });
 
-it.each([undefined, true] as const)(
+it.each([false, true])(
   "releases settled publication leases at shutdown cleanup unless an accepted sequence retains them (%s)",
-  async (retainExecutionUntilClose) => {
-    const { db, worker } = await setup(undefined, retainExecutionUntilClose);
+  async (retainGeneration) => {
+    const { db, worker } = await setup();
+    const execution = retainGeneration ? captureOpenClawAgentDatabaseExecution(options) : undefined;
+    if (execution) {
+      executions.add(execution);
+    }
     const shared = openOpenClawStateDatabase();
     const releaseState = retainOpenClawStateDatabaseForIdle(shared);
     const readLeases = () =>
@@ -211,7 +211,7 @@ it.each([undefined, true] as const)(
         { type: "append", input: { value: "cleanup" } },
         () => undefined,
       );
-      if (retainExecutionUntilClose) {
+      if (retainGeneration) {
         expect(cleanupThread).toBe(firstThread);
         expect(readLeases()).toEqual(retainedLeases);
       } else {
@@ -224,11 +224,16 @@ it.each([undefined, true] as const)(
         { value: "cleanup" },
       ]);
       await worker.close();
+      await execution?.release();
       expect(db.isOpen).toBe(false);
       expect(readLeases()).toEqual([]);
       expect(readOpenClawAgentIntegrityVerification(options.path)?.clean_close).toBe(1);
     } finally {
       await worker.close();
+      await execution?.release();
+      if (execution) {
+        executions.delete(execution);
+      }
       resetGatewayWorkAdmission();
       releaseState();
     }

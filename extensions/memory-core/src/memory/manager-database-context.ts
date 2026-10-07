@@ -15,12 +15,16 @@ import {
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import {
   borrowOpenClawAgentDatabase,
+  captureOpenClawAgentDatabaseExecution,
   openSqliteWorkerStore,
   openOpenClawAgentSqliteWorkerStore,
   runSqliteWorkerStoreWrite,
   type OpenClawAgentSqliteWorkerStore,
+  type OpenClawAgentDatabaseExecution,
   type SqliteWorkerStore,
   runQueuedStoreWrite,
+  readOpenClawAgentDatabaseIdentity,
+  supportsOpenClawAgentDatabaseExecution,
   withOpenClawAgentDatabaseWrite,
   type StoreWriterQueue,
 } from "openclaw/plugin-sdk/sqlite-runtime";
@@ -84,7 +88,6 @@ export class MemoryIndexDatabase {
   private readonly privateQueues = new Map<string, StoreWriterQueue>();
   private nativeWriterActive = false;
   private publicationWorker?: Promise<PublicationWorker>;
-  private publicationGenerationActive = false;
   private schemaAdmission?: Promise<void>;
   private shadow?: {
     path: string;
@@ -302,10 +305,7 @@ export class MemoryIndexDatabase {
           store: await openOpenClawAgentSqliteWorkerStore<MemoryPublicationOperations>(
             this.writeOptions,
             this.db,
-            {
-              ...worker,
-              retainExecutionUntilClose: this.publicationGenerationActive ? true : undefined,
-            },
+            worker,
           ),
           busyTimeoutMs: pragmas.busy_timeout,
         };
@@ -637,11 +637,30 @@ export class MemoryIndexDatabase {
   }
 
   async withPublicationGeneration(run: () => Promise<void>): Promise<void> {
-    this.publicationGenerationActive = true;
+    let execution: OpenClawAgentDatabaseExecution | undefined;
+    if (
+      this.writeOptions &&
+      !this.readOnly &&
+      supportsOpenClawAgentDatabaseExecution(this.writeOptions)
+    ) {
+      const source = readOpenClawAgentDatabaseIdentity({ db: this.db });
+      if (this.closed || !this.db.isOpen || typeof source.identity !== "string") {
+        throw new Error("Memory publication requires its live file owner");
+      }
+      // Retain before preparation yields; a no-op generation never opens a native worker.
+      execution = captureOpenClawAgentDatabaseExecution(this.writeOptions, {
+        expectedIdentity: {
+          kind: "file",
+          physicalIdentity: source.identity,
+          nativeLocation: source.filename,
+          birthtime: source.birthtime,
+        },
+      });
+    }
     try {
       await run();
     } finally {
-      this.publicationGenerationActive = false;
+      await execution?.release();
     }
   }
 

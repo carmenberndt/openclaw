@@ -171,6 +171,22 @@ function currentSweep(database: DatabaseSync): Sweep | undefined {
   return sweep;
 }
 
+/** The typed entry writer changes metadata without deleting trajectory-owning windows. */
+export function captureTrajectoryRuntimeRetentionEntryPatch(database: DatabaseSync) {
+  const sweep = currentSweep(database);
+  if (!sweep) {
+    return undefined;
+  }
+  return () => {
+    const committedChanges = changes(database);
+    deferSqlitePostCommitPublication(database, () => {
+      if (sweeps.get(database) === sweep && Atomics.load(sweep.lease, 0) === 1) {
+        sweep.changes = committedChanges;
+      }
+    });
+  };
+}
+
 /** Capture before mutation; publish only after the enclosing transaction commits. */
 export function captureTrajectoryRuntimeRetentionMutation(database: DatabaseSync) {
   const sweep = currentSweep(database);
