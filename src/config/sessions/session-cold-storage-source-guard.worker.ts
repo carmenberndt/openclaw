@@ -113,9 +113,9 @@ export function prepareSessionColdSourceGuard(
       if (current.refusedSource) {
         return { ...validation, refusedSource: { ...current.refusedSource, index } };
       }
-      validation.conversationMatches.push(
-        ...current.conversationMatches.map((match) => ({ ...match, index })),
-      );
+      for (const { alternatives } of current.conversationMatches) {
+        validation.conversationMatches.push({ index, alternatives });
+      }
     }
     return validation;
   };

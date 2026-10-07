@@ -152,11 +152,11 @@ async function runColdMutationWorker(port: MessagePort, data: SessionColdWorkerD
           return mutateSessionColdTranscriptInWorker(
             data.plan,
             coldRecords,
-            (database, validation) => {
+            (database, sourceValidation) => {
               transactionDatabase = database.db;
               // Native admission can service the grant before its message arrives.
               for (const { index, matches } of data.sourceMatches ?? []) {
-                const match = validation?.conversationMatches.find(
+                const match = sourceValidation?.conversationMatches.find(
                   (value) => value.index === index,
                 );
                 if (!match) {
