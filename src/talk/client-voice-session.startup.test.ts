@@ -9,6 +9,7 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { resetClientVoiceConfirmationStateForTest } from "./client-voice-confirmation.test-support.js";
@@ -168,30 +169,36 @@ describe("client voice session startup", () => {
     expect(repaired?.createdActor).toBeUndefined();
   });
 
-  it("does not create a chat when browser startup closes while its write is queued", async () => {
-    const entered = createDeferred();
-    const release = createDeferred();
-    const blocker = patchSessionEntryCore(
-      { agentId: "main", sessionKey: "agent:main:voice-write-blocker" },
-      async () => {
-        entered.resolve();
-        await release.promise;
-        return null;
-      },
-      { fallbackEntry: { sessionId: "voice-write-blocker", updatedAt: 1 } },
-    );
-    await entered.promise;
-    const target = { agentId: "main", sessionKey: "agent:main:voice-write-cancelled" };
-    const controller = new AbortController();
-    const creating = ensureClientVoiceAgentSessionEntry({
-      ...target,
-      assertCommitAllowed: () => controller.signal.throwIfAborted(),
-    });
-    controller.abort(new Error("browser disconnected"));
-    const rejected = expect(creating).rejects.toThrow("browser disconnected");
-    release.resolve();
-    await blocker;
-    await rejected;
-    expect(loadSessionEntry(target)).toBeUndefined();
-  });
+  it.each(["opaque", "prepared"] as const)(
+    "does not create a chat when browser startup closes while its write is queued (%s authority)",
+    async (authority) => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const blocker = patchSessionEntryCore(
+        { agentId: "main", sessionKey: "agent:main:voice-write-blocker" },
+        async () => {
+          entered.resolve();
+          await release.promise;
+          return null;
+        },
+        { fallbackEntry: { sessionId: "voice-write-blocker", updatedAt: 1 } },
+      );
+      await entered.promise;
+      const target = { agentId: "main", sessionKey: "agent:main:voice-write-cancelled" };
+      const controller = new AbortController();
+      const assertOpen = () => controller.signal.throwIfAborted();
+      const creating = ensureClientVoiceAgentSessionEntry({
+        ...target,
+        deadlineAt: Date.now() + 60_000,
+        assertCommitAllowed:
+          authority === "prepared" ? composeSessionSourceAssertion([], assertOpen) : assertOpen,
+      });
+      controller.abort(new Error("browser disconnected"));
+      const rejected = expect(creating).rejects.toThrow("browser disconnected");
+      release.resolve();
+      await blocker;
+      await rejected;
+      expect(loadSessionEntry(target)).toBeUndefined();
+    },
+  );
 });
