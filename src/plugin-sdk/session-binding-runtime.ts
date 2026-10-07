@@ -6,12 +6,16 @@ import {
 
 export { captureSessionEntryCurrentCheck } from "../config/sessions/session-entry-current-check.js";
 
-/** Compose prepared sources; opaque callbacks retain their native transaction visibility. */
+/** Compose prepared sources; opaque source callbacks retain native transaction visibility. */
 export function composeSessionEntryCommitGuards(
   sources: readonly ((() => void) | undefined)[],
-  check?: (assertSources: () => void) => void,
+  /** Bundled live-authority wrapper; opaque SDK predicates belong in sources. */
+  checkHostAuthority?: (assertSources: () => void) => void,
 ): () => void {
-  return composeSessionSourceAssertion(sources.map(captureExternalSessionCommitGuard), check);
+  return composeSessionSourceAssertion(
+    sources.map(captureExternalSessionCommitGuard),
+    checkHostAuthority,
+  );
 }
 
 export {
