@@ -1,12 +1,15 @@
 import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
+import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
-import type {
-  PendingSessionEntryPublication,
-  SessionEntryCacheDatabase,
-  SessionEntryReplacementPublication,
-  SessionSharingEntry,
+import {
+  projectSessionSharingEntry,
+  type PendingSessionEntryPublication,
+  type PreparedSessionEntryChanges,
+  type SessionEntryCacheDatabase,
+  type SessionEntryReplacementPublication,
+  type SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import { stageIncognitoSharingPublication } from "./session-accessor.sqlite-incognito-sharing.js";
 import {
@@ -122,7 +125,7 @@ export function recordCommittedSessionOwnerPublication(
   }
 }
 
-export function applySessionEntryOwnerChange(
+function applySessionEntryOwnerChange(
   entry: SessionEntry,
   change: Extract<SessionRowFacts, { kind: "owner" }>,
 ): SessionEntry | undefined {
@@ -152,6 +155,76 @@ export function applyPendingSessionEntryOwnerChanges(
     }
   }
   return { ...replacement, current };
+}
+
+/** Capture acknowledged facts while their existing publication owner keeps delivery current. */
+export function prepareSessionEntryPublicationFacts(params: {
+  replacement: SessionEntryReplacementPublication | undefined;
+  owner: PendingSessionEntryPublication;
+  foldedOwnerChanges: PendingSessionEntryPublication["ownerChanges"];
+  databaseIdentity: string;
+  unknown: boolean;
+  transcriptVersion: number | undefined;
+}) {
+  const { replacement, owner, foldedOwnerChanges, databaseIdentity, unknown, transcriptVersion } =
+    params;
+  const current = (key: string) => !owner.superseded.has(key);
+  const transcriptUnchanged = transcriptVersion === readSessionTranscriptUpdateVersion();
+  const prepared: PreparedSessionEntryChanges | undefined =
+    !unknown && replacement?.source?.identity === databaseIdentity
+      ? {
+          source: replacement.source,
+          entries: new Map<string, SessionEntry>(
+            [...replacement.current]
+              .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
+              .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
+          ),
+          sharing: new Map(
+            [...replacement.current]
+              .filter(([key]) => current(key))
+              .map(([key, entry]) => [key, projectSessionSharingEntry(entry)]),
+          ),
+          projection:
+            replacement.projection &&
+            new Map(
+              [...replacement.projection]
+                .filter(
+                  ([key, facts]) =>
+                    current(key) &&
+                    !owner.metadataSuperseded.has(key) &&
+                    !owner.projectionSuperseded.has(key) &&
+                    (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
+                )
+                .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
+            ),
+        }
+      : undefined;
+  const currentMetadata = (key: string) => current(key) && !owner.metadataSuperseded.has(key);
+  const readCurrent = (key: string) => {
+    if (!currentMetadata(key)) {
+      return undefined;
+    }
+    const selected = prepared?.entries.get(key);
+    const mutation = owner.ownerChanges.get(key);
+    const entry =
+      selected && mutation && mutation !== foldedOwnerChanges.get(key)
+        ? applySessionEntryOwnerChange(selected, mutation)
+        : selected;
+    if (!entry) {
+      return undefined;
+    }
+    const projection = prepared?.projection?.get(key);
+    return {
+      entry,
+      projection:
+        !owner.projectionSuperseded.has(key) &&
+        (projection?.activitySummaryWatermark === undefined ||
+          transcriptVersion === readSessionTranscriptUpdateVersion())
+          ? projection
+          : undefined,
+    };
+  };
+  return { prepared, currentMetadata, readCurrent };
 }
 
 export function publishRetainedSessionEntryChange(

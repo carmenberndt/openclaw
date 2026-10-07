@@ -7,13 +7,12 @@ import {
 import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
-import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { invalidateOpenClawAgentWritableProjections } from "../../state/openclaw-agent-db-lifecycle.js";
 import { invalidateOpenClawAgentReadOnlyProjections } from "../../state/openclaw-agent-db-readonly-scope.js";
 import {
   applyPendingSessionEntryOwnerChanges,
-  applySessionEntryOwnerChange,
+  prepareSessionEntryPublicationFacts,
   pendingSessionEntryPublications,
   preparedSharingReads,
   publishRetainedSessionEntryChange,
@@ -40,7 +39,6 @@ import {
   type PendingSessionEntryPublication,
   type PlaceholderReceipt,
   type SessionEntryPublicationRecord,
-  type PreparedSessionEntryChanges,
   type SessionEntryReplacementPublication,
   type SessionEntryCreationOperation,
   type SessionEntryPlaceholder,
@@ -572,61 +570,14 @@ export function retainSessionEntryWorkerPublication(params: {
       }
       const changes: SessionRowChange[] = [];
       const sharingUnchanged = new Set(replacement?.sharingUnchangedKeys);
-      const transcriptUnchanged = transcriptVersion === readSessionTranscriptUpdateVersion();
-      const prepared: PreparedSessionEntryChanges | undefined =
-        !unknown && replacement?.source?.identity === params.databaseIdentity
-          ? {
-              source: replacement.source,
-              entries: new Map<string, SessionEntry>(
-                [...replacement.current]
-                  .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
-                  .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
-              ),
-              sharing: new Map(
-                [...replacement.current]
-                  .filter(([key]) => current(key))
-                  .map(([key, entry]) => [key, projectSessionSharingEntry(entry)]),
-              ),
-              projection:
-                replacement.projection &&
-                new Map(
-                  [...replacement.projection]
-                    .filter(
-                      ([key, facts]) =>
-                        current(key) &&
-                        !owner.metadataSuperseded.has(key) &&
-                        !owner.projectionSuperseded.has(key) &&
-                        (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
-                    )
-                    .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
-                ),
-            }
-          : undefined;
-      const currentMetadata = (key: string) => current(key) && !owner.metadataSuperseded.has(key);
-      const readCurrent = (key: string) => {
-        if (!currentMetadata(key)) {
-          return undefined;
-        }
-        const selected = prepared?.entries.get(key);
-        const mutation = owner.ownerChanges.get(key);
-        const entry =
-          selected && mutation && mutation !== foldedOwnerChanges.get(key)
-            ? applySessionEntryOwnerChange(selected, mutation)
-            : selected;
-        if (!entry) {
-          return undefined;
-        }
-        const projection = prepared?.projection?.get(key);
-        return {
-          entry,
-          projection:
-            !owner.projectionSuperseded.has(key) &&
-            (projection?.activitySummaryWatermark === undefined ||
-              transcriptVersion === readSessionTranscriptUpdateVersion())
-              ? projection
-              : undefined,
-        };
-      };
+      const { prepared, currentMetadata, readCurrent } = prepareSessionEntryPublicationFacts({
+        replacement,
+        owner,
+        foldedOwnerChanges,
+        databaseIdentity: params.databaseIdentity,
+        unknown,
+        transcriptVersion,
+      });
       for (const sessionKey of changed) {
         const entry = replacement?.current.get(sessionKey);
         const projection = prepared?.projection?.get(sessionKey);
