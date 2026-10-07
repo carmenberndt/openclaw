@@ -100,16 +100,15 @@ export async function activateLibrarySelection(
   }
   const authority = libraryAuthority(options);
   let plannedSelections: SkillLibrarySelection[] | undefined;
+  const sessionChanged = () =>
+    new SkillLibraryError("CONFLICT", "Session changed before activation; refresh and retry.");
   const source = captureSessionEntrySourceAssertion({
     scope: { agentId: target.agentId, sessionKey: target.storeKey, storePath: target.storePath },
     readSource: target.readSource,
     expected: target.entry,
     fields: ["sessionId", "lifecycleRevision", "pluginOwnerId"],
     refuse: () => {
-      throw new SkillLibraryError(
-        "CONFLICT",
-        "Session changed before activation; refresh and retry.",
-      );
+      throw sessionChanged();
     },
     assertCurrent: () => {
       const current = resolveSessionSharingTarget({
@@ -123,10 +122,7 @@ export async function activateLibrarySelection(
         current.storePath !== target.storePath ||
         current.storeKey !== target.storeKey
       ) {
-        throw new SkillLibraryError(
-          "CONFLICT",
-          "Session changed before activation; refresh and retry.",
-        );
+        throw sessionChanged();
       }
       const ownershipError = resolvePluginSessionOwnershipError({
         action: "patch",
@@ -150,23 +146,19 @@ export async function activateLibrarySelection(
     { storePath: target.storePath, sessionKey: target.storeKey, agentId: target.agentId },
     async (current) => {
       assertCurrent();
-      const selections = await changeSkillLibrarySelection(
+      plannedSelections = await changeSkillLibrarySelection(
         authority,
         current.skillLibrarySelections ?? [],
         params,
       );
-      plannedSelections = selections;
       assertCurrent();
       // Existing runs keep their prepared snapshot; the next turn rebuilds against the new pins.
-      return { skillLibrarySelections: selections, updatedAt: Date.now() };
+      return { skillLibrarySelections: plannedSelections, updatedAt: Date.now() };
     },
     sessionEntryCommitGuardOptions(assertCurrent),
   );
   if (!entry) {
-    throw new SkillLibraryError(
-      "CONFLICT",
-      "Session changed before activation; refresh and retry.",
-    );
+    throw sessionChanged();
   }
   return {
     sessionKey: target.canonicalKey,

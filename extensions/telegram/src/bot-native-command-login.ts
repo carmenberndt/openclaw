@@ -109,10 +109,7 @@ export async function executeTelegramLoginCommand(params: {
     const { deliverReplies } = await dispatch.loadDeliveryRuntime();
     const result = await deliverReplies({
       replies: [reply],
-      ...dispatch.buildDeliveryBaseOptions({
-        sessionKeyForInternalHooks: dispatch.targetSessionKey,
-        policySessionKey: dispatch.targetSessionKey,
-      }),
+      ...dispatch.deliveryOptions,
     });
     return result.delivered;
   };
@@ -178,9 +175,9 @@ export async function executeTelegramLoginCommand(params: {
 
   const signInActionDelivered = createDeferred<void>();
   let signInActionWasDelivered = false;
-  const sendLoginAction = async (reply: ReplyPayload) => {
+  const sendLoginAction = async (send: () => Promise<boolean | void>) => {
     flowSignal.throwIfAborted();
-    if (!(await sendLoginReply(reply))) {
+    if ((await send()) === false) {
       throw new Error("Provider sign-in action could not be delivered.");
     }
     flowSignal.throwIfAborted();
@@ -209,17 +206,14 @@ export async function executeTelegramLoginCommand(params: {
         signal: flowSignal,
         assertCurrent,
         sendMessage: sendLoginMessage,
-        sendReply: sendLoginAction,
+        sendReply: (reply) => sendLoginAction(() => sendLoginReply(reply)),
         onModelAccessRequested: (request) => {
           modelAccess = request;
         },
-        sendDeviceCode: async (deviceCode) => {
-          flowSignal.throwIfAborted();
-          await sendLoginMessage(formatTelegramLoginDeviceCode(deviceCode), "HTML");
-          flowSignal.throwIfAborted();
-          signInActionWasDelivered = true;
-          signInActionDelivered.resolve();
-        },
+        sendDeviceCode: (deviceCode) =>
+          sendLoginAction(() =>
+            sendLoginMessage(formatTelegramLoginDeviceCode(deviceCode), "HTML"),
+          ),
         unsupportedPromptMessage:
           "This provider needs input that Telegram cannot collect. Open Control UI → Models and choose Sign in.",
       });
@@ -317,7 +311,7 @@ export async function executeTelegramLoginCommand(params: {
           prepared: modelAccess,
           terminalMessage,
         });
-        await sendLoginAction(reply);
+        await sendLoginAction(() => sendLoginReply(reply));
       } else {
         await sendLoginResultMessage(terminalMessage);
       }
