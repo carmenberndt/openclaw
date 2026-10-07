@@ -139,6 +139,19 @@ function applySessionEntryOwnerChange(
   return freezeJsonSnapshot({ ...metadata, ...(change.owner ? { owner: change.owner } : {}) });
 }
 
+/** Commit receipts remain current only until their stored fields are superseded. */
+export function readCurrentSessionEntryProjection(
+  owner: PendingSessionEntryPublication,
+  replacement: SessionEntryReplacementPublication | undefined,
+  sessionKey: string,
+) {
+  return !owner.superseded.has(sessionKey) &&
+    !owner.metadataSuperseded.has(sessionKey) &&
+    !owner.projectionSuperseded.has(sessionKey)
+    ? replacement?.projection?.get(sessionKey)
+    : undefined;
+}
+
 export function applyPendingSessionEntryOwnerChanges(
   replacement: SessionEntryReplacementPublication | undefined,
   ownerChanges: PendingSessionEntryPublication["ownerChanges"],
@@ -190,9 +203,7 @@ export function prepareSessionEntryPublicationFacts(params: {
               [...replacement.projection]
                 .filter(
                   ([key, facts]) =>
-                    current(key) &&
-                    !owner.metadataSuperseded.has(key) &&
-                    !owner.projectionSuperseded.has(key) &&
+                    readCurrentSessionEntryProjection(owner, replacement, key) !== undefined &&
                     (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
                 )
                 .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
@@ -213,13 +224,14 @@ export function prepareSessionEntryPublicationFacts(params: {
     if (!entry) {
       return undefined;
     }
-    const projection = prepared?.projection?.get(key);
+    const projection = readCurrentSessionEntryProjection(owner, replacement, key)
+      ? prepared?.projection?.get(key)
+      : undefined;
     return {
       entry,
       projection:
-        !owner.projectionSuperseded.has(key) &&
-        (projection?.activitySummaryWatermark === undefined ||
-          transcriptVersion === readSessionTranscriptUpdateVersion())
+        projection?.activitySummaryWatermark === undefined ||
+        transcriptVersion === readSessionTranscriptUpdateVersion()
           ? projection
           : undefined,
     };

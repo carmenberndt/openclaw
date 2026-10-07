@@ -3,15 +3,13 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contra
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import { applySessionEntryPatchInDatabase } from "./session-accessor.sqlite-entry-mutation.js";
 import { sessionEntryPatchPredicateMatches } from "./session-entry-patch-guard.js";
-import {
-  readSessionSourceValidation,
-  readSessionEntryPatchSnapshot,
-} from "./session-entry-patch.worker.js";
+import { readSessionEntryPatchSnapshot } from "./session-entry-patch.worker.js";
 import type {
   IncognitoEntryPatchOperations,
   IncognitoEntryPatchResult,
 } from "./session-incognito-entry-patch-contract.js";
 import type { SessionSourceValidation } from "./session-source-authority.js";
+import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 
 export function createIncognitoEntryPatchWorker(
   database: OpenClawAgentDatabase,

@@ -66,6 +66,18 @@ it.each(["before settlement", "during facts delivery"] as const)(
           omittedContent: false,
         },
       });
+      const source = readOpenClawAgentDatabaseIdentity(database);
+      if (typeof source.identity !== "string") {
+        throw new Error("Expected durable sharing fixture");
+      }
+      const sharing = retainPreparedSessionSharingFacts({
+        databaseIdentity: `file:${source.identity}`,
+        sessionKey: scope.sessionKey,
+        entry: projectSessionSharingEntry(
+          readExactSessionEntryRow(database, scope.sessionKey)!.entry,
+        ),
+        membership: new Set(),
+      });
       let published: ReturnType<typeof readPreparedSessionEntryChange>;
       let appended = false;
       const append = () => {
@@ -109,9 +121,14 @@ it.each(["before settlement", "during facts delivery"] as const)(
         expect(appended).toBe(true);
         expect(published?.entry?.label).toBe("committed");
         expect(published?.projection).toBeUndefined();
+        expect(sharing.readCurrent()).toMatchObject({
+          entry: { sessionId: scope.sessionId },
+          membership: new Set(),
+        });
         expect(readSessionTranscriptWatermarkInDatabase(database, scope.sessionId).maxSeq).toBe(0);
       } finally {
         delivery.afterResult = undefined;
+        sharing.release();
         stop();
       }
     });

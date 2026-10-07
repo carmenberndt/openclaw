@@ -98,7 +98,25 @@ function workerDatabaseOptions(options: OpenClawAgentDatabaseOptions) {
 async function runColdMutation(
   plan: SessionColdMutationPlan,
   assertCurrent?: () => void,
+  acceptSourceValidation?: SessionColdReadPreparation["acceptSourceValidation"],
 ): Promise<SessionColdMutationResult> {
+  const sourceMatches =
+    plan.kind === "cold-restore"
+      ? plan.turnGuard?.sources?.flatMap((source, index) =>
+          source.conversationAlternatives
+            ? [
+                {
+                  index,
+                  matches: new Int32Array(
+                    new SharedArrayBuffer(
+                      (source.conversationAlternatives.length + 1) * Int32Array.BYTES_PER_ELEMENT,
+                    ),
+                  ),
+                },
+              ]
+            : [],
+        )
+      : undefined;
   return await withSqliteMutationWorkerLifetime(
     plan.databaseOptions,
     async ({ assertCurrent: assertRequestCurrent, commitGate, signal }) => {
@@ -147,7 +165,28 @@ async function runColdMutation(
         const [completed] = await withSqliteReclamationAuthorization(
           commitGate,
           retained?.found ? retained.database.db : plan.databaseOptions.path,
-          assertAllowed,
+          () => {
+            if (sourceMatches?.length) {
+              if (!acceptSourceValidation) {
+                throw new Error("Cold restoration requires source validation acceptance");
+              }
+              acceptSourceValidation({
+                conversationMatches: sourceMatches.map(({ index, matches }) => {
+                  if (Atomics.load(matches, 0) !== 1) {
+                    throw new Error("Cold restoration source alternatives are not ready");
+                  }
+                  return {
+                    index,
+                    alternatives: Array.from(
+                      { length: matches.length - 1 },
+                      (_, alternative) => alternative,
+                    ).filter((alternative) => Atomics.load(matches, alternative + 1) === 1),
+                  };
+                }),
+              });
+            }
+            assertAllowed();
+          },
           (authorize) =>
             runSqliteTranscriptArchiveWorkerOperation<{
               result: SessionColdMutationResult;
@@ -183,6 +222,7 @@ async function runColdMutation(
                 operation: "cold-mutate",
                 plan,
                 commitGate,
+                sourceMatches,
               } satisfies SessionColdWorkerData,
             }),
         );
@@ -374,6 +414,13 @@ export class SessionColdTurnReboundError extends Error {
   }
 }
 
+export class SessionColdSourceReboundError extends Error {
+  constructor(readonly refusal: NonNullable<SessionColdMutationResult["refusedSource"]>) {
+    super("Session source changed before cold transcript restoration");
+    this.name = "SessionColdSourceReboundError";
+  }
+}
+
 export async function restoreSessionColdTranscript(
   scope: SessionTranscriptReadScope,
   assertCurrent?: () => void,
@@ -499,9 +546,13 @@ export async function restoreSessionColdTranscript(
         turnGuard,
       },
       assertCurrent,
+      preparation?.acceptSourceValidation,
     );
     if (result.turnRebound) {
       throw new SessionColdTurnReboundError(result.turnRebound);
+    }
+    if (result.refusedSource) {
+      throw new SessionColdSourceReboundError(result.refusedSource);
     }
     assertCurrent?.();
     // Keep viewed history hot without changing canonical transcript timestamps or bytes.
