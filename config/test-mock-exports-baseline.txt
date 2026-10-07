@@ -6789,8 +6789,6 @@
 ["src/config/sessions/session-cold-storage.publication.test.ts","./targets.js","b7c022a9c32415b5994c5a8026a8a9e36364501c32c48ecfaa75359e0ece7976",1]
 ["src/config/sessions/session-compound-worker.test.ts","./session-accessor.sqlite-maintenance-kick.js","64173feff948edd011e4e251a0af8922f273fbe0f8a2820851ad47066e5f2138",1]
 ["src/config/sessions/session-compound-worker.test.ts","./session-history-eviction.js","d3aca9992e0efdb889205163db357c61799e12a044280aace3e3049aa7e562f1",1]
-["src/config/sessions/session-entry-patch.test.ts","./session-accessor.sqlite-maintenance-kick.js","64173feff948edd011e4e251a0af8922f273fbe0f8a2820851ad47066e5f2138",1]
-["src/config/sessions/session-entry-patch.test.ts","./session-history-eviction.js","d3aca9992e0efdb889205163db357c61799e12a044280aace3e3049aa7e562f1",1]
 ["src/config/sessions/session-history-worker-errors.test-support.ts","../../gateway/session-history-readonly-reader.js","aeac2da5df785a619f08441af6798a98aab53f1336b00d9f78e26b1c01bcfce2",1]
 ["src/config/sessions/session-history-worker-errors.test-support.ts","../../infra/runtime-worker-url.js","af7801f4577fb09936ca5e24dda3f7b092f186dd164aa20e57b1b3fe0f2b676b",1]
 ["src/config/sessions/session-history-worker-errors.test-support.ts","../../state/openclaw-agent-db-readonly-scope.js","304923e5d545911e6efa4d677b7ef798c06b851828b23b30c424ca600181c577",1]

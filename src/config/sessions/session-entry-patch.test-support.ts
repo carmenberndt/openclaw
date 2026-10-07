@@ -3,9 +3,11 @@ import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 
+// mock-isolation: Entry assertions exclude the maintenance owner's background writes and timers.
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
   kickSessionEntryMaintenanceAfterWrite() {},
 }));
+// mock-isolation: Disk-budget sweeps must not mutate the fixture outside its explicit entry writes.
 vi.mock("./session-history-eviction.js", () => ({ kickSessionHistoryDiskBudgetMaintenance() {} }));
 
 const delivery = vi.hoisted(() => ({
