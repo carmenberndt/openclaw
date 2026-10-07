@@ -224,10 +224,18 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
     assertClientVoiceSessionOpen: mocks.assertClientVoiceSessionOpen,
     closeStaleClientVoiceSessions: mocks.closeStaleClientVoiceSessions,
     createOrResumeClientVoiceSession: mocks.createOrResumeClientVoiceSession,
-    ensureClientVoiceAgentSessionEntry: mocks.ensureClientVoiceAgentSessionEntry,
     registerClientVoiceConsultRun: mocks.registerClientVoiceConsultRun,
     resolveClientVoiceAgentSessionId: mocks.resolveClientVoiceAgentSessionId,
     resolveOpenClientVoiceSessionId: mocks.resolveOpenClientVoiceSessionId,
+  };
+});
+
+vi.mock("../../../talk/client-voice-session-write.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../talk/client-voice-session-write.js")>();
+  return {
+    ...actual,
+    ensureClientVoiceAgentSessionEntry: mocks.ensureClientVoiceAgentSessionEntry,
   };
 });
 

@@ -6,11 +6,19 @@ import { resolveSessionDeliveryTarget } from "../infra/outbound/targets-session.
 import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
+import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import type { ClientVoiceSessionSource } from "./client-voice-session-source.js";
 import type {
   ClientVoiceSessionRecord,
   ClientVoiceToolEffect,
+  ClientVoiceRunBinding,
 } from "./client-voice-session-store.js";
-import type { ClientVoiceSessionWriter } from "./client-voice-session-write.js";
+import {
+  captureClientVoiceSessionWriter,
+  type ClientVoiceSessionWriter,
+} from "./client-voice-session-write.js";
+
+const loadMessageRuntime = createLazyRuntimeModule(() => import("../channels/message/runtime.js"));
 
 export const CLIENT_VOICE_MUTATION_DIGEST_POLICY = {
   maxRetainedIntents: 64,
@@ -36,64 +44,77 @@ function formatMutationDigest(effects: ClientVoiceToolEffect[]): string | undefi
   ].join("\n");
 }
 
-/** Deliver one point-in-time summary and mark the durable voice record after success. */
-export async function deliverClientVoiceMutationDigest(
+type MutationDigestDelivery = {
+  confirmed?: ClientVoiceRunBinding & { deliveredAt: number };
+  mayHaveReachedRecipient?: true;
+};
+
+/** A confirmed send survives marker retries without re-entering the sender. */
+async function deliverClientVoiceMutationDigest(
   record: ClientVoiceSessionRecord,
   config: OpenClawConfig,
   signal: AbortSignal,
   writer: ClientVoiceSessionWriter,
+  delivery: MutationDigestDelivery,
   preparedEntry: InternalSessionEntry | undefined,
 ): Promise<void> {
   if (record.digestDeliveredAt) {
     return;
   }
-  const text = formatMutationDigest(record.effects);
-  if (!text) {
-    return;
-  }
-  // The process-held transcript owner remains native until atomic incognito activation.
-  const entry = isIncognitoSessionKey(record.sessionKey)
-    ? loadSessionEntryReadOnly({
+  if (!delivery.confirmed) {
+    const text = formatMutationDigest(record.effects);
+    if (!text) {
+      return;
+    }
+    const entry = isIncognitoSessionKey(record.sessionKey)
+      ? loadSessionEntryReadOnly({
+          agentId: record.agentId,
+          sessionKey: record.sessionKey,
+          env: writer.options.env,
+        })
+      : preparedEntry;
+    const target = resolveSessionDeliveryTarget({ entry, requestedChannel: "last" });
+    if (!target.channel || target.channel === "webchat" || !target.to) {
+      return;
+    }
+    const { sendDurableMessageBatchCore, durableMessageBatchMayHaveReachedRecipient } =
+      await loadMessageRuntime();
+    writer.assertCurrent();
+    signal.throwIfAborted();
+    const send = await sendDurableMessageBatchCore({
+      cfg: config,
+      channel: target.channel,
+      to: target.to,
+      ...(target.accountId ? { accountId: target.accountId } : {}),
+      ...(target.threadId != null ? { threadId: target.threadId } : {}),
+      payloads: [{ text }],
+      durability: "required",
+      requireUnknownSendReconciliation: true,
+      signal,
+      session: buildOutboundSessionContext({
+        cfg: config,
         agentId: record.agentId,
         sessionKey: record.sessionKey,
-        env: writer.options.env,
-      })
-    : preparedEntry;
-  const target = resolveSessionDeliveryTarget({ entry, requestedChannel: "last" });
-  if (!target.channel || target.channel === "webchat" || !target.to) {
-    return;
-  }
-  const { sendDurableMessageBatchCore } = await import("../channels/message/runtime.js");
-  writer.assertCurrent();
-  signal.throwIfAborted();
-  const send = await sendDurableMessageBatchCore({
-    cfg: config,
-    channel: target.channel,
-    to: target.to,
-    ...(target.accountId ? { accountId: target.accountId } : {}),
-    ...(target.threadId != null ? { threadId: target.threadId } : {}),
-    payloads: [{ text }],
-    durability: "required",
-    requireUnknownSendReconciliation: true,
-    signal,
-    session: buildOutboundSessionContext({
-      cfg: config,
+        policySessionKey: record.sessionKey,
+      }),
+    });
+    if (durableMessageBatchMayHaveReachedRecipient(send)) {
+      delivery.mayHaveReachedRecipient = true;
+    }
+    if (send.status === "failed" || send.status === "partial_failed") {
+      throw send.error;
+    }
+    if (send.status === "suppressed" && delivery.mayHaveReachedRecipient) {
+      throw new Error("voice mutation digest delivery outcome is uncertain");
+    }
+    delivery.confirmed = {
       agentId: record.agentId,
       sessionKey: record.sessionKey,
-      policySessionKey: record.sessionKey,
-    }),
-  });
-  if (send.status === "failed" || send.status === "partial_failed") {
-    throw send.error;
+      voiceSessionId: record.voiceSessionId,
+      deliveredAt: Date.now(),
+    };
   }
-  const deliveredAt = Date.now();
-  await writer.mutate({
-    kind: "delivered",
-    agentId: record.agentId,
-    sessionKey: record.sessionKey,
-    voiceSessionId: record.voiceSessionId,
-    now: deliveredAt,
-  });
+  await writer.mutate({ ...delivery.confirmed, kind: "delivered", now: Date.now() });
 }
 
 type MutationDigestIntent<TContext> = {
@@ -102,14 +123,35 @@ type MutationDigestIntent<TContext> = {
   context: TContext;
   identityBytes: number;
   failedAttempts: number;
+  retryBlocked?: true;
   failureExpiry?: ReturnType<typeof setTimeout>;
   expireAfterActive?: boolean;
+  queuedSettlement?: MutationDigestSettlement;
+};
+
+type MutationDigestSettlement = {
+  run: <T>(run: () => T) => T;
+  release: () => void;
 };
 
 type MutationDigestAttempt<TContext> = {
   controller: AbortController;
   intent: MutationDigestIntent<TContext>;
   generation: number;
+};
+
+type MutationDigestOptions<TContext> = {
+  attempt: (intent: {
+    agentId: string;
+    voiceSessionId: string;
+    context: TContext;
+    signal: AbortSignal;
+  }) => Promise<boolean>;
+  warn: (message: string) => void;
+  captureAttempt?: (context: TContext) => MutationDigestSettlement;
+  matchesRetryContext?: (previous: TContext, next: TContext) => boolean;
+  deliveryState?: (context: TContext) => "unsent" | "confirmed" | "uncertain";
+  updateContext?: (previous: TContext, next: TContext) => TContext;
 };
 
 export class ClientVoiceMutationDigestOwner<TContext> {
@@ -121,23 +163,17 @@ export class ClientVoiceMutationDigestOwner<TContext> {
   private generation = 0;
   private readonly policy = CLIENT_VOICE_MUTATION_DIGEST_POLICY;
 
-  constructor(
-    private readonly options: {
-      attempt: (intent: {
-        agentId: string;
-        voiceSessionId: string;
-        context: TContext;
-        signal: AbortSignal;
-      }) => Promise<boolean>;
-      warn: (message: string) => void;
-    },
-  ) {}
+  constructor(private readonly options: MutationDigestOptions<TContext>) {}
 
   record(params: { agentId: string; voiceSessionId: string; context: TContext }): void {
     const key = this.key(params);
     const existing = this.intents.get(key);
+    if (existing?.retryBlocked) {
+      return;
+    }
     if (existing) {
-      existing.context = params.context;
+      existing.context =
+        this.options.updateContext?.(existing.context, params.context) ?? params.context;
       this.retry(params);
       return;
     }
@@ -156,7 +192,12 @@ export class ClientVoiceMutationDigestOwner<TContext> {
       this.options.warn("voice mutation digest retry owner is full");
       return;
     }
-    const intent = { ...params, identityBytes, failedAttempts: 0 };
+    const intent = {
+      ...params,
+      identityBytes,
+      failedAttempts: 0,
+      queuedSettlement: this.options.captureAttempt?.(params.context),
+    };
     this.intents.set(key, intent);
     this.retainedIdentityBytes += identityBytes;
     this.pendingKeys.add(key);
@@ -165,9 +206,11 @@ export class ClientVoiceMutationDigestOwner<TContext> {
 
   retry(params: { agentId: string; voiceSessionId: string }): void {
     const key = this.key(params);
-    if (!this.intents.has(key)) {
+    const intent = this.intents.get(key);
+    if (!intent || intent.retryBlocked) {
       return;
     }
+    intent.queuedSettlement ??= this.options.captureAttempt?.(intent.context);
     if (this.activeAttempts.has(key)) {
       this.retryAfterActiveKeys.add(key);
     } else {
@@ -177,18 +220,26 @@ export class ClientVoiceMutationDigestOwner<TContext> {
   }
 
   retryAgent(agentId: string, context: TContext): void {
-    for (const [key, intent] of this.intents) {
-      if (intent.agentId !== agentId) {
-        continue;
+    try {
+      for (const [key, intent] of this.intents) {
+        if (
+          intent.agentId !== agentId ||
+          intent.retryBlocked ||
+          this.options.matchesRetryContext?.(intent.context, context) === false
+        ) {
+          continue;
+        }
+        intent.context = this.options.updateContext?.(intent.context, context) ?? context;
+        intent.queuedSettlement ??= this.options.captureAttempt?.(intent.context);
+        if (this.activeAttempts.has(key)) {
+          this.retryAfterActiveKeys.add(key);
+        } else {
+          this.pendingKeys.add(key);
+        }
       }
-      intent.context = context;
-      if (this.activeAttempts.has(key)) {
-        this.retryAfterActiveKeys.add(key);
-      } else {
-        this.pendingKeys.add(key);
-      }
+    } finally {
+      this.pump();
     }
-    this.pump();
   }
 
   snapshot(): {
@@ -210,6 +261,7 @@ export class ClientVoiceMutationDigestOwner<TContext> {
       attempt.controller.abort(new Error("voice mutation digest delivery owner reset"));
     }
     for (const intent of this.intents.values()) {
+      intent.queuedSettlement?.release();
       if (intent.failureExpiry) {
         clearTimeout(intent.failureExpiry);
       }
@@ -232,12 +284,38 @@ export class ClientVoiceMutationDigestOwner<TContext> {
       return;
     }
     this.intents.delete(key);
+    current.queuedSettlement?.release();
     this.pendingKeys.delete(key);
     this.retryAfterActiveKeys.delete(key);
     if (current.failureExpiry) {
       clearTimeout(current.failureExpiry);
     }
     this.retainedIdentityBytes -= current.identityBytes;
+  }
+
+  private blockRetry(key: string, intent: MutationDigestIntent<TContext>): void {
+    intent.retryBlocked = true;
+    this.clearFailureState(intent);
+    this.pendingKeys.delete(key);
+    this.retryAfterActiveKeys.delete(key);
+    intent.queuedSettlement?.release();
+    delete intent.queuedSettlement;
+  }
+
+  private stopAfterFailure(
+    key: string,
+    intent: MutationDigestIntent<TContext>,
+    reason: string,
+  ): void {
+    const delivered = this.options.deliveryState?.(intent.context) === "confirmed";
+    if (delivered) {
+      this.blockRetry(key, intent);
+    } else {
+      this.deleteIntent(key, intent);
+    }
+    this.options.warn(
+      `voice mutation digest ${delivered ? "marker retry stopped" : "dropped"} ${reason}`,
+    );
   }
 
   private retainAfterFailure(key: string, intent: MutationDigestIntent<TContext>): void {
@@ -252,9 +330,10 @@ export class ClientVoiceMutationDigestOwner<TContext> {
         intent.expireAfterActive = true;
         return;
       }
-      this.deleteIntent(key, intent);
-      this.options.warn(
-        `voice mutation digest dropped after retry retention expired (${intent.failedAttempts} failed attempts)`,
+      this.stopAfterFailure(
+        key,
+        intent,
+        `after retry retention expired (${intent.failedAttempts} failed attempts)`,
       );
     }, this.policy.failureRetentionMs);
     intent.failureExpiry.unref?.();
@@ -288,77 +367,178 @@ export class ClientVoiceMutationDigestOwner<TContext> {
   }
 
   private startAttempt(key: string, intent: MutationDigestIntent<TContext>): void {
-    const controller = new AbortController();
-    const attempt = { controller, intent, generation: this.generation };
-    this.activeAttempts.set(key, attempt);
-    const timeout = setTimeout(
-      () => controller.abort(new Error("voice mutation digest delivery abort requested")),
-      this.policy.attemptAbortAfterMs,
-    );
-    timeout.unref?.();
-    // Abort is cooperative, not a wall-clock completion guarantee. An adapter
-    // that ignores it keeps this exact slot so repeated retries cannot fan out.
-    let completion: Promise<boolean>;
-    try {
-      completion = runInDetachedAsyncContext(() =>
-        this.options.attempt({ ...intent, signal: controller.signal }),
+    runInDetachedAsyncContext(() => {
+      const settlement = intent.queuedSettlement;
+      delete intent.queuedSettlement;
+      const controller = new AbortController();
+      const attempt = { controller, intent, generation: this.generation };
+      this.activeAttempts.set(key, attempt);
+      const timeout = setTimeout(
+        () => controller.abort(new Error("voice mutation digest delivery abort requested")),
+        this.policy.attemptAbortAfterMs,
       );
-    } catch (error) {
-      completion = Promise.reject(error instanceof Error ? error : new Error(String(error)));
-    }
-    void completion
-      .then((complete) => {
-        if (complete) {
-          this.deleteIntent(key, intent);
-        } else {
-          // A live consult is a legitimate defer, not a delivery failure. Its
-          // run-completion event owns the next retry and must not inherit expiry.
-          this.clearFailureState(intent);
-        }
-      })
-      .catch((error: unknown) => {
-        if (attempt.generation !== this.generation) {
-          return;
-        }
-        if (hasSqliteWorkerOutcomeUnknown(error)) {
-          this.deleteIntent(key, intent);
-          this.options.warn(
-            "voice mutation digest settlement is unknown; delivery was not replayed",
-          );
-          return;
-        }
-        intent.failedAttempts += 1;
-        const message = error instanceof Error ? error.message : String(error);
-        if (intent.failedAttempts >= this.policy.maxAttemptFailures) {
-          this.deleteIntent(key, intent);
-          this.options.warn(
-            `voice mutation digest dropped after ${intent.failedAttempts} failed attempts: ${message}`,
-          );
-          return;
-        }
-        this.options.warn(message);
-        this.retainAfterFailure(key, intent);
-      })
-      .finally(() => {
-        clearTimeout(timeout);
-        if (attempt.generation !== this.generation) {
-          return;
-        }
-        if (this.activeAttempts.get(key) === attempt) {
-          this.activeAttempts.delete(key);
-        }
-        if (intent.expireAfterActive && this.intents.get(key) === intent) {
-          this.deleteIntent(key, intent);
-          this.options.warn(
-            `voice mutation digest dropped after retry retention expired (${intent.failedAttempts} failed attempts)`,
-          );
+      timeout.unref?.();
+      // Abort is cooperative, not a wall-clock completion guarantee. An adapter
+      // that ignores it keeps this exact slot so repeated retries cannot fan out.
+      let completion: Promise<boolean>;
+      try {
+        const run = () => this.options.attempt({ ...intent, signal: controller.signal });
+        completion = settlement ? settlement.run(run) : run();
+      } catch (error) {
+        completion = Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      void completion
+        .then((complete) => {
+          if (complete) {
+            this.deleteIntent(key, intent);
+          } else {
+            // A live consult is a legitimate defer, not a delivery failure. Its
+            // run-completion event owns the next retry and must not inherit expiry.
+            this.clearFailureState(intent);
+          }
+        })
+        .catch((error: unknown) => {
+          if (attempt.generation !== this.generation) {
+            return;
+          }
+          if (hasSqliteWorkerOutcomeUnknown(error)) {
+            this.blockRetry(key, intent);
+            this.options.warn(
+              "voice mutation digest settlement is unknown; delivery was not replayed",
+            );
+            return;
+          }
+          if (this.options.deliveryState?.(intent.context) === "uncertain") {
+            this.blockRetry(key, intent);
+            this.options.warn(
+              "voice mutation digest may have been delivered; delivery was not replayed",
+            );
+            return;
+          }
+          intent.failedAttempts += 1;
+          const message = error instanceof Error ? error.message : String(error);
+          if (intent.failedAttempts >= this.policy.maxAttemptFailures) {
+            this.stopAfterFailure(
+              key,
+              intent,
+              `after ${intent.failedAttempts} failed attempts: ${message}`,
+            );
+            return;
+          }
+          this.options.warn(message);
+          this.retainAfterFailure(key, intent);
+        })
+        .finally(() => {
+          settlement?.release();
+          clearTimeout(timeout);
+          if (attempt.generation !== this.generation) {
+            return;
+          }
+          if (this.activeAttempts.get(key) === attempt) {
+            this.activeAttempts.delete(key);
+          }
+          if (intent.expireAfterActive && this.intents.get(key) === intent) {
+            this.stopAfterFailure(
+              key,
+              intent,
+              `after retry retention expired (${intent.failedAttempts} failed attempts)`,
+            );
+            this.pump();
+            return;
+          }
+          if (this.retryAfterActiveKeys.delete(key) && this.intents.has(key)) {
+            this.pendingKeys.add(key);
+          }
           this.pump();
-          return;
-        }
-        if (this.retryAfterActiveKeys.delete(key) && this.intents.has(key)) {
-          this.pendingKeys.add(key);
-        }
-        this.pump();
-      });
+        });
+    });
   }
+}
+
+type MutationDigestContext = {
+  config: OpenClawConfig;
+  source: ClientVoiceSessionSource;
+  delivery?: MutationDigestDelivery;
+};
+
+function sameMutationDigestSource(previous: MutationDigestContext, next: MutationDigestContext) {
+  return (
+    previous.source.options.path === next.source.options.path &&
+    previous.source.identity.key === next.source.identity.key &&
+    previous.source.identity.birthtime === next.source.identity.birthtime
+  );
+}
+
+export function createClientVoiceMutationDigestDeliveryOptions(
+  hasLiveConsultRun: (record: Pick<ClientVoiceRunBinding, "agentId" | "voiceSessionId">) => boolean,
+  captureAttempt: (
+    source?: ClientVoiceSessionSource["settlementContext"],
+  ) => MutationDigestSettlement,
+): MutationDigestOptions<MutationDigestContext> {
+  return {
+    captureAttempt: (context) => captureAttempt(context.source.settlementContext),
+    matchesRetryContext: sameMutationDigestSource,
+    deliveryState: ({ delivery }) =>
+      delivery?.confirmed !== undefined
+        ? "confirmed"
+        : delivery?.mayHaveReachedRecipient
+          ? "uncertain"
+          : "unsent",
+    updateContext(previous, next) {
+      if (!sameMutationDigestSource(previous, next)) {
+        throw new Error("Voice mutation digest cannot change its accepted physical source");
+      }
+      previous.source.assertCurrent();
+      return {
+        config: next.config,
+        source: previous.source,
+        ...(previous.delivery ? { delivery: previous.delivery } : {}),
+      };
+    },
+    attempt: async ({ voiceSessionId, context, signal }) => {
+      const { config, source } = context;
+      source.assertCurrent();
+      if (
+        !context.delivery?.confirmed &&
+        hasLiveConsultRun({ agentId: source.options.agentId, voiceSessionId })
+      ) {
+        return false;
+      }
+      const delivery = (context.delivery ??= {});
+      const writer = captureClientVoiceSessionWriter({
+        agentId: source.options.agentId,
+        physicalSource: source,
+      });
+      try {
+        if (delivery.confirmed) {
+          await writer.mutate({
+            ...delivery.confirmed,
+            kind: "delivered",
+            now: Date.now(),
+          });
+          return true;
+        }
+        const prepared = await writer.read(voiceSessionId);
+        const record = prepared?.record;
+        if (!record) {
+          return true;
+        }
+        if (record.status !== "closed" || hasLiveConsultRun(record)) {
+          return false;
+        }
+        await deliverClientVoiceMutationDigest(
+          record,
+          config,
+          signal,
+          writer,
+          delivery,
+          prepared?.entry,
+        );
+        return true;
+      } finally {
+        await writer.release();
+      }
+    },
+    warn: (message) => console.warn(`[talk] deferred voice mutation digest failed: ${message}`),
+  };
 }

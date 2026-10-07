@@ -1,4 +1,6 @@
+import { readExactSessionEntryRowValidated } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
+import { listSessionMembersInDatabase } from "../config/sessions/session-sharing-store.kernel.js";
 import {
   releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
@@ -16,7 +18,14 @@ import {
   readDatabasePathIdentitySync,
 } from "../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
+import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
+import {
+  assertIncognitoAgentDatabasePathAvailable,
+  resolveIncognitoOpenClawAgentSqlitePath,
+} from "../state/openclaw-agent-db.paths.js";
+import { captureOpenClawStateReadWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
@@ -173,10 +182,6 @@ export function withPreparedSessionSharingSource(params: {
       params.assertTargetCurrent(target, target, cfg, caches);
     }
   };
-  // Incognito source authority still belongs to its process-local owner.
-  if (params.targets.some((target) => isIncognitoSessionKey(target.sessionKey))) {
-    return Object.assign(assertCurrent, { nativeSource: true });
-  }
   const changed = () => targetChanged(params.targets[0]?.sessionKey ?? "");
   const assertRoutingCurrent = captureSessionMutationRouting(params.sourceConfig, changed);
   const talkAgentId = params.sourceConfig.talk?.agentId;
@@ -190,6 +195,15 @@ export function withPreparedSessionSharingSource(params: {
       throw changed();
     }
   };
+  // Incognito source rows remain native, but grants must never re-open their owners.
+  if (params.targets.some((target) => isIncognitoSessionKey(target.sessionKey))) {
+    const env = captureSessionTranscriptStorageEnvironment(process.env);
+    return Object.assign(assertCurrent, {
+      nativeSource: true,
+      prepareSessionSource: () =>
+        prepareNativeSessionSharingSource(params, env, assertSourceCurrent),
+    });
+  }
   return Object.assign(assertCurrent, {
     async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
       const prepared: Awaited<ReturnType<typeof prepareSessionSharingSource>>[] = [];
@@ -264,6 +278,118 @@ export function withPreparedSessionSharingSource(params: {
       }
     },
   });
+}
+
+async function prepareNativeSessionSharingSource(
+  params: Parameters<typeof withPreparedSessionSharingSource>[0],
+  env: NodeJS.ProcessEnv,
+  assertSourceCurrent: () => void,
+): Promise<PreparedSessionSourceAuthority> {
+  const resources: Pick<PreparedSessionSourceAuthority, "release">[] = [];
+  const release = () => releaseSessionSourceAuthorities(resources);
+  try {
+    assertSourceCurrent();
+    const sharedContext = captureOpenClawStateReadWorkerContext({ env });
+    const reads = params.targets.map((expected) => {
+      const target = expected.resolved ?? expected.absentTarget;
+      if (!target) {
+        throw sessionMutationTargetChanged(params.request.method, expected.sessionKey);
+      }
+      const incognito = isIncognitoSessionKey(expected.sessionKey);
+      const pathname = incognito
+        ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: target.agentId, env })
+        : resolveUnsuffixedSqliteTargetFromSessionStorePath(target.storePath).path;
+      const retained = retainOpenClawAgentDatabaseReadOnly({
+        agentId: target.agentId,
+        path: pathname,
+        env,
+      });
+      if (!retained.found) {
+        throw new Error("Session sharing source is unavailable");
+      }
+      resources.push(retained.claim);
+      const identity = readOpenClawAgentDatabaseIdentity(retained.database);
+      const readSource = {
+        agentId: target.agentId,
+        path: pathname,
+        databaseIdentity: identity.identity,
+        databaseBirthtime: identity.birthtime,
+      };
+      return {
+        expected,
+        target,
+        incognito,
+        retained,
+        readSource,
+        key: expected.resolved?.storeKey ?? target.canonicalKey,
+      };
+    });
+    const [{ prepareOpenClawStateCurrentReader }, { readAgentDeletionJournalInDatabase }] =
+      await Promise.all([
+        import("../state/openclaw-state-db-current-reader.js"),
+        import("../state/agent-deletion-journal.js"),
+      ]);
+    const shared = await prepareOpenClawStateCurrentReader(sharedContext);
+    if (!shared) {
+      throw new Error("Session sharing source has no admitted shared state");
+    }
+    resources.push({ release: () => shared.dispose() });
+    const assertCurrent = () => {
+      assertSourceCurrent();
+      for (const read of reads) {
+        read.retained.claim.assertCurrent();
+        if (read.incognito) {
+          assertIncognitoAgentDatabasePathAvailable(read.readSource.path);
+        } else {
+          assertExistingDatabaseIdentity(
+            read.readSource.path,
+            `file:${String(read.readSource.databaseIdentity)}`,
+            read.readSource.databaseBirthtime,
+          );
+        }
+        if (
+          shared.read((database) =>
+            readAgentDeletionJournalInDatabase(database, read.target.agentId, "runtime"),
+          )
+        ) {
+          throw new Error(
+            `OpenClaw agent database is unavailable while agent ${read.target.agentId} is deleted.`,
+          );
+        }
+        const entry = readExactSessionEntryRowValidated(
+          read.retained.database,
+          read.key,
+          "list",
+        )?.entry;
+        params.assertTargetCurrent(
+          read.expected,
+          read.expected,
+          params.request.context.getRuntimeConfig(),
+          undefined,
+          undefined,
+          {
+            target: entry
+              ? {
+                  ...read.target,
+                  storeKey: read.key,
+                  storeKeys: [read.key],
+                  readSource: read.readSource,
+                  entry,
+                }
+              : null,
+            members: listSessionMembersInDatabase(read.retained.database, read.key).map(
+              (member) => member.identityId,
+            ),
+          },
+        );
+      }
+    };
+    assertCurrent();
+    return { nativeSource: true, checks: [], assertCurrent, release };
+  } catch (error) {
+    await releaseSessionSourceAuthorities(resources, [error]);
+    throw error;
+  }
 }
 
 export function captureSessionSharingTalkAuthority({

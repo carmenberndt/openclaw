@@ -21,6 +21,8 @@ export type SessionSourcePredicateFacts = {
 export type PreparedSessionSourceAuthority = {
   /** Process-held sources require native atomicity when writing a durable target. */
   nativeSource?: boolean;
+  /** Released SDK callbacks can perform arbitrary synchronous SQLite reads. */
+  opaqueCommitGuard?: boolean;
   assertCurrent: () => void;
   checks: {
     predicate: SessionSourcePredicate;
@@ -31,13 +33,14 @@ export type PreparedSessionSourceAuthority = {
 
 export type SessionSourceAssertion = (() => void) & {
   nativeSource?: boolean;
+  opaqueCommitGuard?: boolean;
   prepareSessionSource?: () => Promise<PreparedSessionSourceAuthority>;
 };
 
 /** Classify request/SDK callbacks before adapters compose them with prepared internal authority. */
 export function captureExternalSessionCommitGuard(guard: SessionSourceAssertion | undefined) {
   return guard && !guard.prepareSessionSource
-    ? Object.assign(() => guard(), { nativeSource: true })
+    ? Object.assign(() => guard(), { nativeSource: true, opaqueCommitGuard: true })
     : guard;
 }
 
@@ -61,7 +64,12 @@ export async function prepareSessionSourceAuthority(
 ): Promise<PreparedSessionSourceAuthority> {
   return assertion?.prepareSessionSource
     ? assertion.prepareSessionSource()
-    : { assertCurrent: () => assertion?.(), checks: [], nativeSource: assertion?.nativeSource };
+    : {
+        assertCurrent: () => assertion?.(),
+        checks: [],
+        nativeSource: assertion?.nativeSource,
+        opaqueCommitGuard: assertion?.opaqueCommitGuard,
+      };
 }
 
 /** A live selector may advance between operations, never during one prepared write. */
@@ -99,6 +107,7 @@ export function composeSessionSourceAssertion(
         }
         return {
           nativeSource: prepared.some((source) => source.nativeSource),
+          opaqueCommitGuard: prepared.some((source) => source.opaqueCommitGuard),
           assertCurrent: () => check(() => prepared.forEach((source) => source.assertCurrent())),
           checks: prepared.flatMap((source, index) =>
             source.checks.map(({ predicate, refuse }) => ({

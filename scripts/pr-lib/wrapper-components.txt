@@ -338,6 +338,7 @@ src/agents/worktrees/repository-paths.ts
 src/agents/worktrees/run-end-lifecycle.ts
 src/agents/sandbox/registry-lifecycle.ts
 src/talk/client-voice-session-lifecycle.ts
+src/talk/client-voice-session-source.ts
 src/talk/client-voice-session-write.ts
 src/talk/client-voice-session-write.kernel.ts
 src/agents/worktrees/run-lease-owner.ts
@@ -790,7 +791,9 @@ src/infra/agent-run-registry.ts
 src/infra/agent-run-usage.ts
 src/infra/approval-resolution-ref.ts
 src/infra/backoff.ts
+src/infra/backup-audit-paths.ts
 src/infra/backup-scratch.ts
+src/infra/backup-volatile-filter.ts
 src/infra/boundary-file-read.ts
 src/infra/boundary-path.ts
 src/infra/bun-sqlite-close-probe.ts
@@ -836,6 +839,7 @@ src/infra/ed25519-signature.ts
 src/infra/env-log.runtime.ts
 src/infra/env.ts
 src/infra/errno.ts
+src/infra/child-runtime-viability.ts
 src/infra/error-graph-internal.ts
 src/infra/errors.ts
 src/infra/exec-allowlist-pattern.ts
@@ -1093,6 +1097,7 @@ src/infra/tmp-openclaw-dir.ts
 src/infra/update-channels.ts
 src/infra/update-doctor-config-schema.ts
 src/infra/update-doctor-result.ts
+src/infra/update-failure-facts-format.ts
 src/infra/update-failure-facts.ts
 src/infra/update-failure-public-codes.ts
 src/infra/update-failure-public-identifiers.ts
@@ -1611,6 +1616,7 @@ src/state/openclaw-agent-context-engine-turn-outbox-schema.ts
 src/state/openclaw-agent-db-additive-columns.ts
 src/state/openclaw-agent-db-admission.ts
 src/state/openclaw-agent-db-contract.ts
+src/state/openclaw-agent-db-discovery-paths.ts
 src/state/openclaw-agent-db-disposal.ts
 src/state/openclaw-agent-db-existing-write.ts
 src/state/openclaw-agent-db-identity.ts
@@ -1640,6 +1646,7 @@ src/state/openclaw-agent-db-session-migrations.ts
 src/state/openclaw-agent-db-session-nodes-migration.ts
 src/state/openclaw-agent-db-session-provenance.ts
 src/state/openclaw-agent-db-terminal.ts
+src/state/openclaw-agent-db-transaction.ts
 src/state/openclaw-agent-db-validation-cache.ts
 src/state/openclaw-agent-db.paths.ts
 src/state/openclaw-agent-db.ts

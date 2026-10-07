@@ -16,6 +16,19 @@ paths are migration debt, not a pattern to extend. The
 [migration inventory](/reference/database-schemas/worker-access-inventory) separates
 candidate main-thread paths from SQL already executing in workers.
 
+Session target discovery and exact entry reads use the existing projection worker
+so chat authority and run admission do not queue behind unrelated transcript
+history. Ordered reads still retain the database writer FIFO and revalidate their
+physical source and current permissions. Transcript payloads keep their history
+worker; schemas, stored data, configuration, and update behavior are unchanged.
+
+Worker read-only agent connections load existing file-bound canonical validation receipts
+at admission, before a read transaction begins. Reopening a reader then validates
+pending keys without repeating a complete session inventory. Copied or replaced
+files still require their own validation; canonical receipts never grant integrity
+proof. Writer FIFO ordering, current-authority checks, schemas, and update behavior
+remain unchanged.
+
 Reply initialization, agent-turn preparation, and status rendering recover missing
 lifecycle timestamps through the transcript reader. Header reads retain their
 physical database owner and accept results under the existing writer FIFO with a
@@ -865,6 +878,37 @@ kernels remain until the single cutover. This preparation changes no schema,
 retention, durability, permissions, configuration, or update behavior and retires
 no T1 sites.
 
+### Incognito steering, visibility, trajectory, and project authority (P7n, inactive)
+
+Explicit actor bindings carry terminal steering facts through the existing
+committed session projection. History prepares subagent visibility through the
+actor and shared ACP metadata owner before disclosure; Memory selectors and
+conversation-binding reads use that same captured actor. Missing context reads
+retain their absence claims and return the existing empty results only while
+their rows stay absent. A closed or replaced actor still ends its retained handles with
+`INCOGNITO_SESSION_ENDED`.
+
+Trajectory persistence uses the existing side-data command owner and synchronous
+transaction kernel. Confirmed commits settle their accepted batches even when
+the reply is lost; unknown outcomes never replay. Project listing and checkout
+deletion retain the actor roster and snapshots through their consuming work,
+including the final synchronous deletion guard.
+
+Durable and synchronous native retention paths request a refresh before opening
+an empty writer transaction when selection already found an invalid plan.
+Valid batches still revalidate under the writer lock, and actor commands retain
+their commit-receipt transaction.
+Trajectory append derives its next sequence and retained byte window from one
+descending read under the existing writer lock. Retention uses the native
+connection's mutation witness for local changes when available, keeps its
+counter kind for the sweep's lifetime, and still checks foreign commits through
+`data_version`.
+
+Production acquisition remains host-owned, and every native selection arm stays
+in place until the atomic activation. These conditional compositions add no
+schema, persistent cache, worker service, retention, durability, permission,
+configuration, or update change and retire no T1 sites.
+
 ### Existing worker flows
 
 Remote model catalog refreshes capture the shared store before downloading and
@@ -1573,16 +1617,39 @@ This prerequisite changes no schema, retention, durability, or update behavior.
 Talk voice admission, consult bindings, tool effects, transcript bookkeeping,
 close, and digest acknowledgments use the existing agent executor. Each operation
 retains its physical store, rereads its voice record inside the worker transaction,
-and publishes acknowledged facts before dependent work. Consult registration settles
-before execution starts. Transcript failure reservations remain durable before the
+and publishes acknowledged facts before dependent work. Request and session authority
+are prepared before dispatch; session creation publishes its committed identity
+through the existing authorization owner. The committing worker checks same-store predicates;
+custom-store and incognito sources retain their native authority without opening
+readers inside a grant. Opaque synchronous `sessionMutationCommitGuard` callbacks
+from the released v2026.9.8 Gateway SDK, including guards retained by voice replacement,
+keep native voice admission through the same FIFO and mutation kernel. These callbacks
+may read SQLite and remain live throughout native preparation and commit. Prepared
+Gateway requests and incognito voice metadata continue through the worker.
+Consult registration settles before execution starts.
+Transcript failure reservations remain durable before the
 fallible append. Same-store append and success bookkeeping commit together, then
 observers consume the acknowledged transcript and voice facts. Gateway
 close rejects new bookkeeping and joins accepted persistence independently of
 scheduler cancellation; unknown write outcomes never authorize automatic replay.
 Voice metadata keeps its durable agent store, while incognito transcripts retain
-their native owner until the atomic incognito cutover. Synchronous tool-policy
-reads still refresh foreign commits through the existing facts reader. Schemas,
-stored bytes, retention, durability, and update behavior are unchanged.
+their native owner until the atomic incognito cutover. Existing synchronous
+tool-policy and pre-backend admission checks still refresh foreign commits through
+the facts reader. Schemas, stored formats, retention, durability, and update behavior
+are unchanged.
+
+Session entry replacement receipts carry final entry, membership, category,
+participant, Board-presence, and activity-watermark facts from the committing
+worker. The existing resident row and compact membership projections adopt those
+facts before public observers run. Partial or uncertain receipts invalidate
+uncovered facts; superseded publications cannot restore older rows or revoked
+members. ACP writes publish only their own metadata, including explicit absence,
+and pending writes invalidate that facet without announcing a commit. Shared
+ACP and repository facts prepare together through the existing shared-state
+reader when both are needed. These presentation facts retain their event-driven
+lifetime; they never advance a database reader's foreign-commit baseline or
+authorize a later effect. New unpinned database reads still check freshness.
+Schemas, stored bytes, permissions, retention, and update behavior are unchanged.
 
 Session observer admission, publication, terminal synthesis, and companion snapshots
 read through the existing Gateway session worker lookup. Each observation captures
@@ -2251,6 +2318,23 @@ private rows retain facts only for the request's synchronous publication frame.
 Schemas, stored values, permissions, retention, and update behavior are unchanged.
 
 ## Migrate a caller
+
+Rescue-message approval consumption, revocation, and replacement use the existing
+plugin-state worker. Replacement preserves the committed revocation before a new
+plan is registered, including when its preparation fails; each transaction checks
+current caller authority. OpenRouter runtime capability reads and catalog
+replacement use the same worker, retaining the original physical store across
+network waits. Catalog replacement batches its writes in one transaction, and
+model-runtime close joins accepted refreshes before database retirement.
+
+The synchronous keyed-store SDK and its callback mutations remain available under
+the released `v2026.9.8` contract until the next Plugin SDK major. The deprecated
+OpenRouter synchronous capability getter also retains its cold persisted read;
+bundled model resolution uses the awaited loader and memory-only getter. Context
+engine activation already joins worker cleanup on runtime paths; its synchronous
+cleanup remains for the released provider-catalog SDK and CLI onboarding. These
+shared kernels therefore remain in the T1 inventory. Schemas, stored formats,
+retention, and update behavior are unchanged.
 
 Completed-child archive lookups resolve durable store ownership and check exact
 archive registration through the existing history reader. Empty lookups do not

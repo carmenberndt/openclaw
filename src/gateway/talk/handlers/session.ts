@@ -14,7 +14,7 @@ import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
-import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session.js";
+import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import {
   projectInternalRealtimeVoicePublicConfig,
   resolveInternalRealtimeVoiceGatewayRelayLaunchError,

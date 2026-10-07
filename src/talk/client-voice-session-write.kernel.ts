@@ -3,6 +3,8 @@ import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import {
   assertVoiceSessionOwnership,
   readVoiceSessionRecordInTransaction,
+  recordVoiceToolEffectInTransaction,
+  registerVoiceConsultRunInTransaction,
   writeVoiceSessionRecordInTransaction,
   VOICE_SESSION_RECORD_VERSION,
   type ClientVoiceRunBinding,
@@ -32,10 +34,11 @@ export type VoiceSessionMutation = ClientVoiceRunBinding &
     | {
         kind: "close";
         transcriptFailurePolicy: "require-success" | "retain-and-close";
+        expectedOrigin?: "client";
         staleBefore?: number;
         now: number;
       }
-    | { kind: "delivered"; now: number }
+    | { kind: "delivered"; deliveredAt: number; now: number }
   );
 
 /** The caller owns the transaction; all predicates use its current canonical row. */
@@ -43,9 +46,23 @@ export function mutateVoiceSessionInDatabase(
   database: OpenClawAgentDatabase,
   input: VoiceSessionMutation,
 ): ClientVoiceSessionRecord | undefined {
+  if (input.kind === "consult") {
+    return registerVoiceConsultRunInTransaction(database, input);
+  }
+  if (input.kind === "effect") {
+    return input.event.runId
+      ? recordVoiceToolEffectInTransaction(
+          database,
+          input,
+          input.event.runId,
+          input.event,
+          input.now,
+        )
+      : undefined;
+  }
   let record = readVoiceSessionRecordInTransaction(database, input.voiceSessionId);
   if (!record) {
-    if (input.kind === "effect" || input.kind === "delivered") {
+    if (input.kind === "delivered") {
       return undefined;
     }
     if (input.kind !== "create") {
@@ -84,52 +101,6 @@ export function mutateVoiceSessionInDatabase(
         record.transcriptCapable = true;
       }
       break;
-    case "consult":
-      // A run acknowledged during transport close still owns its effect history.
-      if (record.consultRunIds.includes(input.runId)) {
-        return record;
-      }
-      record.consultRunIds.push(input.runId);
-      break;
-    case "effect": {
-      const event = input.event;
-      if (!event.runId) {
-        return record;
-      }
-      const existing = event.toolCallId
-        ? record.effects.find(
-            (effect) => effect.runId === event.runId && effect.toolCallId === event.toolCallId,
-          )
-        : record.effects.findLast(
-            (effect) =>
-              effect.runId === event.runId &&
-              effect.toolName === event.toolName &&
-              effect.status === "started",
-          );
-      if (event.type !== "tool.execution.started") {
-        if (!existing) {
-          return record;
-        }
-        existing.status =
-          event.type === "tool.execution.completed"
-            ? "succeeded"
-            : event.type === "tool.execution.blocked"
-              ? "blocked"
-              : event.terminalReason === "cancelled"
-                ? "cancelled"
-                : "failed";
-        existing.finishedAt = event.ts;
-      } else if (event.mutatingAction === true && (!event.toolCallId || !existing)) {
-        record.effects.push({
-          runId: event.runId,
-          ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
-          toolName: event.toolName,
-          startedAt: event.ts,
-          status: "started",
-        });
-      }
-      break;
-    }
     case "reserve":
       if (record.status !== "open") {
         throw new Error("voice session is closed");
@@ -153,6 +124,9 @@ export function mutateVoiceSessionInDatabase(
       );
       break;
     case "close":
+      if (input.expectedOrigin && record.origin !== input.expectedOrigin) {
+        throw new Error("relay-owned voice sessions close through talk.session.close");
+      }
       if (
         input.staleBefore !== undefined &&
         (record.status !== "open" || record.updatedAt > input.staleBefore)
@@ -178,7 +152,7 @@ export function mutateVoiceSessionInDatabase(
       if (record.digestDeliveredAt) {
         return record;
       }
-      record.digestDeliveredAt = input.now;
+      record.digestDeliveredAt = input.deliveredAt;
       break;
   }
   record.updatedAt = input.now;

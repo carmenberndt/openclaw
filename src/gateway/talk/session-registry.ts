@@ -181,17 +181,30 @@ export function prepareTalkConnectionClose(
     }
     // Provider close can emit final speech. Retain this Gateway's cleanup before
     // fencing admission; sibling Gateways keep their own connections and claims.
-    pending = withClientVoiceSessionSettlement(() =>
-      closeTalkConnections(Array.from(clients, (client) => client.connId)),
-    );
+    const connIds = Array.from(clients, (client) => client.connId);
+    const cleanup = () => closeTalkConnections(connIds);
+    pending = withClientVoiceSessionSettlement(cleanup, async (error) => {
+      try {
+        await cleanup();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Talk cleanup failed", {
+          cause: cleanupError,
+        });
+      }
+      throw error;
+    });
     void pending.catch((error: unknown) => log.warn(`Talk cleanup failed: ${formatError(error)}`));
     persistence.beginClose();
   };
   return {
     beginClose,
     async drain() {
-      beginClose();
-      await Promise.all([pending, persistence.drain()]);
+      try {
+        beginClose();
+        await pending;
+      } finally {
+        await persistence.drain();
+      }
     },
   };
 }

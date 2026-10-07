@@ -1,10 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { AsyncWorkScope, trackAsyncWork } from "../shared/async-work-scope.js";
+import {
+  captureSqliteWorkerStateContext,
+  runWithSqliteWorkerStateContext,
+} from "../infra/sqlite-worker-state-context.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "../state/openclaw-state-db-cache.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 
-const current = new AsyncLocalStorage<{ key: string; active: boolean }>();
+const current = new AsyncLocalStorage<{
+  context: OpenClawStateWorkerContext;
+  scope: AsyncWorkScope;
+  active: boolean;
+}>();
 const lifetimes = new Map<string, ReturnType<typeof createLifetime>>();
 
 function createLifetime({ admission }: OpenClawStateWorkerContext) {
@@ -47,13 +56,12 @@ function createLifetime({ admission }: OpenClawStateWorkerContext) {
         },
       };
     },
-    run<T>(run: () => Promise<T>) {
-      if (closing) {
-        return Promise.reject(new Error("Voice session persistence admission is closed"));
+    assertOpen(inherited: boolean) {
+      if (closing && !inherited) {
+        throw new Error("Voice session persistence admission is closed");
       }
-      // Accepted writes keep their own live settlement scope across scheduler close.
-      return work.track(run);
     },
+    scope: () => work,
   };
   const unregister = registerOpenClawStateDatabaseAsyncResource({
     async close(identity) {
@@ -81,26 +89,106 @@ function lifetime(context: OpenClawStateWorkerContext) {
   return owner;
 }
 
-export function withClientVoiceSessionSettlement<T>(run: () => Promise<T>): Promise<T> {
-  const context = captureOpenClawStateWorkerContext();
-  const key = context.admission.coordinationKey;
+/** Retain the original owner for later admissions without retaining an accepted permit. */
+export function captureClientVoiceSessionSettlementContext(
+  env: NodeJS.ProcessEnv,
+): OpenClawStateWorkerContext {
+  const inherited = current.getStore()?.context;
+  const selected =
+    inherited && inherited.environment.OPENCLAW_STATE_DIR === env.OPENCLAW_STATE_DIR
+      ? inherited
+      : captureOpenClawStateWorkerContext({ env });
+  return { ...captureSqliteWorkerStateContext(selected), admission: selected.admission };
+}
+
+/** Retain accepted work before a bounded queue or provider can yield. */
+export function captureClientVoiceSessionSettlement(source?: OpenClawStateWorkerContext) {
   const inherited = current.getStore();
-  if (inherited) {
-    if (!inherited.active || inherited.key !== key) {
-      return Promise.reject(new Error("Voice session persistence lost its accepted owner"));
-    }
-    return trackAsyncWork(run);
+  const selected = source ?? inherited?.context ?? captureOpenClawStateWorkerContext();
+  const inheritedSource =
+    inherited && matchesSettlementContext(inherited.context, selected) ? inherited : undefined;
+  if (inheritedSource && !inheritedSource.active) {
+    throw new Error("Voice session persistence lost its accepted owner");
   }
-  const operation = { key, active: true };
-  return lifetime(context).run(() =>
-    current.run(operation, async () => {
-      try {
-        return await run();
-      } finally {
-        operation.active = false;
+  selected.admission.assertCurrent();
+  const context = inheritedSource?.context ?? {
+    ...captureSqliteWorkerStateContext(selected),
+    admission: selected.admission,
+  };
+  const owner = lifetime(context);
+  owner.assertOpen(Boolean(inheritedSource));
+  const scope = inheritedSource?.scope ?? owner.scope();
+  const settled = createDeferredCore();
+  void scope.track(() => settled.promise);
+  const operation = { context, scope, active: true };
+  return {
+    run<T>(run: () => T): T {
+      if (!operation.active) {
+        throw new Error("Voice session persistence lost its accepted owner");
       }
-    }),
+      context.admission.assertCurrent();
+      return scope.run(() =>
+        current.run(operation, () => runWithSqliteWorkerStateContext(context, run)),
+      );
+    },
+    // Refused entry does not settle accepted work; its lifetime owner releases it.
+    release() {
+      operation.active = false;
+      settled.resolve();
+    },
+  };
+}
+
+export async function withClientVoiceSessionSettlement<T>(
+  run: () => Promise<T>,
+  onAdmissionFailure?: (error: unknown) => Promise<T>,
+  source?: OpenClawStateWorkerContext,
+): Promise<T> {
+  let accepted: ReturnType<typeof captureClientVoiceSessionSettlement> | undefined;
+  let entered = false;
+  try {
+    accepted = captureClientVoiceSessionSettlement(source);
+    return await accepted.run(() => {
+      entered = true;
+      return run();
+    });
+  } catch (error) {
+    // Close still owns provider teardown after refusal, but may not replay entered work.
+    if (!entered && onAdmissionFailure) {
+      return await onAdmissionFailure(error);
+    }
+    throw error;
+  } finally {
+    accepted?.release();
+  }
+}
+
+export function assertClientVoiceSessionAdmission(source?: OpenClawStateWorkerContext): void {
+  const accepted = captureClientVoiceSessionSettlement(source);
+  accepted.release();
+}
+
+function matchesSettlementContext(
+  left: OpenClawStateWorkerContext,
+  right: OpenClawStateWorkerContext,
+) {
+  return (
+    left.admission.coordinationKey === right.admission.coordinationKey &&
+    left.admission.identity.key === right.admission.identity.key &&
+    left.admission.identity.birthtime === right.admission.identity.birthtime
   );
+}
+
+export function assertClientVoiceSessionSettlementCurrent(
+  source?: OpenClawStateWorkerContext,
+): void {
+  const accepted = current.getStore();
+  if (accepted && (!source || matchesSettlementContext(accepted.context, source))) {
+    if (!accepted.active) {
+      throw new Error("Voice session persistence lost its accepted owner");
+    }
+    accepted.context.admission.assertCurrent();
+  }
 }
 
 export function prepareClientVoiceSessionClose() {

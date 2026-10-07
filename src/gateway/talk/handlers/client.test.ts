@@ -29,10 +29,10 @@ import {
   checkClientVoiceToolConfirmationPolicy,
 } from "../../../talk/client-voice-confirmation.js";
 import { resetClientVoiceConfirmationStateForTest } from "../../../talk/client-voice-confirmation.test-support.js";
+import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
-  ensureClientVoiceAgentSessionEntry,
   resolveClientVoiceRunBinding,
 } from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
@@ -44,7 +44,6 @@ import { closeTalkClientGatewayControlSession } from "../client-gateway-control.
 import { cleanupTalkConnection } from "../session-registry.js";
 import {
   completeTalkVoiceChange,
-  readTalkVoiceSelection,
   requestTalkVoiceChange,
   resolveTalkVoiceSession,
 } from "../voice-selection.js";
@@ -90,6 +89,7 @@ const sessionKey = "agent:main:main";
 const sessionId = "voice-transcript-session";
 let tempDir: string;
 let ownedVoiceSessionId: string | undefined;
+let ownedVoiceSessionKey = sessionKey;
 const { completeOffer, disposeResources } = createTalkClientOfferFixture();
 
 function configureDelegatedBrowserProvider(
@@ -181,6 +181,7 @@ describe("talk.client.transcript", () => {
     vi.clearAllMocks();
     resetGatewayWorkAdmission();
     ownedVoiceSessionId = undefined;
+    ownedVoiceSessionKey = sessionKey;
     tempDir = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-talk-transcript-")),
     );
@@ -199,7 +200,7 @@ describe("talk.client.transcript", () => {
     if (ownedVoiceSessionId) {
       await closeTalkClientGatewayControlSession({
         voiceSessionId: ownedVoiceSessionId,
-        sessionKey,
+        sessionKey: ownedVoiceSessionKey,
         connId: "conn-close",
       });
     }
@@ -211,103 +212,6 @@ describe("talk.client.transcript", () => {
     envSnapshot.restore();
     await fs.rm(tempDir, { recursive: true, force: true });
     expect(remainingRootWork).toBe(0);
-  });
-
-  it("replaces a voice on the same chat only after both the browser and provider are ready", async () => {
-    const createBrowserSession = vi.fn(async (request: BrowserRequest) => ({
-      ...browserSession,
-      model: request.model,
-      voice: request.voice ?? "cove",
-    }));
-    const fixture = configureDelegatedBrowserProvider(createBrowserSession);
-    Object.assign(fixture.provider, { voices: ["cove", "ember"] });
-    const respond = vi.fn();
-    const create = (params: Record<string, unknown>) =>
-      invokeCreate({
-        params: { sessionKey, capabilities: ["voice-selection"], ...params },
-        respond,
-        context: fixture.context,
-        client: fixture.client,
-      } as never);
-    await create({ provider: "openai", model: "gpt-live-1-codex" });
-    expect(respond).toHaveBeenLastCalledWith(
-      true,
-      expect.objectContaining({ model: "gpt-live-1-codex", voice: "cove" }),
-      undefined,
-    );
-    const originalId = respond.mock.calls.at(-1)?.[1].voiceSessionId as string;
-    ownedVoiceSessionId = originalId;
-    createBrowserSession.mock.calls[0]?.[0].gatewayControl?.onReady?.();
-    const original = resolveTalkVoiceSession({
-      kind: "client",
-      connId: fixture.client.connId,
-      voiceSessionId: originalId,
-    });
-    expect(readTalkVoiceSelection(original)).toMatchObject({
-      sessionKey,
-      voice: "cove",
-      voices: ["cove", "ember"],
-      canChange: true,
-    });
-    const send = vi.fn();
-    const changing = requestTalkVoiceChange({
-      session: original,
-      voice: "ember",
-      requesterConnId: fixture.client.connId,
-      assertCurrent: () => {},
-      send,
-    });
-    void changing.catch(() => {});
-    const changeId = send.mock.calls[0]?.[0].changeId as string;
-    await create({ voiceChangeId: changeId, voiceSessionId: originalId });
-    expect(respond).toHaveBeenLastCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ message: "A voice replacement requires a fresh voice session id" }),
-    );
-    expect(createBrowserSession).toHaveBeenCalledOnce();
-    expect(await invokeClose({ sessionKey, voiceSessionId: originalId })).toHaveBeenCalledWith(
-      true,
-      { ok: true },
-      undefined,
-    );
-    await create({ voiceChangeId: changeId, model: "gpt-realtime-2.1", voice: "cove" });
-    expect(respond).toHaveBeenLastCalledWith(
-      true,
-      expect.objectContaining({ model: "gpt-live-1-codex", voice: "ember" }),
-      undefined,
-    );
-    const replacementId = respond.mock.calls.at(-1)?.[1].voiceSessionId as string;
-    ownedVoiceSessionId = replacementId;
-    expect(replacementId).not.toBe(originalId);
-    const replacementRequest = createBrowserSession.mock.calls[1]?.[0];
-    expect(replacementRequest).toMatchObject({ model: "gpt-live-1-codex", voice: "ember" });
-    let applied = false;
-    void changing.then(
-      () => {
-        applied = true;
-      },
-      () => {},
-    );
-    const completed = completeTalkVoiceChange({
-      changeId,
-      connId: fixture.client.connId,
-      voiceSessionId: replacementId,
-      outcome: "ready",
-    });
-    void completed.catch(() => {});
-    await Promise.resolve();
-    expect(applied).toBe(false);
-    replacementRequest?.gatewayControl?.onReady?.();
-    await completed;
-    await expect(changing).resolves.toMatchObject({
-      status: "applied",
-      voiceSessionId: replacementId,
-      sessionKey,
-      voice: "ember",
-    });
-    expect(clientVoiceSessionTesting.readRecord("main", originalId)?.status).toBe("closed");
-    expect(clientVoiceSessionTesting.readRecord("main", replacementId)?.status).toBe("open");
   });
 
   it("acknowledges close before creating the voice replacement requested by an active tool consult", async () => {

@@ -31,6 +31,7 @@ import { SessionMutationAuthorizationChangedError } from "./session-mutation-aut
 import type { SessionRowProjection } from "./session-row-projection.js";
 import {
   expectedSessionMutationTargetError,
+  createSessionCreationAuthorizationRecorder,
   assertSessionMutationProjectionCurrent,
   createSessionSharingLookupCaches,
   prepareAuthorizedSessionMutationFacts,
@@ -390,7 +391,10 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         : null,
       sessionId: target?.entry.sessionId?.trim() || null,
       ...(!target &&
-      ["chat.send", "sessions.send", "sessions.create", "sessions.patch"].includes(params.method)
+      (["chat.send", "sessions.send", "sessions.create", "sessions.patch"].includes(
+        params.method,
+      ) ||
+        (talkSessionTarget && authorizesAgentRun))
         ? {
             absentTarget: consumingSharing
               ? consumingSharing.storageTarget
@@ -561,7 +565,6 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           throw new SessionMutationAuthorizationChangedError(error);
         }
       };
-      let createdSessionRecorded = false;
       const authorization: SessionMutationAuthorization = {
         ...(params.method === "chat.send" && authorizedTargets.length === 1 && !talkSessionTarget
           ? {
@@ -634,42 +637,11 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
               }),
             }
           : {}),
-        recordCreatedSession: (created) => {
-          // Only the creation owner's COMMIT notification may replace an absent snapshot.
-          // Never adopt a response/reload result, or a later incarnation of the same key.
-          if (createdSessionRecorded) {
-            return;
-          }
-          let expected = authorizedTargets.find(
-            (target) =>
-              target.sessionId === null &&
-              target.absentTarget?.agentId === created.agentId &&
-              target.absentTarget.canonicalKey === created.sessionKey &&
-              target.absentTarget.storePath === created.storePath,
-          );
-          if (!expected && permitsGeneratedSession) {
-            expected = {
-              sessionKey: created.sessionKey,
-              agentId: created.agentId,
-              resolved: null,
-              sessionId: null,
-            };
-            authorizedTargets.push(expected);
-          }
-          if (!expected) {
-            return;
-          }
-          createdSessionRecorded = true;
-          expected.resolved = {
-            agentId: created.agentId,
-            canonicalKey: created.sessionKey,
-            storeKey: created.sessionKey,
-            storePath: created.storePath,
-          };
-          expected.sessionId = created.sessionId;
-          expected.lifecycleRevision = created.lifecycleRevision;
-          expected.created = true;
-        },
+        recordCreatedSession: createSessionCreationAuthorizationRecorder({
+          targets: authorizedTargets,
+          talkSessionTarget,
+          permitsGeneratedSession,
+        }),
         assertCurrent: withPreparedSessionSharingSource({
           targets: authorizedTargets,
           sourceConfig: getCfg(),

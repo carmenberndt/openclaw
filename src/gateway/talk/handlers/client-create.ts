@@ -12,11 +12,14 @@ import {
   AgentSelectionRequiredError,
   resolveAgentWorkspaceDir,
 } from "../../../agents/agent-scope.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import { toErrorObject } from "../../../infra/errors.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import {
+  ensureClientVoiceAgentSessionEntry,
   captureClientVoiceSessionWriter,
   type ClientVoiceSessionWriter,
 } from "../../../talk/client-voice-session-write.js";
@@ -25,7 +28,6 @@ import {
   closeClientVoiceSession,
   closeStaleClientVoiceSessions,
   createOrResumeClientVoiceSession,
-  ensureClientVoiceAgentSessionEntry,
   flushClientVoiceSessionWrites,
 } from "../../../talk/client-voice-session.js";
 import { REALTIME_VOICE_DESCRIBE_VIEW_TOOL } from "../../../talk/describe-view-tool.js";
@@ -228,8 +230,12 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
         );
       }
       let closingWriter: ClientVoiceSessionWriter | undefined;
+      let closingFailure: { error: unknown } | undefined;
       const closeLogicalSession = async () => {
         unregisterVoiceSession?.();
+        if (closingFailure) {
+          throw closingFailure.error;
+        }
         if (!logicalSessionCreated) {
           return;
         }
@@ -281,40 +287,64 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
             getToolAuthorityOverlay: (source) =>
               consultRunner.getToolAuthorityOverlay(undefined, source),
             appendTranscript: ({ entryId, role, text, confirmation }) =>
-              appendClientVoiceTranscript(
-                {
-                  agentId,
-                  sessionKey,
-                  sessionTarget,
-                  voiceSessionId: activeVoiceSessionId!,
-                  entryId,
-                  role,
-                  text,
-                  confirmation,
-                  config: runtimeConfig,
-                },
-                closingWriter,
-              ),
+              closingFailure
+                ? Promise.reject(toErrorObject(closingFailure.error, "Voice session close failed"))
+                : appendClientVoiceTranscript(
+                    {
+                      agentId,
+                      sessionKey,
+                      sessionTarget,
+                      voiceSessionId: activeVoiceSessionId!,
+                      entryId,
+                      role,
+                      text,
+                      confirmation,
+                      config: runtimeConfig,
+                    },
+                    closingWriter,
+                  ),
             flushTranscript: () =>
               flushClientVoiceSessionWrites(
                 {
                   agentId,
                   voiceSessionId: activeVoiceSessionId!,
                 },
-                closingWriter,
+                closingFailure ? null : closingWriter,
               ),
             closeLogicalSession,
-            withCloseSettlement: (run) =>
-              withClientVoiceSessionSettlement(async () => {
-                const writer = captureClientVoiceSessionWriter({ agentId });
-                closingWriter = writer;
+            withCloseSettlement: (run) => {
+              const close = async (admissionFailure?: { error: unknown }) => {
+                closingFailure = admissionFailure;
+                if (!closingFailure) {
+                  try {
+                    closingWriter = captureClientVoiceSessionWriter({ agentId });
+                  } catch (error) {
+                    closingFailure = { error };
+                  }
+                }
                 try {
                   await run();
+                  if (closingFailure) {
+                    throw closingFailure.error;
+                  }
+                } catch (error) {
+                  if (closingFailure && error !== closingFailure.error) {
+                    throw new AggregateError(
+                      [closingFailure.error, error],
+                      "Voice session close failed",
+                      { cause: error },
+                    );
+                  }
+                  throw error;
                 } finally {
+                  const writer = closingWriter;
                   closingWriter = undefined;
-                  await writer.release();
+                  closingFailure = undefined;
+                  await writer?.release();
                 }
-              }),
+              };
+              return withClientVoiceSessionSettlement(close, (error) => close({ error }));
+            },
           })
         : undefined;
       const gatewayControl = gatewayControlOwner
@@ -403,6 +433,12 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
               resolveOperatorSessionCreation(client),
             deadlineAt: sessionEntryDeadlineAt,
             assertCommitAllowed,
+            onCommitted: (entry) =>
+              sessionMutationAuthorization?.recordCreatedSession?.({
+                ...sessionTarget,
+                sessionId: entry.sessionId,
+                lifecycleRevision: entry.lifecycleRevision,
+              }),
           });
           sessionMutationCommitGuard?.();
           sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
@@ -429,9 +465,16 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
             transcriptCapable:
               wantsGatewayControl || params.capabilities?.includes("voice-transcript") === true,
             voiceSessionId: activeVoiceSessionId ?? requestedVoiceSessionId,
+            requester: requester.assertCurrent,
+            source: {
+              storePath: target.storePath,
+              assertCurrent: composeSessionSourceAssertion([
+                sessionMutationAuthorization?.assertCurrent,
+                replacement?.source(target).assertCurrent,
+              ]),
+            },
             assertCurrent: () => {
               requester.assertPreparationCurrent();
-              replacement?.assertCurrent(target);
               gatewayControlOwner?.assertOpen();
               if (sessionEntryDeadlineAt !== undefined && Date.now() >= sessionEntryDeadlineAt) {
                 throw new Error("Realtime browser session expired during startup; try again");

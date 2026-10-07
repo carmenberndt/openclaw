@@ -13,12 +13,12 @@ import {
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { resetClientVoiceConfirmationStateForTest } from "./client-voice-confirmation.test-support.js";
+import { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-write.js";
 import {
   appendClientVoiceTranscript,
   appendRelayVoiceTranscript,
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
-  ensureClientVoiceAgentSessionEntry,
   resolveClientVoiceAgentSessionId,
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";

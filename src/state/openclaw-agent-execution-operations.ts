@@ -6,6 +6,7 @@ import {
   deferSqliteWorkerCommitReceipt,
   takeSqliteWorkerOperationAdmissionAttachment,
 } from "../infra/sqlite-worker-operation-admission.js";
+import { readTrajectoryRuntimeRetentionLease } from "../trajectory/runtime-retention.contract.js";
 import type { AgentDatabaseMaintenanceOperations } from "./openclaw-agent-execution-maintenance.js";
 import type { AgentWorkerOperationContext } from "./openclaw-agent-operation-context.js";
 import type { WorkerOperationHandlers, WorkerOperations } from "./worker-operation-registry.js";
@@ -203,26 +204,20 @@ export async function loadAgentTrajectoryOperations() {
       );
     },
     "trajectory.retention.begin": (_input: undefined, { open }) => {
-      const attachment = takeSqliteWorkerOperationAdmissionAttachment();
-      if (
-        typeof attachment !== "object" ||
-        attachment === null ||
-        !("trajectoryRetentionLease" in attachment) ||
-        !(attachment.trajectoryRetentionLease instanceof SharedArrayBuffer) ||
-        attachment.trajectoryRetentionLease.byteLength !== 4
-      ) {
-        throw new Error("Trajectory retention lease is unavailable");
-      }
       return retention.beginTrajectoryRuntimeRetention(
         open().db,
-        new Int32Array(attachment.trajectoryRetentionLease),
+        readTrajectoryRuntimeRetentionLease(takeSqliteWorkerOperationAdmissionAttachment()),
       );
     },
     "trajectory.retention.delete": (
       input: Parameters<typeof retention.selectTrajectoryRuntimeRetentionBatch>[1],
       { open, writeTransaction, admit },
     ) => {
-      const batch = retention.selectTrajectoryRuntimeRetentionBatch(open().db, input);
+      const database = open();
+      const batch = retention.selectTrajectoryRuntimeRetentionBatch(database.db, input);
+      if (batch.refresh) {
+        return retention.deleteTrajectoryRuntimeRetention(database, batch);
+      }
       return writeTransaction(
         "trajectory.runtime.retention.delete",
         "Trajectory retention",
@@ -428,6 +423,8 @@ export async function loadUsageCacheOperations() {
 }
 
 export async function loadAgentVoiceSessionOperations() {
+  const { readRefusedSessionSource } =
+    await import("../config/sessions/session-entry-patch.worker.js");
   const kernel = await import("../talk/client-voice-session-write.kernel.js");
   const store = await import("../talk/client-voice-session-store.js");
   const entries = await import("../config/sessions/session-accessor.sqlite-entry-read.js");
@@ -459,10 +456,17 @@ export async function loadAgentVoiceSessionOperations() {
       });
     },
     "voice.session.mutate": (
-      input: Parameters<typeof kernel.mutateVoiceSessionInDatabase>[1],
+      input: Parameters<typeof kernel.mutateVoiceSessionInDatabase>[1] & {
+        sources?: import("../config/sessions/session-source-authority.js").SessionSourcePredicate[];
+      },
       { writeTransaction, admit },
     ) =>
       writeTransaction(`voice.session.${input.kind}`, "Voice session", (database) => {
+        const refused = readRefusedSessionSource(database, input.sources);
+        if (refused) {
+          admit("transaction", { kind: "voice-session-source", ...refused });
+          throw new Error("Voice session source refusal was not rejected");
+        }
         const entry =
           input.kind === "reserve" && input.transcriptSessionKey
             ? entries.readSessionEntryIdentity(

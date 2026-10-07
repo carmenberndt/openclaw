@@ -10,10 +10,10 @@ import {
 import { runWithSessionTranscriptReadFence } from "../config/sessions/session-transcript-read-fence.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
+import { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-write.js";
 import {
   appendRelayVoiceTranscript,
   createOrResumeClientVoiceSession,
-  ensureClientVoiceAgentSessionEntry,
 } from "./client-voice-session.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);

@@ -27,9 +27,13 @@ vi.mock("../config/sessions/session-accessor.sqlite-transcript-turn.js", async (
   };
 });
 // mock-isolation: Capture digest delivery without loading channel transports.
-vi.mock("../channels/message/runtime.js", () => ({
-  sendDurableMessageBatchCore: sendDurableMessageBatch,
-}));
+vi.mock("../channels/message/runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../channels/message/runtime.js")>();
+  return {
+    ...actual,
+    sendDurableMessageBatchCore: sendDurableMessageBatch,
+  };
+});
 
 export function useClientVoiceSessionHarness() {
   const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);

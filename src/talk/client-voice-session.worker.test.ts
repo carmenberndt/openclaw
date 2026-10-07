@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -6,16 +8,24 @@ import {
   observeSqliteReadSql,
 } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { readSessionTranscriptMessageEvents } from "../config/sessions/session-accessor.sqlite-active-events.js";
+import { captureExternalSessionCommitGuard } from "../config/sessions/session-source-authority.js";
+import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { setTestEnvValue } from "../test-utils/env.js";
+import { prepareClientVoiceSessionClose } from "./client-voice-session-lifecycle.js";
+import { readVoiceSessionRecord } from "./client-voice-session-store.js";
 import { recordMutation, seedSession } from "./client-voice-session.fixture.test-support.js";
 import {
   appendClientVoiceTranscript,
   assertClientVoiceSessionOpen,
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
+  flushClientVoiceSessionWrites,
   isClientVoiceSessionConfirmable,
+  registerClientVoiceConsultRun,
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
 
@@ -84,6 +94,145 @@ describe("client voice session worker contract", () => {
     await rejected;
     expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toBeUndefined();
   });
+
+  it.each([false, true])(
+    "guards cold SDK admission after the FIFO wait (revoked=%s)",
+    async (revoked) => {
+      await seedSession("agent:main:main");
+      const target = { agentId: "cold-sdk", sessionKey: "agent:cold-sdk:main" };
+      const entered = createDeferred();
+      const release = createDeferred();
+      const checked = createDeferred();
+      releaseHeldWrites.push(() => release.resolve());
+      const blocker = runOpenClawAgentWorkerWrite(target, async () => {
+        entered.resolve();
+        await release.promise;
+      });
+      await entered.promise;
+      let allowed = true;
+      const creating = createOrResumeClientVoiceSession({
+        ...target,
+        voiceSessionId: "cold-sdk-voice",
+        origin: "client",
+        requester: captureExternalSessionCommitGuard(() => {
+          checked.resolve();
+          if (!allowed) {
+            throw new Error("SDK authority revoked");
+          }
+        }),
+      });
+      const completed = revoked
+        ? expect(creating).rejects.toThrow("SDK authority revoked")
+        : expect(creating).resolves.toBe("cold-sdk-voice");
+      await checked.promise;
+      allowed = !revoked;
+      release.resolve();
+      await blocker;
+      await completed;
+      expect(existsSync(resolveOpenClawAgentSqlitePath(target))).toBe(!revoked);
+      const database = new DatabaseSync(resolveOpenClawStateSqlitePath(), { readOnly: true });
+      try {
+        expect(
+          database
+            .prepare("SELECT agent_id FROM agent_databases WHERE agent_id = ?")
+            .all(target.agentId),
+        ).toHaveLength(revoked ? 0 : 1);
+      } finally {
+        database.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "keeps delayed effects with the original store and close owner (closing=%s)",
+    async (closing) => {
+      const target = { agentId: "main", sessionKey: "agent:main:main" };
+      const voiceSessionId = "voice-original-source";
+      const runId = "run-original-source";
+      const originalEnv = { ...process.env };
+      const originalStateDir = process.env.OPENCLAW_STATE_DIR!;
+      const persistence = prepareClientVoiceSessionClose();
+      const entered = createDeferred();
+      const resume = createDeferred();
+      let blocker: Promise<void> | undefined;
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await createOrResumeClientVoiceSession({ ...target, voiceSessionId, origin: "client" });
+      const release = await registerClientVoiceConsultRun({ ...target, voiceSessionId, runId });
+      try {
+        setTestEnvValue("OPENCLAW_STATE_DIR", path.join(originalStateDir, "successor"));
+        await createOrResumeClientVoiceSession({ ...target, voiceSessionId, origin: "client" });
+        if (closing) {
+          blocker = runOpenClawAgentWorkerWrite(
+            { agentId: target.agentId, env: originalEnv },
+            async () => {
+              entered.resolve();
+              await resume.promise;
+            },
+          );
+          await entered.promise;
+        }
+        emitTrustedDiagnosticEvent({
+          type: "tool.execution.started",
+          runId,
+          toolCallId: "call-original-source",
+          toolName: "message",
+          mutatingAction: true,
+        });
+        emitTrustedDiagnosticEvent({
+          type: "tool.execution.completed",
+          runId,
+          toolCallId: "call-original-source",
+          toolName: "message",
+          durationMs: 5,
+        });
+        if (closing) {
+          let atDrain: ReturnType<typeof readVoiceSessionRecord>;
+          const drained = persistence.drain().then(() => {
+            atDrain = readVoiceSessionRecord(target.agentId, voiceSessionId, { env: originalEnv });
+          });
+          emitTrustedDiagnosticEvent({
+            type: "tool.execution.started",
+            runId,
+            toolCallId: "too-late",
+            toolName: "message",
+            mutatingAction: true,
+          });
+          // The successor worker roundtrip lets an incorrectly idle original owner settle.
+          await createOrResumeClientVoiceSession({ ...target, voiceSessionId, origin: "client" });
+          resume.resolve();
+          await blocker;
+          await drained;
+          expect(atDrain?.effects).toEqual([
+            expect.objectContaining({ runId, toolName: "message", status: "succeeded" }),
+          ]);
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining("admission is closed"));
+        }
+        await runOpenClawAgentWorkerWrite(
+          { agentId: target.agentId, env: originalEnv },
+          async () => {},
+        );
+        await flushClientVoiceSessionWrites({ agentId: target.agentId, voiceSessionId });
+        expect(
+          clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)?.effects,
+        ).toEqual([]);
+        setTestEnvValue("OPENCLAW_STATE_DIR", originalStateDir);
+        expect(
+          clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)?.effects,
+        ).toEqual([expect.objectContaining({ runId, toolName: "message", status: "succeeded" })]);
+      } finally {
+        resume.resolve();
+        await blocker;
+        await runOpenClawAgentWorkerWrite(
+          { agentId: target.agentId, env: originalEnv },
+          async () => {},
+        );
+        setTestEnvValue("OPENCLAW_STATE_DIR", originalStateDir);
+        release();
+        await persistence.drain();
+        warn.mockRestore();
+      }
+    },
+  );
 
   it("reuses tool facts until the call changes and rejects a cached call after close", async () => {
     const target = { agentId: "main", sessionKey: "agent:main:main" };

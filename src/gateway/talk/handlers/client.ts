@@ -21,14 +21,13 @@ import {
   bindAuthorizedClientVoiceConfirmation,
   type ClientVoiceConfirmationGrant,
 } from "../../../talk/client-voice-confirmation.js";
+import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import {
   appendClientVoiceTranscript,
   assertClientVoiceSessionOpen,
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
-  ensureClientVoiceAgentSessionEntry,
   registerClientVoiceConsultRun,
-  resolveClientVoiceSessionOrigin,
   resolveOpenClientVoiceSessionId,
 } from "../../../talk/client-voice-session.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
@@ -127,6 +126,11 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             agentId,
             sessionKey: params.sessionKey,
             origin: "client",
+            requester: readGatewayRequestMutationAuthority(request).assertCurrent,
+            source: {
+              storePath: target.storePath,
+              assertCurrent: request.sessionMutationAuthorization?.assertCurrent ?? (() => {}),
+            },
             assertCurrent: () => {
               assertStoreCurrent?.();
               readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
@@ -275,19 +279,12 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           sessionMutationAuthorization?.talkSessionTarget ??
           prepareTalkSessionTarget(config, params.sessionKey);
         sessionMutationAuthorization?.assertCurrent();
-        const origin = resolveClientVoiceSessionOrigin({
-          agentId,
-          sessionKey: params.sessionKey,
-          voiceSessionId: params.voiceSessionId,
-        });
-        if (origin === "relay") {
-          throw new Error("relay-owned voice sessions close through talk.session.close");
-        }
         await closeClientVoiceSession({
           agentId,
           sessionKey: params.sessionKey,
           voiceSessionId: params.voiceSessionId,
           config,
+          expectedOrigin: "client",
         });
         const connId = normalizeOptionalString(client?.connId);
         if (connId) {
