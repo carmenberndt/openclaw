@@ -45,10 +45,7 @@ import {
   readSessionColdTranscript,
   type SessionColdArchive,
 } from "./session-cold-storage-state.js";
-import type {
-  SessionSourcePredicateFacts,
-  SessionSourceValidation,
-} from "./session-source-authority.js";
+import type { SessionSourceValidation } from "./session-source-authority.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import {
   createSessionTranscriptFtsInserter,
@@ -99,7 +96,7 @@ export type SessionColdMutationResult = {
   restored: boolean;
   sessionKey?: string;
   turnRebound?: SqliteExpectedSessionTranscriptTurnResult;
-  refusedSource?: { index: number; facts: SessionSourcePredicateFacts };
+  refusedSource?: NonNullable<SessionSourceValidation["refusedSource"]>;
 };
 export type SessionColdMutationPlan = { databaseOptions: SessionColdPlan["databaseOptions"] } & (
   | { kind: "cold-maintain" }
