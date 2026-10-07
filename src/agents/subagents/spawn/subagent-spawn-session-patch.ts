@@ -283,7 +283,6 @@ export async function createInitialSubagentSession(params: {
             : {}),
           ...buildSessionCreationStamp({
             via: "spawn",
-            conversationLink: parentEntry?.conversationLink,
             ...params.creationPolicy,
             ...(!params.incognito
               ? {

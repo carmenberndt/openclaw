@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   ErrorCodes,
   errorShape,
+  validateTalkSessionAcknowledgeMarkParams,
   validateTalkSessionAppendAudioParams,
   validateTalkSessionCancelOutputParams,
   validateTalkSessionCloseParams,
@@ -32,13 +33,14 @@ import { formatForLog } from "../../ws-log.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
 import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
 import {
+  acknowledgeTalkRealtimeRelayMark,
   cancelTalkRealtimeRelayTurn,
-  createTalkRealtimeRelaySession,
   sendTalkRealtimeRelayAudio,
   steerTalkRealtimeRelayAgentRun,
   stopTalkRealtimeRelaySession,
   submitTalkRealtimeRelayToolResult,
-} from "../relay/index.js";
+} from "../relay/operations.js";
+import { createTalkRealtimeRelaySession } from "../relay/session-create.js";
 import {
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
@@ -64,7 +66,6 @@ import {
   stopTalkTranscriptionRelaySession,
 } from "../transcription-relay.js";
 import { prepareTalkVoiceReplacement } from "../voice-selection.js";
-import { acknowledgeTalkSessionMark } from "./session-mark.js";
 
 function respondInvalidRequest(respond: RespondFn, message: string) {
   respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, message));
@@ -93,7 +94,6 @@ function respondOk(respond: RespondFn, payload: unknown = { ok: true }) {
   respond(true, payload, undefined);
 }
 
-/** RPC handlers for gateway-managed Talk sessions and room lifecycle. */
 export const talkSessionHandlers: GatewayRequestHandlers = {
   "talk.session.create": defineValidatedGatewayHandler(
     "talk.session.create",
@@ -475,7 +475,43 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
     },
     talkSessionError,
   ),
-  "talk.session.acknowledgeMark": acknowledgeTalkSessionMark,
+  "talk.session.acknowledgeMark": defineValidatedGatewayHandler(
+    "talk.session.acknowledgeMark",
+    validateTalkSessionAcknowledgeMarkParams,
+    ({ params, respond, client }) => {
+      try {
+        const session = getUnifiedTalkSession(params.sessionId);
+        if (session.kind !== "realtime-relay") {
+          respond(
+            false,
+            undefined,
+            errorShape(
+              ErrorCodes.INVALID_REQUEST,
+              "talk.session.acknowledgeMark requires realtime relay",
+            ),
+          );
+          return;
+        }
+        acknowledgeTalkRealtimeRelayMark({
+          relaySessionId: session.relaySessionId,
+          connId: requireUnifiedTalkSessionConn(session, client?.connId),
+          markName: params.markName,
+        });
+        respond(true, { ok: true }, undefined);
+      } catch (error) {
+        const message = formatForLog(error);
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, message, {
+            details: {
+              talkIssue: { code: "realtime_unavailable", message, phase: "request" },
+            },
+          }),
+        );
+      }
+    },
+  ),
   "talk.session.submitToolResult": defineValidatedGatewayHandler(
     "talk.session.submitToolResult",
     validateTalkSessionSubmitToolResultParams,

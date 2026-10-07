@@ -175,9 +175,9 @@ export function captureSessionEntrySourceAssertion(params: {
               acceptConversationMatches: conversations?.acceptMatches,
             },
           ],
-          release: async () => {
+          release: () => {
             active = false;
-            await retained.release();
+            retained.release();
           },
         };
       } catch (error) {

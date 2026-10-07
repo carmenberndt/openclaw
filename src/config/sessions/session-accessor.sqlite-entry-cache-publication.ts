@@ -682,11 +682,11 @@ export function retainSessionEntryWorkerPublication(params: {
                       if (!currentMetadata(key)) {
                         return undefined;
                       }
-                      const entry = prepared.entries.get(key);
-                      const change = owner.ownerChanges.get(key);
-                      return entry && change && change !== foldedOwnerChanges.get(key)
-                        ? applySessionEntryOwnerChange(entry, change)
-                        : entry;
+                      const selected = prepared.entries.get(key);
+                      const mutation = owner.ownerChanges.get(key);
+                      return selected && mutation && mutation !== foldedOwnerChanges.get(key)
+                        ? applySessionEntryOwnerChange(selected, mutation)
+                        : selected;
                     },
                   }
                 : { kind: "marker", sharingChange, databaseIdentity: params.databaseIdentity },
