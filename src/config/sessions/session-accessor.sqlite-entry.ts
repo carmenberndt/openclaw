@@ -78,7 +78,7 @@ import type {
   SessionEntryPatchGuard,
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
-import { buildSessionCreationStamp } from "./session-entry-provenance.js";
+import { buildInboundSessionCreationStamp } from "./session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";
 import { patchIncognitoSessionEntry } from "./session-incognito-entry-patch.js";
@@ -657,25 +657,6 @@ async function patchSqliteSessionEntrySnapshot(
     ...(options.maintenanceConfig ? { maintenanceConfig: options.maintenanceConfig } : {}),
   });
   return committed;
-}
-
-function buildInboundSessionCreationStamp(ctx: UpdateSessionLastRouteParams["ctx"]) {
-  const senderId = ctx?.SenderId?.trim();
-  return buildSessionCreationStamp(
-    ctx?.SessionCreation ?? {
-      via: "channel",
-      ...(senderId
-        ? {
-            actor: {
-              type: "human",
-              source: "channel",
-              id: senderId,
-              label: ctx?.SenderName?.trim() || undefined,
-            },
-          }
-        : {}),
-    },
-  );
 }
 
 export async function recordInboundSessionMeta(

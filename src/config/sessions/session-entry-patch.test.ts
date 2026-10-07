@@ -1,7 +1,8 @@
+import "./session-entry-patch.test-support.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { deserialize, serialize } from "node:v8";
 import { MessageChannel } from "node:worker_threads";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import {
   isSessionEntryDataSql,
@@ -25,9 +26,6 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import * as agentExecution from "../../state/openclaw-agent-execution.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { buildConversationIdentity } from "./conversation-identity.js";
-import { readConversation, registerConversationAddresses } from "./conversation-registry.js";
-import { resolveConversationRouteFingerprint } from "./conversation-route-fingerprint.js";
 import { resolveSessionLifecycleTimestampsAsync } from "./lifecycle-read.js";
 import { retainPreparedSessionGenerationFacts } from "./session-accessor.sqlite-entry-cache.js";
 import {
@@ -37,9 +35,7 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import {
   patchSessionEntryCore as patchInternalSessionEntry,
-  applySessionEntryOperation,
   replaceSessionEntrySync,
-  updateSessionLastRouteInScope,
 } from "./session-accessor.sqlite-entry.js";
 import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
@@ -57,247 +53,15 @@ import { markSessionTranscriptIndexDirtyInTransaction } from "./session-transcri
 import * as reconcile from "./session-transcript-reconcile.js";
 import type { SessionEntry } from "./types.js";
 
-vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
-  kickSessionEntryMaintenanceAfterWrite() {},
-}));
-vi.mock("./session-history-eviction.js", () => ({ kickSessionHistoryDiskBudgetMaintenance() {} }));
-
-const delivery = vi.hoisted(() => ({
-  afterCommit: undefined as (() => void) | undefined,
-  beforeCommit: undefined as (() => void) | undefined,
-  commands: [] as string[],
-}));
-vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../state/openclaw-agent-execution.js")>();
-  return {
-    ...actual,
-    captureOpenClawAgentDatabaseExecution: (
-      ...args: Parameters<typeof actual.captureOpenClawAgentDatabaseExecution>
-    ): ReturnType<typeof actual.captureOpenClawAgentDatabaseExecution> => {
-      const owner = actual.captureOpenClawAgentDatabaseExecution(...args);
-      return {
-        ...owner,
-        get fileIdentity() {
-          return owner.fileIdentity;
-        },
-        runExisting: (source, operation, options) =>
-          owner.runExisting(
-            source,
-            (worker) =>
-              operation({
-                execute: async (command, commandOptions) => {
-                  delivery.commands.push(command.type);
-                  if (command.type === "session.entry.patch.commit") {
-                    delivery.beforeCommit?.();
-                  }
-                  const result = await worker.execute(command, commandOptions);
-                  if (command.type === "session.entry.patch.commit") {
-                    delivery.afterCommit?.();
-                  }
-                  return result;
-                },
-              }),
-            options,
-          ),
-      };
-    },
-  };
-});
-
-afterEach(() => {
-  delivery.afterCommit = undefined;
-  delivery.beforeCommit = undefined;
-  delivery.commands = [];
-  vi.restoreAllMocks();
-});
-
-function fixture() {
-  const database = openOpenClawAgentDatabase({ agentId: "main" });
-  const scope = {
-    agentId: "main",
-    storePath: database.path,
-    sessionKey: "agent:main:patch-worker",
-  };
-  replaceSessionEntrySync(scope, { sessionId: "original", updatedAt: 1, label: "initial" });
-  return {
-    database,
-    scope,
-    read: () => readExactSessionEntryRow(database, scope.sessionKey)?.entry,
-  };
-}
+const { createSessionEntryPatchFixture: fixture, getSessionEntryPatchDelivery } =
+  await import("./session-entry-patch.test-support.js");
+const delivery = getSessionEntryPatchDelivery();
 
 function patchSessionEntryCore(
   ...[scope, update, options]: Parameters<typeof patchInternalSessionEntry>
 ) {
   return patchInternalSessionEntry(scope, update, { workerGuard: {}, ...options });
 }
-
-it("reduces a fixed patch against the current row in one worker request without losing foreign metadata", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const f = fixture();
-    const original = f.read()!;
-    delivery.beforeCommit = () => {
-      delivery.beforeCommit = undefined;
-      replaceSessionEntrySync(f.scope, { ...original, compactionCount: 4, label: "foreign edit" });
-    };
-    const published: SessionEntry[] = [];
-    const result = await applySessionEntryOperation(
-      f.scope,
-      {
-        kind: "compaction-accounting",
-        expected: {
-          sessionId: original.sessionId,
-          lifecycleRevision: original.lifecycleRevision,
-          activeWriterRunId: original.activeWriterRunId,
-        },
-        accounting: { amount: 2, tokensAfter: 123 },
-      },
-      { skipMaintenance: true, onCommitted: (entry) => published.push(entry) },
-    );
-    expect(delivery.commands.length).toBeLessThanOrEqual(1);
-    expect(result).toMatchObject({ compactionCount: 6, totalTokens: 123, label: "foreign edit" });
-    expect(f.read()).toEqual(result);
-    expect(published).toEqual([result]);
-
-    const current = f.read()!;
-    for (const expected of [
-      { sessionId: "retired" },
-      { sessionId: current.sessionId, lifecycleRevision: "retired" },
-      { sessionId: current.sessionId, activeWriterRunId: "retired" },
-    ]) {
-      const unchanged = await applySessionEntryOperation(
-        f.scope,
-        { kind: "compaction-accounting", expected, accounting: { amount: 10 } },
-        { skipMaintenance: true, onCommitted: (entry) => published.push(entry) },
-      );
-      expect(unchanged).toEqual(current);
-      expect(f.read()).toEqual(current);
-    }
-    expect(published).toEqual([result]);
-  });
-});
-
-it("rechecks conversation authority before a fixed patch commits", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const f = fixture();
-    const identity = buildConversationIdentity({
-      channel: "reef",
-      accountId: "default",
-      kind: "direct",
-      peerId: "patch-peer",
-      deliveryTarget: "user:patch-peer",
-    })!;
-    await registerConversationAddresses(f.scope, [identity]);
-    const conversation = (await readConversation(f.scope, identity.conversationRef))!;
-    const workerGuard = {
-      conversation: {
-        conversationRef: identity.conversationRef,
-        expectedRouteFingerprint: resolveConversationRouteFingerprint(conversation),
-      },
-    };
-    const onCommitted = vi.fn();
-    const accepted = await applySessionEntryOperation(
-      f.scope,
-      { kind: "fields", patch: { label: "authorized" } },
-      { skipMaintenance: true, workerGuard, onCommitted },
-    );
-    expect(accepted).toMatchObject({ label: "authorized" });
-    expect(f.read()).toEqual(accepted);
-    expect(onCommitted).toHaveBeenCalledExactlyOnceWith(accepted);
-    onCommitted.mockClear();
-
-    delivery.beforeCommit = () => {
-      delivery.beforeCommit = undefined;
-      const foreign = new (requireNodeSqlite().DatabaseSync)(f.database.path);
-      try {
-        foreign
-          .prepare("UPDATE conversations SET delivery_target = ? WHERE conversation_id = ?")
-          .run("user:replacement", identity.conversationRef);
-      } finally {
-        foreign.close();
-      }
-    };
-    await expect(
-      applySessionEntryOperation(
-        f.scope,
-        { kind: "fields", patch: { label: "must not persist" } },
-        { skipMaintenance: true, workerGuard, onCommitted },
-      ),
-    ).rejects.toThrow("Conversation is no longer available");
-    expect(f.read()).toEqual(accepted);
-    expect(onCommitted).not.toHaveBeenCalled();
-    expect(await readConversation(f.scope, identity.conversationRef)).toMatchObject({
-      target: "user:replacement",
-    });
-  });
-});
-
-it("retains typed source and conversation authority when updating the last route", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const f = fixture();
-    const identity = buildConversationIdentity({
-      channel: "reef",
-      accountId: "default",
-      kind: "direct",
-      peerId: "route-peer",
-      deliveryTarget: "user:route-peer",
-    })!;
-    await registerConversationAddresses(f.scope, [identity]);
-    const conversation = (await readConversation(f.scope, identity.conversationRef))!;
-    let sourceCurrent = true;
-    const refusal = new Error("route source was revoked");
-    const source = captureSessionEntrySourceAssertion({
-      scope: f.scope,
-      expected: f.read(),
-      fields: ["sessionId"],
-      assertCurrent() {
-        throw new Error("typed route source must use its prepared authority");
-      },
-      assertHostCurrent() {
-        if (!sourceCurrent) {
-          throw refusal;
-        }
-      },
-      refuse() {
-        throw refusal;
-      },
-    });
-    const updateRoute = () =>
-      updateSessionLastRouteInScope(f.scope, {
-        channel: "reef",
-        to: "user:route-peer",
-        assertCommitAllowed: source,
-        workerGuard: {
-          conversation: {
-            conversationRef: identity.conversationRef,
-            expectedRouteFingerprint: resolveConversationRouteFingerprint(conversation),
-          },
-        },
-      });
-    const accepted = await updateRoute();
-    expect(accepted).toMatchObject({
-      delivery: { route: { channel: "reef", target: { to: "user:route-peer" } } },
-    });
-
-    sourceCurrent = false;
-    await expect(updateRoute()).rejects.toBe(refusal);
-    expect(f.read()).toEqual(accepted);
-    sourceCurrent = true;
-    delivery.beforeCommit = () => {
-      delivery.beforeCommit = undefined;
-      const foreign = new (requireNodeSqlite().DatabaseSync)(f.database.path);
-      try {
-        foreign
-          .prepare("UPDATE conversations SET delivery_target = ? WHERE conversation_id = ?")
-          .run("user:replacement", identity.conversationRef);
-      } finally {
-        foreign.close();
-      }
-    };
-    await expect(updateRoute()).rejects.toThrow("Conversation is no longer available");
-    expect(f.read()).toEqual(accepted);
-  });
-});
 
 it("preserves cold serialization and snapshot revisions for synchronous SDK commit guards", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
