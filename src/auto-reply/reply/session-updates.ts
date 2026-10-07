@@ -9,7 +9,7 @@ import {
 import { withSandboxRuntimeStatusInWorker } from "../../agents/sandbox/runtime-status.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
-import { projectCompactionAccountingPatch } from "../../config/sessions/session-entry-projection.js";
+import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import {
   sessionEntryCommitGuardOptions,
@@ -102,6 +102,14 @@ async function persistSkillSnapshot(params: {
   return { entry: persistedEntry ?? undefined, updated: Boolean(persistedEntry) && updated };
 }
 
+function readSkillSnapshotState(entry: SessionEntry | undefined) {
+  return {
+    sessionEntry: entry,
+    skillsSnapshot: entry?.skillsSnapshot,
+    systemSent: entry?.systemSent ?? false,
+  };
+}
+
 export async function ensureSkillSnapshot(params: {
   agentId: string;
   sessionEntry?: SessionEntry;
@@ -127,11 +135,7 @@ export async function ensureSkillSnapshot(params: {
   if (isFastTestRuntimeEnv()) {
     // In fast unit-test runs we skip filesystem scanning, watchers, and session-store writes.
     // Dedicated skills tests cover snapshot generation behavior.
-    return {
-      sessionEntry: params.sessionEntry,
-      skillsSnapshot: params.sessionEntry?.skillsSnapshot,
-      systemSent: params.sessionEntry?.systemSent ?? false,
-    };
+    return readSkillSnapshotState(params.sessionEntry);
   }
 
   const {
@@ -218,11 +222,7 @@ export async function ensureSkillSnapshot(params: {
       skillsSnapshot: skillSnapshot,
     });
     if (!updated) {
-      return {
-        sessionEntry: persistedEntry,
-        skillsSnapshot: persistedEntry?.skillsSnapshot,
-        systemSent: persistedEntry?.systemSent ?? false,
-      };
+      return readSkillSnapshotState(persistedEntry);
     }
     nextEntry = persistedEntry;
     systemSent = persistedEntry?.systemSent ?? systemSent;
@@ -252,11 +252,7 @@ export async function ensureSkillSnapshot(params: {
       skillsSnapshot,
     });
     if (!updated) {
-      return {
-        sessionEntry: persistedEntry,
-        skillsSnapshot: persistedEntry?.skillsSnapshot,
-        systemSent: persistedEntry?.systemSent ?? false,
-      };
+      return readSkillSnapshotState(persistedEntry);
     }
     nextEntry = persistedEntry;
   }
@@ -277,11 +273,7 @@ export async function ensureSkillSnapshot(params: {
       current?.sessionId !== expectedSession?.sessionId ||
       current?.lifecycleRevision !== expectedSession?.lifecycleRevision
     ) {
-      return {
-        sessionEntry: current,
-        skillsSnapshot: current?.skillsSnapshot,
-        systemSent: current?.systemSent ?? false,
-      };
+      return readSkillSnapshotState(current);
     }
     nextEntry = current;
     systemSent = current?.systemSent ?? false;
@@ -324,25 +316,23 @@ export async function incrementCompactionCount(params: {
     lifecycleRevision: initial.lifecycleRevision,
     activeWriterRunId: initial.activeWriterRunId,
   };
-  const update = (current: InternalSessionEntry): Partial<InternalSessionEntry> | null => {
-    if (
-      !(authorize?.() ?? true) ||
-      current.sessionId !== expected.sessionId ||
-      current.lifecycleRevision !== expected.lifecycleRevision ||
-      current.activeWriterRunId !== expected.activeWriterRunId
-    ) {
-      return null;
-    }
-    // The writer-serialized row owns the count, not the caller's pre-await cache.
-    return projectCompactionAccountingPatch(current, params);
-  };
   let committed = false;
   const authorityRevoked = new Error("compaction accounting authority revoked");
   let persisted: InternalSessionEntry | null;
   try {
-    persisted = await patchSessionEntryCore(
+    persisted = await applySessionEntryOperation(
       { agentId: params.agentId, storePath, sessionKey },
-      update,
+      {
+        kind: "compaction-accounting",
+        expected,
+        accounting: {
+          amount: params.amount,
+          compactionKind: params.compactionKind,
+          now: params.now,
+          tokensAfter: params.tokensAfter,
+          transcriptByteCompactionLatch: params.transcriptByteCompactionLatch,
+        },
+      },
       {
         onCommitted: (entry) => {
           committed = true;
@@ -352,11 +342,13 @@ export async function incrementCompactionCount(params: {
           }
         },
         workerGuard: {
-          assertCurrent: () => {
-            if (authorize?.() === false) {
-              throw authorityRevoked;
-            }
-          },
+          assertCurrent: authorize
+            ? () => {
+                if (!authorize()) {
+                  throw authorityRevoked;
+                }
+              }
+            : undefined,
         },
       },
     );

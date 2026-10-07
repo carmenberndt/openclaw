@@ -57,7 +57,7 @@ export function createIncognitoEntryPatchWorker(
               options: {
                 consumePendingReset: input.consumePendingReset,
                 providerReviewMutation: input.providerReviewMutation,
-                workerGuard: { cliHistory: input.cliHistory },
+                workerGuard: { cliHistory: input.cliHistory, conversation: input.conversation },
                 assertCommitAllowed() {
                   sourceValidation = readSessionSourceValidation(
                     database,
