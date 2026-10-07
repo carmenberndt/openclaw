@@ -36,7 +36,6 @@ import type {
 } from "./session-entry-patch.types.js";
 import {
   acceptSessionSourceValidation,
-  prepareSessionSourceAuthority,
   type PreparedSessionSourceAuthority,
   type SessionSourceValidation,
 } from "./session-source-authority.js";
@@ -139,11 +138,8 @@ export async function patchSessionEntryInWorker(params: {
           );
         }
       }
+      // This write may change its source; callers authorize subsequent effects separately.
       await releaseSource();
-      if (committed.entry !== null && params.guard?.source) {
-        source = await prepareSessionSourceAuthority(params.guard.source);
-        source.assertCurrent();
-      }
       return { entry: committed.entry, wrote: Boolean(committed.publication) };
     },
   });

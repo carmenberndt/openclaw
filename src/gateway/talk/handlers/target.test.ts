@@ -596,6 +596,7 @@ describe("Talk target preparation through Gateway authorization", () => {
         );
       }
       const ensure = clientVoiceSession.ensureClientVoiceAgentSessionEntry;
+      let changedAfterEnsure = false;
       vi.spyOn(clientVoiceSession, "ensureClientVoiceAgentSessionEntry").mockImplementationOnce(
         async (params) => {
           const sessionId = await ensure(params);
@@ -609,6 +610,7 @@ describe("Talk target preparation through Gateway authorization", () => {
               ...(change === "incognito" ? { incognito: true } : { visibility: "read-only" }),
             });
           }
+          changedAfterEnsure = true;
           return sessionId;
         },
       );
@@ -616,6 +618,7 @@ describe("Talk target preparation through Gateway authorization", () => {
         ...createParams,
         voiceSessionId: "provisional",
       });
+      expect(changedAfterEnsure).toBe(true);
       expect(respond).toHaveBeenCalledWith(
         false,
         undefined,

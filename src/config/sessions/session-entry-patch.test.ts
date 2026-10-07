@@ -399,6 +399,66 @@ it.each(["after updater", "final grant"] as const)(
   },
 );
 
+it.each(["shared SQLite", "custom suffixed"] as const)(
+  "patches the selected physical entry through a %s source",
+  async (kind) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const unsuffixed = openOpenClawAgentDatabase({
+        agentId: "main",
+        path: state.statePath("source.sqlite"),
+      });
+      const database =
+        kind === "shared SQLite"
+          ? unsuffixed
+          : openOpenClawAgentDatabase({
+              agentId: "primary",
+              path: state.statePath("source.primary.sqlite"),
+            });
+      const scope = {
+        agentId: "primary",
+        sessionKey: "agent:primary:source-owner",
+        storePath: kind === "shared SQLite" ? database.path : state.statePath("source.json"),
+      };
+      const expected = { sessionId: "source", updatedAt: 1, label: "selected source" };
+      if (database !== unsuffixed) {
+        replaceSessionEntrySync(
+          { ...scope, storePath: unsuffixed.path },
+          { ...expected, label: "other store" },
+        );
+      }
+      replaceSessionEntrySync({ ...scope, storePath: database.path }, expected);
+      const source = captureSessionEntrySourceAssertion({
+        scope,
+        expected,
+        fields: ["sessionId", "label"],
+        assertCurrent() {},
+        refuse() {
+          throw new Error("Selected physical entry changed");
+        },
+      });
+      const sql = observeHostDataSql();
+      try {
+        await expect(
+          patchSessionEntryCore(scope, () => ({ label: "patched source" }), {
+            workerGuard: { source },
+          }),
+        ).resolves.toMatchObject({ sessionId: "source", label: "patched source" });
+        expect(sql.queries.filter(isSessionEntryDataSql)).toEqual([]);
+      } finally {
+        sql.restore();
+      }
+      expect(readExactSessionEntryRow(database, scope.sessionKey)?.entry.label).toBe(
+        "patched source",
+      );
+      if (database !== unsuffixed) {
+        expect(readExactSessionEntryRow(unsuffixed, scope.sessionKey)?.entry.label).toBe(
+          "other store",
+        );
+      }
+    });
+  },
+);
+
 it("refuses a captured entry source changed during planning without reading it on the caller thread", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const f = fixture();

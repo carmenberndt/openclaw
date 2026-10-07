@@ -1,3 +1,4 @@
+import { prepareSqliteScope } from "../config/sessions/session-accessor.sqlite-scope.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import {
   releaseSessionSourceAuthorities,
@@ -66,8 +67,14 @@ export async function prepareSessionSharingSource(
   if (!target.readSource && !identity.key.startsWith("file:")) {
     throw new Error("Session sharing source is unavailable");
   }
+  const env = captureSessionTranscriptStorageEnvironment(process.env);
   const source: CapturedSessionEntryReadSource = target.readSource ?? {
-    agentId: target.agentId,
+    agentId: await prepareSqliteScope({
+      agentId: target.agentId,
+      sessionKey: target.storeKey,
+      storePath: candidate.physicalPath,
+      env,
+    }).then((scope) => scope.databaseAgentId ?? scope.agentId),
     path: candidate.physicalPath,
     databaseIdentity: identity.key.slice("file:".length),
     databaseBirthtime: identity.birthtime,
@@ -96,7 +103,6 @@ export async function prepareSessionSharingSource(
     }
   };
   assertSourceCurrent();
-  const env = captureSessionTranscriptStorageEnvironment(process.env);
   const retained = retainSessionHistoryWorkerDatabase({
     agentId: source.agentId,
     path: source.path,

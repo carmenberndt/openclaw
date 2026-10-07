@@ -103,9 +103,9 @@ export function incognitoEntryPublication<Key extends keyof IncognitoEntryOperat
         throw new Error("Session source refusal was not rejected");
       }
       if (isRecord(facts) && facts.guarded === true) {
-        // SAFETY: The paired entry kernel supplies the source validation for this grant.
         authorizePrepared?.(
           undefined,
+          // SAFETY: The paired entry kernel supplies the source validation for this grant.
           facts.sourceValidation as SessionSourceValidation | undefined,
         );
       }

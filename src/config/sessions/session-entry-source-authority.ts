@@ -1,11 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
 import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
-import {
-  assertExistingDatabaseIdentity,
-  readDatabasePathIdentitySync,
-} from "../../infra/sqlite-worker-identity.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
+import { prepareSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import {
   releaseSessionSourceAuthorities,
@@ -15,9 +13,12 @@ import {
 } from "./session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target-paths.js";
 import {
+  assertSessionStoreReadCandidate,
+  captureSessionStoreCandidateIdentities,
   captureSessionStoreReadCandidate,
   isSessionStoreReadCandidateCurrent,
 } from "./session-store-read-candidates.js";
+import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 import { retainSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
@@ -45,40 +46,57 @@ export function captureSessionEntrySourceAssertion(params: {
   const locator = captureSessionStoreReadCandidate(
     resolveUnsuffixedSqliteTargetFromSessionStorePath(params.scope.storePath).path,
   );
-  const candidate = params.readSource
-    ? captureSessionStoreReadCandidate(params.readSource.path)
-    : locator;
-  const identity = readDatabasePathIdentitySync(candidate.physicalPath);
-  const source = params.readSource ?? {
-    agentId: params.scope.agentId,
-    path: candidate.physicalPath,
-    databaseIdentity: identity.key.slice("file:".length),
-    databaseBirthtime: identity.birthtime,
-  };
+  const candidates = params.readSource
+    ? [captureSessionStoreReadCandidate(params.readSource.path)]
+    : captureSessionStoreReadCandidates(params.scope.storePath);
+  const identities = captureSessionStoreCandidateIdentities(candidates);
   const fields = [...params.fields];
   const expected: Partial<SessionEntry> | undefined = params.expected
     ? structuredClone(Object.fromEntries(fields.map((field) => [field, params.expected?.[field]])))
     : undefined;
   const env = captureSessionTranscriptStorageEnvironment(params.scope.env ?? process.env);
-  const assertCaptured = () => {
-    params.assertHostCurrent?.();
-    if (
-      !identity.key.startsWith("file:") ||
-      typeof source.databaseIdentity !== "string" ||
-      source.path !== candidate.physicalPath ||
-      !isSessionStoreReadCandidateCurrent(locator) ||
-      !isSessionStoreReadCandidateCurrent(candidate)
-    ) {
-      params.refuse();
-    }
-    assertExistingDatabaseIdentity(
-      source.path,
-      `file:${source.databaseIdentity}`,
-      source.databaseBirthtime,
-    );
-  };
+  const scope = { ...params.scope, env };
   return Object.assign(() => params.assertCurrent(), {
     async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
+      params.assertHostCurrent?.();
+      if (![locator, ...candidates].every(isSessionStoreReadCandidateCurrent)) {
+        params.refuse();
+      }
+      const target = params.readSource ?? toDatabaseOptions(await prepareSqliteScope(scope));
+      if (!target.path) {
+        params.refuse();
+      }
+      let physicalPath: string;
+      try {
+        physicalPath = assertSessionStoreReadCandidate(target.path, candidates);
+      } catch {
+        params.refuse();
+      }
+      const identity = identities.get(physicalPath);
+      if (!identity?.key.startsWith("file:")) {
+        params.refuse();
+      }
+      const source = params.readSource ?? {
+        agentId: target.agentId,
+        path: physicalPath,
+        databaseIdentity: identity.key.slice("file:".length),
+        databaseBirthtime: identity.birthtime,
+      };
+      const assertCaptured = () => {
+        params.assertHostCurrent?.();
+        if (
+          typeof source.databaseIdentity !== "string" ||
+          source.path !== physicalPath ||
+          ![locator, ...candidates].every(isSessionStoreReadCandidateCurrent)
+        ) {
+          params.refuse();
+        }
+        assertExistingDatabaseIdentity(
+          source.path,
+          `file:${source.databaseIdentity}`,
+          source.databaseBirthtime,
+        );
+      };
       assertCaptured();
       const database = { agentId: source.agentId, path: source.path, env };
       const native = params.prepareConversations
@@ -108,15 +126,13 @@ export function captureSessionEntrySourceAssertion(params: {
       };
       try {
         const result = await retained.owner.readExactEntries({
-          sessionKeys: [params.scope.sessionKey],
+          sessionKeys: [scope.sessionKey],
           projection: "full",
           includeAuthorization: true,
           env,
         });
         assertCurrent();
-        const entry = result.entries.find(
-          (row) => row.sessionKey === params.scope.sessionKey,
-        )?.entry;
+        const entry = result.entries.find((row) => row.sessionKey === scope.sessionKey)?.entry;
         if (
           result.databaseIdentity?.identity !== source.databaseIdentity ||
           result.databaseIdentity?.birthtime !== source.databaseBirthtime ||
@@ -150,7 +166,7 @@ export function captureSessionEntrySourceAssertion(params: {
             {
               predicate: {
                 source,
-                sessionKey: params.scope.sessionKey,
+                sessionKey: scope.sessionKey,
                 fields,
                 expected,
                 ...(conversations ? { conversationAlternatives: conversations.alternatives } : {}),
