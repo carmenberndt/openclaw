@@ -23,13 +23,13 @@ describe("client voice session recovery", () => {
   });
 
   it("closes stale records and leaves recent records open", async () => {
-    const stale = createOrResumeClientVoiceSession({
+    const stale = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:stale",
       origin: "client",
       now: 1,
     });
-    const recent = createOrResumeClientVoiceSession({
+    const recent = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:recent",
       origin: "client",
@@ -50,13 +50,13 @@ describe("client voice session recovery", () => {
   it("does not close a call resumed after the stale candidate read", async () => {
     const now = 6 * 60 * 60_000 + 2;
     const target = { agentId: "main", sessionKey: "agent:main:main", origin: "client" as const };
-    const voiceSessionId = createOrResumeClientVoiceSession({ ...target, now: 1 });
+    const voiceSessionId = await createOrResumeClientVoiceSession({ ...target, now: 1 });
     const lookup = voiceSessionReads.lookupClientVoiceSessions;
     const read = vi
       .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
       .mockImplementationOnce(async (request) => {
         const candidates = await lookup(request);
-        createOrResumeClientVoiceSession({ ...target, voiceSessionId, now });
+        await createOrResumeClientVoiceSession({ ...target, voiceSessionId, now });
         return candidates;
       });
     try {
@@ -70,7 +70,7 @@ describe("client voice session recovery", () => {
   it("honors an explicit close that joins skipped stale recovery", async () => {
     const now = 6 * 60 * 60_000 + 2;
     const target = { agentId: "main", sessionKey: "agent:main:main", origin: "client" as const };
-    const voiceSessionId = createOrResumeClientVoiceSession({ ...target, now: 1 });
+    const voiceSessionId = await createOrResumeClientVoiceSession({ ...target, now: 1 });
     const entered = createDeferred();
     const release = createDeferred();
     // oxlint-disable-next-line typescript/unbound-method -- Invoked below with the original registry receiver.
@@ -87,7 +87,7 @@ describe("client voice session recovery", () => {
     const stale = closeStaleClientVoiceSessions({ agentId: "main", config: {}, now });
     try {
       await entered.promise;
-      createOrResumeClientVoiceSession({ ...target, voiceSessionId, now });
+      await createOrResumeClientVoiceSession({ ...target, voiceSessionId, now });
       const explicit = closeClientVoiceSession({ ...target, voiceSessionId, config: {}, now });
       release.resolve();
       await Promise.all([stale, explicit]);

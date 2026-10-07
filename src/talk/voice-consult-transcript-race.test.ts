@@ -93,7 +93,7 @@ afterEach(async () => {
 it("keeps the voice transcript from failing an in-flight agent consult", async () => {
   const { appendConsultReply, scope, sessionKey, storePath } =
     await prepareConsultTurn("voice-consult-relay");
-  const voiceSessionId = createOrResumeClientVoiceSession({
+  const voiceSessionId = await createOrResumeClientVoiceSession({
     agentId,
     sessionKey,
     origin: "relay",

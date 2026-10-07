@@ -11,7 +11,6 @@ import type {
   SessionGoalOperationResult,
 } from "../../config/sessions/goals-operations.js";
 import { withSessionPendingInputAuthorityGuard } from "../../config/sessions/session-pending-input-authority.js";
-import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
 import { logVerbose } from "../../globals.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -52,6 +51,7 @@ import {
   createChatSendMessageInjectionStarter,
   settleChatSendPreAckMessageInjection,
 } from "./chat-send-message-injection.js";
+import type { ChatSendInternalOptions } from "./chat-send-options.js";
 import { applyChatSendReplyContextFields } from "./chat-send-reply-context.js";
 import { prepareAndAdmitChatSend } from "./chat-send-setup.js";
 import { prepareChatSendUserTurn } from "./chat-send-user-turn.js";
@@ -63,16 +63,6 @@ import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { publishCommittedSessionGoalChange } from "./session-goal-change.js";
 import type { GatewayRequestHandlerOptions, SessionMutationAuthorization } from "./types.js";
-
-type ChatSendInternalOptions = {
-  providerReviewAcknowledgment?: ProviderReviewAcknowledgment;
-  goalResume?: SessionGoalOperation & { action: "resume" };
-  trustedSystemInput?: boolean;
-  transcript?: Parameters<typeof createGatewayChatUserTurnController>[0]["transcript"];
-  prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
-  toolsAllow?: string[];
-  skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
-};
 
 const mediaDocumentContextLoader = createLazyImportLoader(
   () => import("../../media-understanding/file-context.js"),
@@ -220,6 +210,7 @@ async function handleChatSendWithOptions(
     });
   let pendingStageAttempted = false;
   let replyAdmissionTicket: ReturnType<typeof reserveReplyAdmissionTicket>;
+  let releaseBeforeDispatch: void | (() => void) = undefined;
   try {
     const assertInputAdmissionCurrent = () => {
       admission.assertClientUploadAllowed?.();
@@ -562,6 +553,14 @@ async function handleChatSendWithOptions(
       prepareAttachmentsMs,
       chatSendTraceAttributes,
     });
+    if (options?.beforeDispatch) {
+      assertInputAdmissionCurrent();
+      releaseBeforeDispatch = await options.beforeDispatch({
+        runId: clientRunId,
+        assertCurrent: assertInputAdmissionCurrent,
+      });
+      assertInputAdmissionCurrent();
+    }
     context.addChatRun(clientRunId, {
       sessionKey,
       agentId: selectedAgent.agentId,
@@ -594,6 +593,8 @@ async function handleChatSendWithOptions(
     diagnostics.acknowledge();
     context.recordClientActivity?.(client);
     const chatSendAckedAtMs = chatSendTiming?.ackedAtMs ?? performance.now();
+    // Dispatch owns execution from this point, including deferred and collected turns.
+    releaseBeforeDispatch = undefined;
     startChatDispatch({
       replyAdmissionTicket,
       diagnostics,
@@ -641,6 +642,7 @@ async function handleChatSendWithOptions(
       userTurn,
     });
   } catch (err) {
+    releaseBeforeDispatch?.();
     replyAdmissionTicket?.release();
     await handleChatSendSetupError({
       // Uncommitted Goal admissions may retry with their original identity. Committed
@@ -712,7 +714,7 @@ export async function handleTrustedInternalChatSend(
   onAdmissionOwned?: () => Promise<boolean>,
   inputOptions?: Pick<
     ChatSendInternalOptions,
-    "transcript" | "toolsAllow" | "prepareAssistantTranscriptMessage"
+    "transcript" | "toolsAllow" | "prepareAssistantTranscriptMessage" | "beforeDispatch"
   >,
 ): Promise<void> {
   await handleChatSendWithOptions(options, onAdmissionOwned, undefined, {

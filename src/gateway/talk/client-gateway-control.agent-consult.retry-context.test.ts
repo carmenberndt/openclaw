@@ -93,7 +93,7 @@ describe("Talk client agent consult retry context", () => {
       timestamp: now + 1,
     });
     mocks.consultRealtimeVoiceAgent.mockImplementationOnce(async (params: ConsultParams) => {
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+      await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
       await params.agentRuntime.runEmbeddedAgent(coreParams);
       return { text: "done" };
     });

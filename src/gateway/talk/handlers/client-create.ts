@@ -15,6 +15,11 @@ import {
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
+import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
+import {
+  captureClientVoiceSessionWriter,
+  type ClientVoiceSessionWriter,
+} from "../../../talk/client-voice-session-write.js";
 import {
   appendClientVoiceTranscript,
   closeClientVoiceSession,
@@ -31,6 +36,7 @@ import {
 } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProvider } from "../../../talk/provider-resolver.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
+import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandler } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
@@ -61,14 +67,16 @@ import {
 
 const REALTIME_VOICE_CLIENT_SESSION_MIN_TTL_MS = 5_000;
 
-export const createTalkClient: GatewayRequestHandler = async ({
-  params,
-  respond,
-  context,
-  client,
-  sessionMutationAuthorization,
-  sessionMutationCommitGuard,
-}) => {
+export const createTalkClient: GatewayRequestHandler = async (request) => {
+  const {
+    params,
+    respond,
+    context,
+    client,
+    sessionMutationAuthorization,
+    sessionMutationCommitGuard,
+  } = request;
+  const requester = readGatewayRequestMutationAuthority(request);
   if (!assertValidParams(params, validateTalkClientCreateParams, "talk.client.create", respond)) {
     return;
   }
@@ -219,17 +227,21 @@ export const createTalkClient: GatewayRequestHandler = async ({
           "Gateway-owned realtime sessions require a connected client",
         );
       }
+      let closingWriter: ClientVoiceSessionWriter | undefined;
       const closeLogicalSession = async () => {
         unregisterVoiceSession?.();
         if (!logicalSessionCreated) {
           return;
         }
-        await closeClientVoiceSession({
-          agentId,
-          sessionKey,
-          voiceSessionId: activeVoiceSessionId!,
-          config: runtimeConfig,
-        });
+        await closeClientVoiceSession(
+          {
+            agentId,
+            sessionKey,
+            voiceSessionId: activeVoiceSessionId!,
+            config: runtimeConfig,
+          },
+          closingWriter,
+        );
         if (ownerConnId) {
           forgetLegacyVoiceBinding(
             ownerConnId,
@@ -269,23 +281,40 @@ export const createTalkClient: GatewayRequestHandler = async ({
             getToolAuthorityOverlay: (source) =>
               consultRunner.getToolAuthorityOverlay(undefined, source),
             appendTranscript: ({ entryId, role, text, confirmation }) =>
-              appendClientVoiceTranscript({
-                agentId,
-                sessionKey,
-                sessionTarget,
-                voiceSessionId: activeVoiceSessionId!,
-                entryId,
-                role,
-                text,
-                confirmation,
-                config: runtimeConfig,
-              }),
+              appendClientVoiceTranscript(
+                {
+                  agentId,
+                  sessionKey,
+                  sessionTarget,
+                  voiceSessionId: activeVoiceSessionId!,
+                  entryId,
+                  role,
+                  text,
+                  confirmation,
+                  config: runtimeConfig,
+                },
+                closingWriter,
+              ),
             flushTranscript: () =>
-              flushClientVoiceSessionWrites({
-                agentId,
-                voiceSessionId: activeVoiceSessionId!,
-              }),
+              flushClientVoiceSessionWrites(
+                {
+                  agentId,
+                  voiceSessionId: activeVoiceSessionId!,
+                },
+                closingWriter,
+              ),
             closeLogicalSession,
+            withCloseSettlement: (run) =>
+              withClientVoiceSessionSettlement(async () => {
+                const writer = captureClientVoiceSessionWriter({ agentId });
+                closingWriter = writer;
+                try {
+                  await run();
+                } finally {
+                  closingWriter = undefined;
+                  await writer.release();
+                }
+              }),
           })
         : undefined;
       const gatewayControl = gatewayControlOwner
@@ -390,7 +419,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
           }).catch((error: unknown) =>
             context.logGateway.warn(`talk voice session recovery failed: ${formatForLog(error)}`),
           );
-          const voiceSessionId = createOrResumeClientVoiceSession({
+          const voiceSessionId = await createOrResumeClientVoiceSession({
             agentId,
             sessionKey,
             provider: resolution.provider.id,
@@ -400,9 +429,21 @@ export const createTalkClient: GatewayRequestHandler = async ({
             transcriptCapable:
               wantsGatewayControl || params.capabilities?.includes("voice-transcript") === true,
             voiceSessionId: activeVoiceSessionId ?? requestedVoiceSessionId,
+            assertCurrent: () => {
+              requester.assertPreparationCurrent();
+              replacement?.assertCurrent(target);
+              gatewayControlOwner?.assertOpen();
+              if (sessionEntryDeadlineAt !== undefined && Date.now() >= sessionEntryDeadlineAt) {
+                throw new Error("Realtime browser session expired during startup; try again");
+              }
+            },
           });
           activeVoiceSessionId = voiceSessionId;
           logicalSessionCreated = true;
+          sessionMutationCommitGuard?.();
+          sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
+          replacement?.assertCurrent(target);
+          gatewayControlOwner?.assertOpen();
           const connId = ownerConnId;
           if (connId) {
             rememberLegacyVoiceBinding({

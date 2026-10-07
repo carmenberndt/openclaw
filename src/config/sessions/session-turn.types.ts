@@ -1,3 +1,7 @@
+import type {
+  ClientVoiceRunBinding,
+  ClientVoiceSessionRecord,
+} from "../../talk/client-voice-session-store.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import type {
   SessionTranscriptTurnMutation,
@@ -23,6 +27,7 @@ import type {
 } from "./session-transcript-turn-lifecycle.types.js";
 import type { SessionEntry } from "./types.js";
 export type SqliteExpectedSessionTranscriptTurnResult = {
+  voiceSession?: ClientVoiceSessionRecord;
   sessionTurnMutationResult?: SessionTranscriptTurnMutationResult;
   appendedMessages: TranscriptMessageAppendResult<unknown>[];
   rejectedReason?: "session-rebound";
@@ -32,6 +37,8 @@ export type SqliteExpectedSessionTranscriptTurnResult = {
 };
 
 export type SqliteSessionTurnOptions = {
+  /** Same-store voice bookkeeping commits atomically with its reserved transcript event. */
+  voiceTranscript?: ClientVoiceRunBinding & { failureKey: string; role: "user" | "assistant" };
   workerPrepared?: true;
   preparedGoalId?: string;
   assertCurrent?: () => void;

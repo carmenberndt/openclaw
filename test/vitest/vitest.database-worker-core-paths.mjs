@@ -902,6 +902,15 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/pdf-tool.resources.test.ts",
   "src/talk/agent-consult-runtime.lineage.test.ts",
   "src/talk/agent-consult-runtime.storage.test.ts",
+  "src/talk/agent-consult-runtime.test.ts",
+  "src/talk/client-voice-confirmation-lifecycle.test.ts",
+  "src/talk/client-voice-confirmation-transcript.test.ts",
+  "src/talk/client-voice-session.digest-retry.test.ts",
+  "src/talk/client-voice-session.recovery.test.ts",
+  "src/talk/client-voice-session.startup.test.ts",
+  "src/talk/client-voice-session.test.ts",
+  "src/talk/client-voice-session.worker.test.ts",
+  "src/talk/voice-consult-transcript-race.test.ts",
   "src/tts/tts-summary.static-catalog.test.ts",
   "src/tts/tts-summary.selection.test.ts",
   "src/agents/prepared-model-catalog.resources.test.ts",
@@ -1098,6 +1107,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/talk/agent-consult-runtime.test.ts", "unitFast"],
   ["src/agents/sandbox/runtime-status.session-override.test.ts", "unitFast"],
   ["src/system-agent/audit.test.ts", "unitFastIsolated"],
   ["src/system-agent/operations.test.ts", "unitFastIsolated"],

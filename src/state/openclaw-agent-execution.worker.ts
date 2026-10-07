@@ -78,6 +78,7 @@ import {
   loadAgentPendingInputOperations,
   loadAgentArchivePruningOperations,
   loadUsageCacheOperations,
+  loadAgentVoiceSessionOperations,
   prepareAgentTranscript,
   type RegisteredAgentWorkerOperations,
 } from "./openclaw-agent-execution-operations.js";
@@ -382,6 +383,8 @@ function openAgentDatabaseBackend(
     keyof RegisteredAgentWorkerOperations
   >({
     "session.entry.read": loadAgentEntryReadOperations,
+    "voice.session.read": loadAgentVoiceSessionOperations,
+    "voice.session.mutate": loadAgentVoiceSessionOperations,
     "session.entry.patch.prepare": loadAgentEntryPatchOperations,
     "session.entry.patch.commit": loadAgentEntryPatchOperations,
     "session.turn.prepare": loadAgentCompoundOperations,

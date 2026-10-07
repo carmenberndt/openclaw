@@ -441,13 +441,16 @@ it.each([
   "cleanup",
   "voice binding removed",
   "voice binding replaced",
-] as const)("fences %s Gateway registration while exact control loads", async (change) => {
+] as const)("fences %s Gateway registration while control preparation waits", async (change) => {
   config.session = { scope: "global" };
   const target = prepareTalkSessionTarget(config, "main");
   const runId = "captured-run";
   const voiceScope = { agentId: target.agentId, sessionKey: target.sessionKey };
-  const voiceSessionId = createOrResumeClientVoiceSession({ ...voiceScope, origin: "client" });
-  registerClientVoiceConsultRun({ ...voiceScope, voiceSessionId, runId });
+  const voiceSessionId = await createOrResumeClientVoiceSession({
+    ...voiceScope,
+    origin: "client",
+  });
+  await registerClientVoiceConsultRun({ ...voiceScope, voiceSessionId, runId });
   const { registration, abort } = registerOwnedEmbeddedRun(runId, "captured-session");
   const runTarget = resolveOwnedActiveTalkRunTarget({
     context,
@@ -456,50 +459,65 @@ it.each([
     scope: { kind: "voice-session", voiceSessionId },
   });
   expect(runTarget?.isCurrent()).toBe(true);
+  const preparing = createDeferredCore();
+  const prepared = createDeferredCore();
   const control = controlRealtimeVoiceAgentRun({
     sessionKey: "global",
     runTarget,
     text: "cancel",
     mode: "cancel",
+    getToolAuthorityOverlay: () => ({
+      senderIsOwner: false,
+      disableTools: false,
+      traceAuthorized: false,
+    }),
+    prepareToolAuthorityOverlay: async () => {
+      preparing.resolve();
+      await prepared.promise;
+    },
   });
-  const entry = context.chatAbortControllers.get(runId)!;
-  if (change === "replaced") {
-    context.chatAbortControllers.set(runId, { ...entry });
-  } else if (change === "agent") {
-    entry.agentId = "primary";
-  } else if (change === "key") {
-    entry.sessionKey = "agent:voice:another";
-  } else if (change === "connection") {
-    entry.ownerConnId = "another-client";
-  } else if (change === "generation") {
-    entry.lifecycleGeneration = "retired";
-  } else if (change === "cleanup") {
-    entry.registrationCleanupRequested = true;
-  } else if (change === "voice binding removed") {
-    emitTrustedDiagnosticEvent({
-      type: "run.completed",
-      runId,
-      durationMs: 0,
-      outcome: "completed",
-    });
-    expect(resolveClientVoiceRunBinding(runId)).toBeUndefined();
-  } else if (change === "voice binding replaced") {
-    const replacementVoiceSessionId = createOrResumeClientVoiceSession({
-      ...voiceScope,
-      origin: "client",
-    });
-    registerClientVoiceConsultRun({
-      ...voiceScope,
-      voiceSessionId: replacementVoiceSessionId,
-      runId,
-    });
-  } else {
-    entry.controller = new AbortController();
-  }
+  await preparing.promise;
   try {
+    const entry = context.chatAbortControllers.get(runId)!;
+    if (change === "replaced") {
+      context.chatAbortControllers.set(runId, { ...entry });
+    } else if (change === "agent") {
+      entry.agentId = "primary";
+    } else if (change === "key") {
+      entry.sessionKey = "agent:voice:another";
+    } else if (change === "connection") {
+      entry.ownerConnId = "another-client";
+    } else if (change === "generation") {
+      entry.lifecycleGeneration = "retired";
+    } else if (change === "cleanup") {
+      entry.registrationCleanupRequested = true;
+    } else if (change === "voice binding removed") {
+      emitTrustedDiagnosticEvent({
+        type: "run.completed",
+        runId,
+        durationMs: 0,
+        outcome: "completed",
+      });
+      expect(resolveClientVoiceRunBinding(runId)).toBeUndefined();
+    } else if (change === "voice binding replaced") {
+      const replacementVoiceSessionId = await createOrResumeClientVoiceSession({
+        ...voiceScope,
+        origin: "client",
+      });
+      await registerClientVoiceConsultRun({
+        ...voiceScope,
+        voiceSessionId: replacementVoiceSessionId,
+        runId,
+      });
+    } else {
+      entry.controller = new AbortController();
+    }
+    prepared.resolve();
     expect(await control).toMatchObject({ ok: false, active: false, reason: "no_active_run" });
     expect(abort).not.toHaveBeenCalled();
   } finally {
+    prepared.resolve();
+    await Promise.allSettled([control]);
     registration.cleanup();
   }
 });
@@ -541,7 +559,7 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
   context.chatAbortControllers.get("queued-talk")!.sessionId = resolvedSessionId;
   operation.updateSessionId(resolvedSessionId);
   const voiceSessionId = (respond.mock.calls[0]![1] as { voiceSessionId: string }).voiceSessionId;
-  registerClientVoiceConsultRun({
+  await registerClientVoiceConsultRun({
     agentId: "voice",
     sessionKey: "main",
     voiceSessionId,

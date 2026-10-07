@@ -13,7 +13,6 @@ import { resolveCommandAuthorization } from "../../../auto-reply/command-auth.js
 import type { OpenClawConfig } from "../../../config/config.js";
 import { normalizeResolvedSecretInputString } from "../../../config/types.secrets.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
-import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { setActiveDegradedSecretOwners } from "../../../secrets/runtime-degraded-state.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { resolveRealtimeVoiceAgentConsultToolsAllow } from "../../../talk/agent-consult-tool.js";
@@ -36,6 +35,7 @@ import { bindSessionRowProjection } from "../../session-row-projection-access.js
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { preparedTalkSessionProjection as projection } from "../test-helpers.js";
+import { createBrowserProvider, createBrowserSessionMock } from "./client-fixtures.test-support.js";
 import { forgetLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
 import { talkConfigAccentCases } from "./config-accent.test-support.js";
 import {
@@ -119,7 +119,7 @@ const mocks = vi.hoisted(() => ({
   ensureClientVoiceAgentSessionEntry: vi.fn(async () => "session-main"),
   resolveClientVoiceAgentSessionId: vi.fn<() => string | undefined>(() => "session-main"),
   assertClientVoiceSessionOpen: vi.fn(),
-  registerClientVoiceConsultRun: vi.fn(),
+  registerClientVoiceConsultRun: vi.fn(() => () => {}),
   resolveOpenClientVoiceSessionId: vi.fn(),
   consultRealtimeVoiceAgent: vi.fn(async (_params?: unknown) => ({ text: "agent answer" })),
   closeTalkClientGatewayControlSession: vi.fn(async () => false),
@@ -231,10 +231,15 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../server-methods/chat-send-handler.js", () => ({
-  handleChatSend: mocks.chatSend,
-  handleTrustedInternalChatSend: mocks.chatSend,
-}));
+// mock-isolation: Route trusted dispatch through the fixture without starting an agent run.
+vi.mock("../../server-methods/chat-send-handler.js", async () => {
+  const { createTrustedInternalChatSendFixture } =
+    await import("./client-fixtures.test-support.js");
+  return {
+    handleChatSend: mocks.chatSend,
+    handleTrustedInternalChatSend: createTrustedInternalChatSendFixture(mocks.chatSend),
+  };
+});
 
 vi.mock("../../sessions-resolve.js", () => ({
   withPreparedSessionResolve: async (
@@ -279,26 +284,6 @@ vi.mock("../transcription-relay.js", async (importOriginal) => {
     stopTalkTranscriptionRelaySession: mocks.stopTalkTranscriptionRelaySession,
   };
 });
-
-function createBrowserProvider(
-  createBrowserSession: NonNullable<RealtimeVoiceProviderPlugin["createBrowserSession"]>,
-) {
-  return {
-    id: "openai",
-    label: "OpenAI Realtime",
-    isConfigured: () => true,
-    createBrowserSession,
-    createBridge: vi.fn(),
-  };
-}
-
-function createBrowserSessionMock() {
-  return vi.fn(async (_input: unknown) => ({
-    provider: "openai",
-    transport: "webrtc" as const,
-    clientSecret: "secret",
-  }));
-}
 
 function setSourceConfig(config: OpenClawConfig) {
   mocks.readConfigFileSnapshot.mockResolvedValue({
@@ -2762,6 +2747,7 @@ describe("talk.client.toolCall handler", () => {
           agentId: "main",
           sessionKey: "main",
           origin: "client",
+          assertCurrent: expect.any(Function),
         });
         expect(mocks.registerClientVoiceConsultRun).toHaveBeenCalledWith(
           expect.objectContaining({ voiceSessionId: "voice-test", runId: "run-voice-1" }),
@@ -2866,6 +2852,7 @@ describe("talk.client.toolCall handler", () => {
           : ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"],
         transcript: { display: false, excludeFromContext: true },
         prepareAssistantTranscriptMessage: prepareTalkAgentConsultTranscript,
+        beforeDispatch: expect.any(Function),
       });
       const response = expectRespondOk(respond, { runId: "run-voice-1" });
       if (!configured) {
@@ -3449,9 +3436,9 @@ describe("talk.client.create handler", () => {
           runId: string;
           sessionId: string;
           timeoutMs: number;
-        }) => { cleanup?: () => void } | void;
+        }) => Promise<{ cleanup?: () => void } | void>;
       };
-      const registration = params.onRunStarted?.({
+      const registration = await params.onRunStarted?.({
         runId: "talk-realtime-consult:gpt-live",
         sessionId: "session-main",
         timeoutMs: 30_000,
@@ -3491,6 +3478,7 @@ describe("talk.client.create handler", () => {
       voiceSessionId: "voice-test",
       runId: "talk-realtime-consult:gpt-live",
       config,
+      assertCurrent: expect.any(Function),
     });
     expect(chatAbortControllers.get("talk-realtime-consult:gpt-live")).toMatchObject({
       sessionId: "session-main",

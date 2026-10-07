@@ -44,7 +44,7 @@ export async function startTalkRealtimeAgentConsult(
     args: unknown;
     relaySessionId?: string;
     connId?: string;
-    onRunStarted?: (runId: string) => void;
+    onRunStarted?: (runId: string) => void | (() => void) | Promise<void | (() => void)>;
   },
 ): Promise<{ ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }> {
   let message: string;
@@ -111,39 +111,17 @@ export async function startTalkRealtimeAgentConsult(
         }
         const candidateRunId = asNullableRecord(result)?.runId;
         const runId = typeof candidateRunId === "string" ? candidateRunId : idempotencyKey;
-        try {
-          if (params.relaySessionId && params.connId) {
-            registerTalkRealtimeRelayAgentRun({
-              relaySessionId: params.relaySessionId,
-              connId: params.connId,
-              sessionKey: params.sessionTarget.canonicalKey,
-              runId,
-              callId: params.callId,
-            });
-          }
-          params.onRunStarted?.(runId);
-          resolve(
-            runId
-              ? { ok: true, runId, idempotencyKey }
-              : {
-                  ok: false,
-                  error: errorShape(
-                    ErrorCodes.UNAVAILABLE,
-                    "chat.send did not acknowledge an active run",
-                  ),
-                },
-          );
-        } catch (registrationError) {
-          abortChatRunById(request.context, {
-            runId,
-            sessionKey: params.sessionTarget.canonicalKey,
-            stopReason: "voice session binding failed",
-          });
-          resolve({
-            ok: false,
-            error: errorShape(ErrorCodes.UNAVAILABLE, formatForLog(registrationError)),
-          });
-        }
+        resolve(
+          runId
+            ? { ok: true, runId, idempotencyKey }
+            : {
+                ok: false,
+                error: errorShape(
+                  ErrorCodes.UNAVAILABLE,
+                  "chat.send did not acknowledge an active run",
+                ),
+              },
+        );
       },
     } satisfies GatewayRequestHandlerOptions;
     // Speech owns reusable history; keep consult scaffolding only in the lossless archive.
@@ -151,6 +129,38 @@ export async function startTalkRealtimeAgentConsult(
       toolsAllow: authority.toolsAllow,
       transcript: { display: false, excludeFromContext: true },
       prepareAssistantTranscriptMessage: prepareTalkAgentConsultTranscript,
+      beforeDispatch: async ({ runId, assertCurrent }) => {
+        let releaseRelay: (() => void) | undefined;
+        let releaseClient: void | (() => void);
+        const release = () => {
+          releaseClient?.();
+          releaseRelay?.();
+        };
+        try {
+          assertCurrent();
+          if (params.relaySessionId && params.connId) {
+            releaseRelay = await registerTalkRealtimeRelayAgentRun({
+              relaySessionId: params.relaySessionId,
+              connId: params.connId,
+              sessionKey: params.sessionTarget.canonicalKey,
+              runId,
+              callId: params.callId,
+            });
+          }
+          assertCurrent();
+          releaseClient = await params.onRunStarted?.(runId);
+          assertCurrent();
+          return release;
+        } catch (error) {
+          release();
+          abortChatRunById(request.context, {
+            runId,
+            sessionKey: params.sessionTarget.canonicalKey,
+            stopReason: "voice session binding failed",
+          });
+          throw error;
+        }
+      },
     });
     void Promise.resolve(chatSendResult).then(
       () => {

@@ -118,7 +118,7 @@ describe("realtime relay finalization", () => {
       request?.onReady?.();
       const target = { relaySessionId: session.relaySessionId, connId: "conn-finalize" };
       active = target;
-      ensureTalkRealtimeRelayVoiceSession({ ...target, sessionKey: "agent:main:main" });
+      await ensureTalkRealtimeRelayVoiceSession({ ...target, sessionKey: "agent:main:main" });
       const owned = relaySessions.get(session.relaySessionId);
       if (!owned) {
         throw new Error("Expected registered relay session");

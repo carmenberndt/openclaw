@@ -262,6 +262,21 @@ export function readSessionEntryRow(
   return scanSessionEntryRows(database, sessionKey, projection)?.selected;
 }
 
+/** Identity preparation retains normal alias validation without loading participant display data. */
+export function readSessionEntryIdentity(
+  database: OpenClawAgentDatabaseReader,
+  sessionKey: string,
+): Pick<SessionEntry, "sessionId" | "updatedAt" | "lifecycleRevision"> | undefined {
+  const entry = scanSessionEntryRows(database, sessionKey, "list", false)?.selected?.entry;
+  return (
+    entry && {
+      sessionId: entry.sessionId,
+      updatedAt: entry.updatedAt,
+      lifecycleRevision: entry.lifecycleRevision,
+    }
+  );
+}
+
 /**
  * Reads the selected row plus every raw row the lookup scanned. A write transaction that must
  * prove this logical row is unchanged can re-read and compare the raw rows instead of decoding
@@ -305,6 +320,7 @@ function scanSessionEntryRows(
   database: OpenClawAgentDatabaseReader,
   sessionKey: string,
   projection: SessionEntryProjection,
+  includeParticipants = true,
 ):
   | {
       lookupKeys: string[];
@@ -322,7 +338,9 @@ function scanSessionEntryRows(
     const rows = readSelectedSessionEntryRows(database, lookupKeys, projection);
     let selected: ResolvedSessionEntryRow | undefined;
     for (const row of rows) {
-      const entry = parseReadableSqliteSessionEntryRow(database, row, projection);
+      const entry = includeParticipants
+        ? parseReadableSqliteSessionEntryRow(database, row, projection)
+        : parseReadableSessionEntryData(database, row, projection);
       if (!entry || row.session_key !== sessionKey.trim()) {
         continue;
       }

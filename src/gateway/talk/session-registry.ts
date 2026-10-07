@@ -2,6 +2,10 @@ import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { formatErrorMessage as formatError } from "../../infra/errors.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
+import {
+  prepareClientVoiceSessionClose,
+  withClientVoiceSessionSettlement,
+} from "../../talk/client-voice-session-lifecycle.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 type TalkConnectionCleanupKind =
@@ -162,6 +166,54 @@ export function cleanupTalkConnection(
     } catch (error) {
       report(error);
     }
+  }
+}
+
+export function prepareTalkConnectionClose(
+  clients: Iterable<{ connId: string }>,
+  log: { warn: (message: string) => void },
+) {
+  const persistence = prepareClientVoiceSessionClose();
+  let pending: Promise<void> | undefined;
+  const beginClose = () => {
+    if (pending) {
+      return;
+    }
+    // Provider close can emit final speech. Retain this Gateway's cleanup before
+    // fencing admission; sibling Gateways keep their own connections and claims.
+    pending = withClientVoiceSessionSettlement(() =>
+      closeTalkConnections(Array.from(clients, (client) => client.connId)),
+    );
+    void pending.catch((error: unknown) => log.warn(`Talk cleanup failed: ${formatError(error)}`));
+    persistence.beginClose();
+  };
+  return {
+    beginClose,
+    async drain() {
+      beginClose();
+      await Promise.all([pending, persistence.drain()]);
+    },
+  };
+}
+
+async function closeTalkConnections(connIds: Iterable<string>): Promise<void> {
+  const pending: Promise<void>[] = [];
+  for (const connId of connIds) {
+    const cleanups = [...(talkConnectionCleanups.get(connId) ?? [])];
+    for (const [kind, cleanup] of cleanups) {
+      try {
+        pending.push(Promise.resolve(runTalkConnectionCleanup(connId, kind, cleanup)));
+      } catch (error) {
+        pending.push(Promise.reject(error instanceof Error ? error : new Error(String(error))));
+      }
+    }
+  }
+  const results = await Promise.allSettled(pending);
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Talk provider cleanup did not complete");
   }
 }
 

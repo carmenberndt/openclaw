@@ -104,7 +104,11 @@ describe("Talk requester-final consult ownership", () => {
     );
     mocks.runEmbeddedAgentCore.mockResolvedValue({ payloads: [] });
     mocks.consultRealtimeVoiceAgent.mockImplementation(async (params: ConsultParams) => {
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 60_000 });
+      await params.onRunStarted?.({
+        runId: "run-talk",
+        sessionId: "session-talk",
+        timeoutMs: 60_000,
+      });
       await params.agentRuntime.runEmbeddedAgent(coreParams);
       return { text: "done" };
     });

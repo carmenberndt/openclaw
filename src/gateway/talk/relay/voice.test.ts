@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
+import { SqliteWorkerError } from "../../../infra/sqlite-worker-contract.js";
 import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
 import { VOICE_TRANSCRIPT_QUEUE_POLICY } from "../../../talk/voice-transcript.js";
 import type { RelaySession } from "./state.js";
-import { closeRelayVoiceSession, enqueueRelayVoiceTranscript } from "./voice.js";
+import {
+  closeRelayVoiceSession,
+  enqueueRelayVoiceTranscript,
+  ensureRelayVoiceSession,
+} from "./voice.js";
 
 const voiceSessionMocks = vi.hoisted(() => ({
   appendRelayVoiceTranscript: vi.fn(),
@@ -12,6 +17,17 @@ const voiceSessionMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../talk/client-voice-session.js", () => voiceSessionMocks);
+// This suite proves bounded queue policy; the real Gateway close suite owns persistence settlement.
+// mock-isolation: Queue-only cases use synthetic persistence; real shutdown ownership has Gateway coverage.
+vi.mock("../../../talk/client-voice-session-lifecycle.js", () => ({
+  withClientVoiceSessionSettlement: (run: () => Promise<unknown>) => run(),
+}));
+// mock-isolation: The mocked voice store has no physical database to borrow.
+vi.mock("../../../talk/client-voice-session-write.js", () => ({
+  captureClientVoiceSessionWriter: () => ({ release: () => Promise.resolve() }),
+}));
+// mock-isolation: Exercise retry decisions without wall-clock backoff.
+vi.mock("../../../utils/sleep.js", () => ({ sleep: async () => {} }));
 
 function createRelaySession(): {
   session: RelaySession;
@@ -50,14 +66,43 @@ describe("realtime relay voice transcript persistence", () => {
   beforeEach(() => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockReset();
     voiceSessionMocks.closeRelayVoiceSessionRecord.mockReset().mockResolvedValue(undefined);
-    voiceSessionMocks.createOrResumeClientVoiceSession.mockReset();
+    voiceSessionMocks.createOrResumeClientVoiceSession.mockReset().mockResolvedValue("voice");
+  });
+
+  it.each([false, true])("retries only a known failed creation (unknown=%s)", async (unknown) => {
+    const failure = unknown
+      ? new SqliteWorkerError("Creation settlement is unknown", "outcome-unknown")
+      : new Error("Creation was refused");
+    voiceSessionMocks.createOrResumeClientVoiceSession.mockRejectedValueOnce(failure);
+    const { session } = createRelaySession();
+    expect(await ensureRelayVoiceSession(session)).toBe(false);
+    expect(await ensureRelayVoiceSession(session)).toBe(!unknown);
+    expect(voiceSessionMocks.createOrResumeClientVoiceSession).toHaveBeenCalledTimes(
+      unknown ? 1 : 2,
+    );
+  });
+
+  it("does not replay an append after an unknown worker outcome", async () => {
+    voiceSessionMocks.appendRelayVoiceTranscript.mockRejectedValue(
+      new SqliteWorkerError("Transcript settlement is unknown", "outcome-unknown"),
+    );
+    const { session } = createRelaySession();
+    expect(enqueueRelayVoiceTranscript(session, "user", "Keep this accepted utterance")).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+    await closeRelayVoiceSession(session);
+    expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledOnce();
+    expect(session.context.logGateway.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Transcript settlement is unknown"),
+    );
   });
 
   it("bounds stalled finals, drains the accepted prefix, and closes once", async () => {
     const firstAppend = createDeferred();
+    const appendEntered = createDeferred();
     voiceSessionMocks.appendRelayVoiceTranscript.mockImplementation(
       async ({ entryId }: { entryId: string }) => {
         if (entryId === "1") {
+          appendEntered.resolve();
           await firstAppend.promise;
         }
       },
@@ -82,6 +127,7 @@ describe("realtime relay voice transcript persistence", () => {
     }
 
     expect(accepted).toBe(41);
+    await appendEntered.promise;
     expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         agentId: "main",
@@ -91,6 +137,7 @@ describe("realtime relay voice transcript persistence", () => {
           storePath: "/tmp/relay-voice-sessions.sqlite",
         },
       }),
+      expect.objectContaining({ release: expect.any(Function) }),
     );
     expect(failSession).toHaveBeenCalledOnce();
     const close = session.voiceSessionClose;

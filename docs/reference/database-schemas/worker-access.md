@@ -1570,6 +1570,20 @@ This prerequisite changes no schema, retention, durability, or update behavior.
 
 ## Carry facts, publish after commit
 
+Talk voice admission, consult bindings, tool effects, transcript bookkeeping,
+close, and digest acknowledgments use the existing agent executor. Each operation
+retains its physical store, rereads its voice record inside the worker transaction,
+and publishes acknowledged facts before dependent work. Consult registration settles
+before execution starts. Transcript failure reservations remain durable before the
+fallible append. Same-store append and success bookkeeping commit together, then
+observers consume the acknowledged transcript and voice facts. Gateway
+close rejects new bookkeeping and joins accepted persistence independently of
+scheduler cancellation; unknown write outcomes never authorize automatic replay.
+Voice metadata keeps its durable agent store, while incognito transcripts retain
+their native owner until the atomic incognito cutover. Synchronous tool-policy
+reads still refresh foreign commits through the existing facts reader. Schemas,
+stored bytes, retention, durability, and update behavior are unchanged.
+
 Session observer admission, publication, terminal synthesis, and companion snapshots
 read through the existing Gateway session worker lookup. Each observation captures
 its configured and physical sources before queueing and fetches fresh rows at later

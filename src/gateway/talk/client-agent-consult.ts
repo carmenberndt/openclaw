@@ -201,7 +201,7 @@ export function createTalkClientAgentConsultRunner(params: {
   initialItems: Array<{ role: "user" | "assistant"; text: string }>;
   runIdPrefix?: string;
   surface?: string;
-  registerRun?: (params: { runId: string }) => void;
+  registerRun?: (params: { runId: string }) => void | (() => void) | Promise<void | (() => void)>;
   isRunCurrent?: (runId: string) => boolean;
 }) {
   const { agentId, sessionKey, canonicalKey, storePath } = params.sessionTarget;
@@ -329,99 +329,115 @@ export function createTalkClientAgentConsultRunner(params: {
           fastMode: talkConfig?.consultFastMode,
           ...authority,
           abortSignal: signal,
-          onRunStarted: ({ runId, sessionId, timeoutMs }) => {
-            if (owner) {
+          onRunStarted: async ({ runId, sessionId, timeoutMs }) => {
+            const assertRegistrationCurrent = () => {
+              signal?.throwIfAborted();
               if (
-                promptOwner !== owner ||
-                owner.requestSignal?.aborted === true ||
-                !isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration) ||
-                params.getVoiceSessionId() !== voiceSessionId
+                owner &&
+                (promptOwner !== owner ||
+                  owner.requestSignal?.aborted === true ||
+                  !isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration) ||
+                  params.getVoiceSessionId() !== voiceSessionId)
               ) {
                 throw new Error("The active Talk consult admission is no longer current");
               }
-            }
-            if (params.registerRun) {
-              params.registerRun({ runId });
-            } else {
-              registerClientVoiceConsultRun({
+            };
+            assertCurrent?.();
+            assertRegistrationCurrent();
+            let releaseVoice: void | (() => void) = undefined;
+            try {
+              if (params.registerRun) {
+                releaseVoice = await params.registerRun({ runId });
+              } else {
+                releaseVoice = await registerClientVoiceConsultRun({
+                  agentId,
+                  sessionKey,
+                  voiceSessionId,
+                  runId,
+                  config: params.config,
+                  assertCurrent: assertRegistrationCurrent,
+                });
+              }
+              assertRegistrationCurrent();
+              assertCurrent?.();
+              confirmationObservation = observeClientVoiceConfirmationRun({
                 agentId,
-                sessionKey,
                 voiceSessionId,
                 runId,
-                config: params.config,
               });
-            }
-            confirmationObservation = observeClientVoiceConfirmationRun({
-              agentId,
-              voiceSessionId,
-              runId,
-            });
-            if (owner) {
-              assertCurrent?.();
-              owner.identity = { runId, sessionId };
-              owner.completionClaim = prepareEmbeddedAgentRunCompletionClaim(sessionId, runId);
-              if (owner.requesterFinal) {
-                const requesterFinal = owner.requesterFinal;
-                const registration = registerRequesterFinalAttachment({
-                  requesterAgentId: agentId,
-                  requesterSessionKey: canonicalKey,
-                  requesterSessionId: sessionId,
-                  requesterTurnRunId: runId,
-                  lifecycleGeneration: owner.lifecycleGeneration,
-                  timeoutMs,
-                  append: (text) =>
-                    requesterFinal.append(confirmationObservation?.readReply() ?? text),
-                });
-                owner.requesterFinalRegistration = registration;
-                requesterFinalRegistration = registration;
-              }
-              void owner.completionClaim.registered.then(owner.resolveRegistration);
-            }
-            if (
-              confirmationGrant &&
-              bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId })
-            ) {
-              confirmationRetryContext = confirmationGrant.retryContext;
-            }
-            const registration = params.ownerConnId
-              ? registerChatAbortController({
-                  chatAbortControllers: params.context.chatAbortControllers,
-                  runId,
-                  sessionId,
-                  sessionKey: canonicalKey,
-                  agentId,
-                  timeoutMs,
-                  ownerConnId: params.ownerConnId,
-                  controlUiVisible: false,
-                  kind: "chat-send",
-                })
-              : undefined;
-            if (owner) {
-              const entry = registration?.entry;
-              const generation = entry?.lifecycleGeneration;
-              owner.cleanup = registration?.cleanup;
-              owner.signal = entry?.controller.signal;
-              owner.isCurrent = (resolvedSessionId) =>
-                params.getVoiceSessionId() === voiceSessionId &&
-                (!params.ownerConnId ||
-                  (params.context.chatAbortControllers.get(runId) === entry &&
-                    entry?.controller.signal.aborted === false &&
-                    entry.ownerConnId === params.ownerConnId &&
-                    entry.sessionId === sessionId &&
-                    entry.sessionKey === canonicalKey &&
-                    entry.registrationCleanupRequested !== true &&
-                    generation !== undefined &&
-                    entry.lifecycleGeneration === generation &&
-                    isAgentEventLifecycleGenerationCurrent(generation))) &&
-                (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
-                (params.isRunCurrent?.(runId) ?? true);
-            }
-            return registration
-              ? {
-                  abortSignal: registration.controller.signal,
-                  cleanup: owner ? undefined : registration.cleanup,
+              if (owner) {
+                assertCurrent?.();
+                owner.identity = { runId, sessionId };
+                owner.completionClaim = prepareEmbeddedAgentRunCompletionClaim(sessionId, runId);
+                if (owner.requesterFinal) {
+                  const requesterFinal = owner.requesterFinal;
+                  const registration = registerRequesterFinalAttachment({
+                    requesterAgentId: agentId,
+                    requesterSessionKey: canonicalKey,
+                    requesterSessionId: sessionId,
+                    requesterTurnRunId: runId,
+                    lifecycleGeneration: owner.lifecycleGeneration,
+                    timeoutMs,
+                    append: (text) =>
+                      requesterFinal.append(confirmationObservation?.readReply() ?? text),
+                  });
+                  owner.requesterFinalRegistration = registration;
+                  requesterFinalRegistration = registration;
                 }
-              : undefined;
+                void owner.completionClaim.registered.then(owner.resolveRegistration);
+              }
+              if (
+                confirmationGrant &&
+                bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId })
+              ) {
+                confirmationRetryContext = confirmationGrant.retryContext;
+              }
+              const registration = params.ownerConnId
+                ? registerChatAbortController({
+                    chatAbortControllers: params.context.chatAbortControllers,
+                    runId,
+                    sessionId,
+                    sessionKey: canonicalKey,
+                    agentId,
+                    timeoutMs,
+                    ownerConnId: params.ownerConnId,
+                    controlUiVisible: false,
+                    kind: "chat-send",
+                  })
+                : undefined;
+              if (owner) {
+                const entry = registration?.entry;
+                const generation = entry?.lifecycleGeneration;
+                owner.cleanup = registration?.cleanup;
+                owner.signal = entry?.controller.signal;
+                owner.isCurrent = (resolvedSessionId) =>
+                  params.getVoiceSessionId() === voiceSessionId &&
+                  (!params.ownerConnId ||
+                    (params.context.chatAbortControllers.get(runId) === entry &&
+                      entry?.controller.signal.aborted === false &&
+                      entry.ownerConnId === params.ownerConnId &&
+                      entry.sessionId === sessionId &&
+                      entry.sessionKey === canonicalKey &&
+                      entry.registrationCleanupRequested !== true &&
+                      generation !== undefined &&
+                      entry.lifecycleGeneration === generation &&
+                      isAgentEventLifecycleGenerationCurrent(generation))) &&
+                  (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
+                  (params.isRunCurrent?.(runId) ?? true);
+              }
+              return {
+                cleanupBeforeRun: releaseVoice || undefined,
+                ...(registration
+                  ? {
+                      abortSignal: registration.controller.signal,
+                      cleanup: owner ? undefined : registration.cleanup,
+                    }
+                  : {}),
+              };
+            } catch (error) {
+              releaseVoice?.();
+              throw error;
+            }
           },
         }),
       )

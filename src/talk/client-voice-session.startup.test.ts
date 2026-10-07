@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
+  createSessionEntryWithTranscript,
   loadSessionEntry,
   patchSessionEntryCore,
   readSessionTranscriptMessageEvents,
@@ -90,20 +91,31 @@ describe("client voice session startup", () => {
   });
 
   it.each([
-    { origin: "client" as const, canonicalKey: "agent:main:work" },
-    { origin: "relay" as const, canonicalKey: "global" },
+    { origin: "client" as const, canonicalKey: "agent:main:work", incognito: false },
+    { origin: "relay" as const, canonicalKey: "global", incognito: false },
+    {
+      origin: "client" as const,
+      canonicalKey: "agent:main:dashboard:incognito-voice",
+      incognito: true,
+    },
   ])(
     "writes $origin transcripts to $canonicalKey without changing voice identity",
-    async ({ origin, canonicalKey }) => {
+    async ({ origin, canonicalKey, incognito }) => {
       const sessionTarget = {
         sessionKey: canonicalKey,
         storePath: path.join(tempDir, "configured", "sessions.sqlite"),
       };
       const storage = { agentId: "main", ...sessionTarget };
+      if (incognito) {
+        await createSessionEntryWithTranscript(storage, () => ({
+          ok: true as const,
+          entry: { incognito: true as const, sessionId: "incognito-voice", updatedAt: 1 },
+        }));
+      }
       const sessionId = await ensureClientVoiceAgentSessionEntry(storage);
       expect(resolveClientVoiceAgentSessionId(storage)).toBe(sessionId);
       const voiceTarget = { agentId: "main", sessionKey: "main" };
-      const voiceSessionId = createOrResumeClientVoiceSession({ ...voiceTarget, origin });
+      const voiceSessionId = await createOrResumeClientVoiceSession({ ...voiceTarget, origin });
       const append = origin === "client" ? appendClientVoiceTranscript : appendRelayVoiceTranscript;
       await append({
         ...voiceTarget,
@@ -125,6 +137,8 @@ describe("client voice session startup", () => {
       expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)).toMatchObject({
         sessionKey: "main",
         origin,
+        hasUserTranscript: true,
+        transcriptFailureKeys: [],
       });
       await expect(
         closeClientVoiceSession({

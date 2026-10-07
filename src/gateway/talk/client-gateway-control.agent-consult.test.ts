@@ -105,7 +105,11 @@ describe("Talk client agent consult admission", () => {
       suppress: false,
     });
     mocks.consultRealtimeVoiceAgent.mockImplementation(async (params: ConsultParams) => {
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 60_000 });
+      await params.onRunStarted?.({
+        runId: "run-talk",
+        sessionId: "session-talk",
+        timeoutMs: 60_000,
+      });
       await params.agentRuntime.runEmbeddedAgent({
         ...coreParams,
         ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
@@ -532,7 +536,7 @@ describe("Talk client agent consult admission", () => {
       .mockReturnValueOnce(currentRun);
     mocks.consultRealtimeVoiceAgent.mockImplementation(async (params: ConsultParams) => {
       invocation += 1;
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+      await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
       if (invocation === 1) {
         firstAnnounced.resolve();
         await releaseFirst.promise;
@@ -589,11 +593,11 @@ describe("Talk client agent consult admission", () => {
       if (invocation === 1) {
         firstWaiting.resolve();
         await releaseFirst.promise;
-        params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+        await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
         await params.agentRuntime.runEmbeddedAgent(coreParams);
         return { text: "stale" };
       }
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+      await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
       await params.agentRuntime.runEmbeddedAgent(coreParams);
       return { text: "current" };
     });
@@ -677,7 +681,7 @@ describe("Talk client agent consult admission", () => {
         staleWaiting.resolve();
         await releaseStale.promise;
       }
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+      await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
       if (currentInvocation === 2) {
         currentStarted.resolve();
         await finishCurrent.promise;
@@ -922,7 +926,7 @@ describe("Talk client agent consult admission", () => {
   it("returns the current server challenge instead of a model's superseded confirmation id", async () => {
     let currentChallenge = "";
     mocks.consultRealtimeVoiceAgent.mockImplementationOnce(async (params: ConsultParams) => {
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+      await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
       for (const message of ["first blocked action", "last blocked action"]) {
         const challenge = checkClientVoiceToolConfirmationPolicy({
           agentId: "researcher",
@@ -975,7 +979,7 @@ describe("Talk client agent consult admission", () => {
     });
     mocks.consultRealtimeVoiceAgent.mockImplementationOnce(async (params: ConsultParams) => {
       deactivateClientVoiceConfirmationSession("researcher", "voice-session");
-      params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
+      await params.onRunStarted?.({ runId: "run-talk", sessionId: "session-talk", timeoutMs: 1 });
       await params.agentRuntime.runEmbeddedAgent(coreParams);
       return { text: "done" };
     });

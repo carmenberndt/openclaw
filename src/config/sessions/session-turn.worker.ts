@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { ensureSessionGoalOperationsSchema } from "../../state/openclaw-agent-goal-operations-schema.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
+import { mutateVoiceSessionInDatabase } from "../../talk/client-voice-session-write.kernel.js";
 import { runWithCliHistoryWriter } from "./cli-history-boundary.js";
 import { applySessionGoalOperation, readSessionGoalOperationReceipt } from "./goals-operations.js";
 import {
@@ -219,6 +220,13 @@ export function commitSessionTurn(input: SessionTurnPlan, context: AgentWorkerOp
           projectionNeedsReconcile = true;
         },
       });
+      if (input.options.voiceTranscript && committed.result.appendedMessages.length === 1) {
+        committed.result.voiceSession = mutateVoiceSessionInDatabase(database, {
+          ...input.options.voiceTranscript,
+          kind: "confirm",
+          now: Date.now(),
+        });
+      }
       const candidate: SessionTurnCommitted = {
         kind: "session-turn",
         result: committed.result,

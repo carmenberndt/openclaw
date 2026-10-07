@@ -1,14 +1,16 @@
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveSessionDeliveryTarget } from "../infra/outbound/targets-session.js";
-import { runOpenClawAgentWriteTransaction } from "../state/openclaw-agent-db.js";
-import {
-  type ClientVoiceSessionRecord,
-  type ClientVoiceToolEffect,
-  readVoiceSessionRecordInTransaction,
-  writeVoiceSessionRecordInTransaction,
+import { hasSqliteWorkerOutcomeUnknown } from "../infra/sqlite-worker-contract.js";
+import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
+import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
+import type {
+  ClientVoiceSessionRecord,
+  ClientVoiceToolEffect,
 } from "./client-voice-session-store.js";
+import type { ClientVoiceSessionWriter } from "./client-voice-session-write.js";
 
 export const CLIENT_VOICE_MUTATION_DIGEST_POLICY = {
   maxRetainedIntents: 64,
@@ -39,6 +41,8 @@ export async function deliverClientVoiceMutationDigest(
   record: ClientVoiceSessionRecord,
   config: OpenClawConfig,
   signal: AbortSignal,
+  writer: ClientVoiceSessionWriter,
+  preparedEntry: InternalSessionEntry | undefined,
 ): Promise<void> {
   if (record.digestDeliveredAt) {
     return;
@@ -47,15 +51,21 @@ export async function deliverClientVoiceMutationDigest(
   if (!text) {
     return;
   }
-  const entry = loadSessionEntryReadOnly({
-    agentId: record.agentId,
-    sessionKey: record.sessionKey,
-  });
+  // The process-held transcript owner remains native until atomic incognito activation.
+  const entry = isIncognitoSessionKey(record.sessionKey)
+    ? loadSessionEntryReadOnly({
+        agentId: record.agentId,
+        sessionKey: record.sessionKey,
+        env: writer.options.env,
+      })
+    : preparedEntry;
   const target = resolveSessionDeliveryTarget({ entry, requestedChannel: "last" });
   if (!target.channel || target.channel === "webchat" || !target.to) {
     return;
   }
   const { sendDurableMessageBatchCore } = await import("../channels/message/runtime.js");
+  writer.assertCurrent();
+  signal.throwIfAborted();
   const send = await sendDurableMessageBatchCore({
     cfg: config,
     channel: target.channel,
@@ -77,19 +87,13 @@ export async function deliverClientVoiceMutationDigest(
     throw send.error;
   }
   const deliveredAt = Date.now();
-  runOpenClawAgentWriteTransaction(
-    (database) => {
-      const current = readVoiceSessionRecordInTransaction(database, record.voiceSessionId);
-      if (!current || current.digestDeliveredAt) {
-        return;
-      }
-      current.digestDeliveredAt = deliveredAt;
-      current.updatedAt = deliveredAt;
-      writeVoiceSessionRecordInTransaction(database, current);
-    },
-    { agentId: record.agentId },
-    { operationLabel: "voice.mutation-digest.delivered" },
-  );
+  await writer.mutate({
+    kind: "delivered",
+    agentId: record.agentId,
+    sessionKey: record.sessionKey,
+    voiceSessionId: record.voiceSessionId,
+    now: deliveredAt,
+  });
 }
 
 type MutationDigestIntent<TContext> = {
@@ -296,7 +300,9 @@ export class ClientVoiceMutationDigestOwner<TContext> {
     // that ignores it keeps this exact slot so repeated retries cannot fan out.
     let completion: Promise<boolean>;
     try {
-      completion = this.options.attempt({ ...intent, signal: controller.signal });
+      completion = runInDetachedAsyncContext(() =>
+        this.options.attempt({ ...intent, signal: controller.signal }),
+      );
     } catch (error) {
       completion = Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
@@ -312,6 +318,13 @@ export class ClientVoiceMutationDigestOwner<TContext> {
       })
       .catch((error: unknown) => {
         if (attempt.generation !== this.generation) {
+          return;
+        }
+        if (hasSqliteWorkerOutcomeUnknown(error)) {
+          this.deleteIntent(key, intent);
+          this.options.warn(
+            "voice mutation digest settlement is unknown; delivery was not replayed",
+          );
           return;
         }
         intent.failedAttempts += 1;

@@ -366,7 +366,7 @@ describe("Talk target preparation through Gateway authorization", () => {
     { name: "missing voice id", params: { sessionKey: "main" } },
     { name: "relay origin", params: { sessionKey: "main", voiceSessionId: "relay-call" } },
   ])("rejects a client close with $name without changing the voice record", async ({ params }) => {
-    clientVoiceSession.createOrResumeClientVoiceSession({
+    await clientVoiceSession.createOrResumeClientVoiceSession({
       agentId: "voice",
       sessionKey: "main",
       voiceSessionId: "relay-call",

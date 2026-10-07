@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
@@ -14,6 +15,7 @@ import {
   closeClientVoiceSession,
   closeStaleClientVoiceSessions,
   createOrResumeClientVoiceSession,
+  flushClientVoiceSessionWrites,
   registerClientVoiceConsultRun,
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
@@ -28,6 +30,8 @@ vi.mock("../channels/message/runtime.js", () => ({
 
 const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
 let tempDir: string;
+let sendEntered = createDeferred();
+let failedAttempt = createDeferred();
 
 describe("client voice session digest retry", () => {
   beforeEach(async () => {
@@ -35,10 +39,23 @@ describe("client voice session digest retry", () => {
       await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-voice-digest-retry-")),
     );
     setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    sendDurableMessageBatch.mockReset().mockResolvedValue({ status: "sent" });
+    sendEntered = createDeferred();
+    failedAttempt = createDeferred();
+    sendDurableMessageBatch.mockReset().mockImplementation(async () => {
+      sendEntered.resolve();
+      return { status: "sent" };
+    });
+    const warn = console.warn;
+    vi.spyOn(console, "warn").mockImplementation((...args) => {
+      warn(...args);
+      if (String(args[0]).includes("deferred voice mutation digest failed: channel offline")) {
+        failedAttempt.resolve();
+      }
+    });
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     clientVoiceSessionTesting.reset();
     await cleanupSessionStateForTest({ stateDir: tempDir });
     envSnapshot.restore();
@@ -50,13 +67,13 @@ describe("client voice session digest retry", () => {
       channel: "discord",
       to: "channel:voice-updates",
     });
-    const voiceSessionId = createOrResumeClientVoiceSession({
+    const voiceSessionId = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
     for (const runId of ["run-1", "run-2"]) {
-      registerClientVoiceConsultRun({
+      await registerClientVoiceConsultRun({
         agentId: "main",
         sessionKey: "agent:main:main",
         voiceSessionId,
@@ -88,6 +105,7 @@ describe("client voice session digest retry", () => {
         durationMs: 5,
       });
     }
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
     expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.effects).toEqual([
       expect.objectContaining({ runId: "run-1", status: "succeeded" }),
       expect.objectContaining({ runId: "run-2", status: "succeeded" }),
@@ -96,7 +114,9 @@ describe("client voice session digest retry", () => {
     await completeRun("run-1");
     expect(sendDurableMessageBatch).not.toHaveBeenCalled();
     await completeRun("run-2");
-    await vi.waitFor(() => expect(sendDurableMessageBatch).toHaveBeenCalledTimes(1));
+    await sendEntered.promise;
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
+    expect(sendDurableMessageBatch).toHaveBeenCalledTimes(1);
     expect(sendDurableMessageBatch).toHaveBeenCalledWith(
       expect.objectContaining({
         payloads: [{ text: "Voice call changes\n- message: succeeded\n- message: succeeded" }],
@@ -115,17 +135,46 @@ describe("client voice session digest retry", () => {
     expect(sendDurableMessageBatch).toHaveBeenCalledTimes(1);
   });
 
+  it("releases an unlaunched registration so a closed call can deliver its mutation digest", async () => {
+    const target = { agentId: "main", sessionKey: "agent:main:main" };
+    await seedSession(target.sessionKey, { channel: "discord", to: "channel:voice-updates" });
+    const voiceSessionId = await createOrResumeClientVoiceSession({ ...target, origin: "client" });
+    await recordMutation(voiceSessionId);
+    await completeRun(`run-${voiceSessionId}`);
+    const release = await registerClientVoiceConsultRun({
+      ...target,
+      voiceSessionId,
+      runId: "never-launched",
+    });
+    const sent = createDeferred();
+    sendDurableMessageBatch.mockImplementationOnce(async () => {
+      sent.resolve();
+      return { status: "sent" };
+    });
+    await closeClientVoiceSession({ ...target, voiceSessionId, config: {} });
+    expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+    release();
+    await sent.promise;
+    await flushClientVoiceSessionWrites({ agentId: target.agentId, voiceSessionId });
+    expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toMatchObject({
+      status: "closed",
+      digestDeliveredAt: expect.any(Number),
+    });
+    release();
+    expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
+  });
+
   it("retries a deferred digest on the next lifecycle trigger after run completion", async () => {
     await seedSession("agent:main:main", {
       channel: "discord",
       to: "channel:voice-updates",
     });
-    const voiceSessionId = createOrResumeClientVoiceSession({
+    const voiceSessionId = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
-    registerClientVoiceConsultRun({
+    await registerClientVoiceConsultRun({
       agentId: "main",
       sessionKey: "agent:main:main",
       voiceSessionId,
@@ -154,18 +203,18 @@ describe("client voice session digest retry", () => {
     });
     sendDurableMessageBatch.mockRejectedValueOnce(new Error("channel offline"));
     await completeRun("run-live");
-    await vi.waitFor(() =>
-      expect(clientVoiceSessionTesting.digestDeliverySnapshot().active).toBe(0),
-    );
+    await failedAttempt.promise;
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
+    expect(clientVoiceSessionTesting.digestDeliverySnapshot().active).toBe(0);
     expect(
       clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
     ).toBeUndefined();
 
     await closeStaleClientVoiceSessions({ agentId: "main", config: {} });
-    await vi.waitFor(() =>
-      expect(
-        clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
-      ).toEqual(expect.any(Number)),
+    await sendEntered.promise;
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
+    expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt).toEqual(
+      expect.any(Number),
     );
     expect(sendDurableMessageBatch).toHaveBeenCalledTimes(2);
   });
@@ -175,12 +224,12 @@ describe("client voice session digest retry", () => {
       channel: "discord",
       to: "channel:voice-updates",
     });
-    const voiceSessionId = createOrResumeClientVoiceSession({
+    const voiceSessionId = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
-    recordMutation(voiceSessionId);
+    await recordMutation(voiceSessionId);
     await completeRun(`run-${voiceSessionId}`);
     sendDurableMessageBatch.mockRejectedValueOnce(new Error("channel offline"));
 
@@ -190,9 +239,9 @@ describe("client voice session digest retry", () => {
       voiceSessionId,
       config: {},
     });
-    await vi.waitFor(() =>
-      expect(clientVoiceSessionTesting.digestDeliverySnapshot().active).toBe(0),
-    );
+    await failedAttempt.promise;
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
+    expect(clientVoiceSessionTesting.digestDeliverySnapshot().active).toBe(0);
     expect(
       clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
     ).toBeUndefined();
@@ -203,10 +252,10 @@ describe("client voice session digest retry", () => {
       voiceSessionId,
       config: {},
     });
-    await vi.waitFor(() =>
-      expect(
-        clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
-      ).toEqual(expect.any(Number)),
+    await sendEntered.promise;
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
+    expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt).toEqual(
+      expect.any(Number),
     );
     expect(sendDurableMessageBatch).toHaveBeenCalledTimes(2);
   });
@@ -216,12 +265,12 @@ describe("client voice session digest retry", () => {
       channel: "discord",
       to: "channel:voice-updates",
     });
-    const voiceSessionId = createOrResumeClientVoiceSession({
+    const voiceSessionId = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
-    recordMutation(voiceSessionId);
+    await recordMutation(voiceSessionId);
     await completeRun(`run-${voiceSessionId}`);
     sendDurableMessageBatch.mockRejectedValueOnce(new Error("channel offline"));
 
@@ -233,7 +282,8 @@ describe("client voice session digest retry", () => {
         voiceSessionId,
         config: {},
       });
-      await vi.advanceTimersByTimeAsync(0);
+      await failedAttempt.promise;
+      await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
       expect(clientVoiceSessionTesting.digestDeliverySnapshot()).toMatchObject({
         active: 0,
         pending: 0,
@@ -242,28 +292,29 @@ describe("client voice session digest retry", () => {
 
       // The run can register before config arrives; an identical replay must
       // still re-arm the closed session's digest, not return at binding reuse.
-      registerClientVoiceConsultRun({
+      await registerClientVoiceConsultRun({
         agentId: "main",
         sessionKey: "agent:main:main",
         voiceSessionId,
         runId: "late-run",
       });
-      registerClientVoiceConsultRun({
+      await registerClientVoiceConsultRun({
         agentId: "main",
         sessionKey: "agent:main:main",
         voiceSessionId,
         runId: "late-run",
         config: {},
       });
-      await vi.advanceTimersByTimeAsync(0);
+      await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
       await vi.advanceTimersByTimeAsync(
         clientVoiceSessionTesting.digestDeliveryPolicy.failureRetentionMs + 1,
       );
       expect(clientVoiceSessionTesting.digestDeliverySnapshot().retained).toBe(1);
 
-      recordMutation(voiceSessionId, "late-run");
+      await recordMutation(voiceSessionId, "late-run");
       await completeRun("late-run");
-      await vi.advanceTimersByTimeAsync(0);
+      await sendEntered.promise;
+      await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId });
       expect(
         clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.digestDeliveredAt,
       ).toEqual(expect.any(Number));
@@ -278,12 +329,12 @@ describe("client voice session digest retry", () => {
       channel: "discord",
       to: "channel:voice-updates",
     });
-    const delivered = createOrResumeClientVoiceSession({
+    const delivered = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey: "agent:main:main",
       origin: "client",
     });
-    recordMutation(delivered);
+    await recordMutation(delivered);
     await completeRun(`run-${delivered}`);
     await closeClientVoiceSession({
       agentId: "main",
@@ -297,7 +348,9 @@ describe("client voice session digest retry", () => {
       voiceSessionId: delivered,
       config: {},
     });
-    await vi.waitFor(() => expect(sendDurableMessageBatch).toHaveBeenCalledTimes(1));
+    await sendEntered.promise;
+    await flushClientVoiceSessionWrites({ agentId: "main", voiceSessionId: delivered });
+    expect(sendDurableMessageBatch).toHaveBeenCalledTimes(1);
     expect(sendDurableMessageBatch).toHaveBeenCalledWith(
       expect.objectContaining({
         durability: "required",
@@ -312,13 +365,13 @@ describe("client voice session digest retry", () => {
     ] as const) {
       const sessionKey = `agent:main:${voiceSessionId}`;
       await seedSession(sessionKey, route);
-      createOrResumeClientVoiceSession({
+      await createOrResumeClientVoiceSession({
         agentId: "main",
         sessionKey,
         origin: "client",
         voiceSessionId,
       });
-      registerClientVoiceConsultRun({
+      await registerClientVoiceConsultRun({
         agentId: "main",
         sessionKey,
         voiceSessionId,

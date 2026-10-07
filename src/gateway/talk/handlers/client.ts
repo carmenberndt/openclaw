@@ -31,6 +31,7 @@ import {
   resolveOpenClientVoiceSessionId,
 } from "../../../talk/client-voice-session.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
+import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
 import { SessionMutationAuthorizationChangedError } from "../../session-mutation-authorization-error.js";
@@ -117,18 +118,19 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         request.sessionMutationAuthorization?.assertCurrent();
         voiceSessionId =
           selectedVoiceSessionId ??
-          createOrResumeClientVoiceSession({
+          (await createOrResumeClientVoiceSession({
             agentId,
             sessionKey: params.sessionKey,
             origin: "client",
-          });
+            assertCurrent: readGatewayRequestMutationAuthority(request).assertPreparationCurrent,
+          }));
         if (relaySessionId && connId) {
           await ensureClientVoiceAgentSessionEntry({
             agentId,
             sessionKey: params.sessionKey,
             creation: resolveSandboxedSessionCreation(request.client, config),
           });
-          ensureTalkRealtimeRelayVoiceSession({
+          await ensureTalkRealtimeRelayVoiceSession({
             relaySessionId,
             connId,
             sessionKey: params.sessionKey,
@@ -169,16 +171,24 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         args: params.args ?? {},
         relaySessionId: normalizeOptionalString(params.relaySessionId),
         connId,
-        onRunStarted: (runId) => {
-          registerClientVoiceConsultRun({
+        onRunStarted: async (runId) => {
+          const release = await registerClientVoiceConsultRun({
             agentId,
             sessionKey: params.sessionKey,
             voiceSessionId,
             runId,
             config: request.context.getRuntimeConfig(),
+            assertCurrent: readGatewayRequestMutationAuthority(request).assertPreparationCurrent,
           });
-          if (confirmationGrant) {
-            bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId });
+          try {
+            request.sessionMutationAuthorization?.assertCurrent();
+            if (confirmationGrant) {
+              bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId });
+            }
+            return release;
+          } catch (error) {
+            release();
+            throw error;
           }
         },
       });

@@ -114,5 +114,14 @@ export function createGatewaySidecarStopOwner() {
     beginClose,
     stop,
     sealAndJoin,
+    async stopAndJoin(this: void) {
+      // Failed worker stops still need their supervisor transport. Seal late
+      // acquisition cleanup before the caller can retire that transport.
+      try {
+        await stop();
+      } finally {
+        await sealAndJoin();
+      }
+    },
   };
 }

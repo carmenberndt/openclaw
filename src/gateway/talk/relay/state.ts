@@ -282,11 +282,16 @@ export type RelaySession = {
   toolResultEpoch: number;
   voiceConfig?: OpenClawConfig;
   voiceSessionCreated: boolean;
+  voiceSessionCreation?: Promise<boolean>;
   voiceTranscriptSeq: number;
   voiceTranscriptQueue: BoundedSerialQueue;
   confirmationReadiness: ReturnType<typeof createClientVoiceConfirmationReadiness>;
   voiceSessionClose?: Promise<void>;
-  closing?: { reason: "completed" | "error"; completion?: Promise<void> };
+  closing?: {
+    reason: "completed" | "error";
+    completion?: Promise<void>;
+    runTranscript?: (run: () => boolean) => boolean;
+  };
   failSession: (message: string) => void;
 };
 

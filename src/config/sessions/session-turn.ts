@@ -175,6 +175,36 @@ export async function appendSessionTurnInWorker(
         }
       },
       async run(worker, commit) {
+        if (
+          options.voiceTranscript &&
+          !custody &&
+          !cliWriter &&
+          !options.sessionTurnMutation &&
+          !options.sessionLifecyclePatch &&
+          !options.initialSessionEntry &&
+          messages.every(
+            (message) =>
+              !message.shouldAppend &&
+              !message.workerPreparation &&
+              !message.prepareMessageAfterIdempotencyCheck &&
+              !message.beforeFreshMessageCommit &&
+              !message.shouldAppendInTransaction &&
+              !message.predicate,
+          )
+        ) {
+          // Fixed messages need no host planning snapshot. Commit rechecks identity,
+          // lifecycle and idempotency against its authoritative transaction rows.
+          plan.options.messages = messages.map(({ config, ...message }) => ({
+            ...message,
+            message:
+              options.atomicGroup === true
+                ? message.message
+                : redactTranscriptMessageForStorage(message.message, {
+                    config: config ?? options.config,
+                  }),
+          }));
+          return commit(() => worker.execute({ type: "session.turn.commit", input: plan }));
+        }
         const selected = await worker.execute({ type: "session.turn.prepare", input: plan });
         assertCurrent();
         if (selected.result) {
