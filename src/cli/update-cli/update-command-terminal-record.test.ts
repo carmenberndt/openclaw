@@ -7,22 +7,14 @@ import * as snapshot from "../../infra/sqlite-snapshot-source.js";
 import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { createRetainedCheckpointFixture } from "../../infra/update-retained-checkpoint.test-support.js";
 import {
-  createRetainedUpdateRecovery,
-  retainedTerminalRecord,
-} from "../../infra/update-retained-recovery.test-support.js";
-import {
   createUpdateRun,
   finishUpdateRun,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
-import { legacyRecord } from "../../infra/update-run-recovery-legacy.test-support.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { defaultRuntime } from "../../runtime.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../../state/openclaw-state-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
@@ -249,51 +241,6 @@ describe("owned completed update publication", () => {
       "live database is changing",
     );
   });
-
-  it.each(["terminal-legacy", "corrupt"] as const)(
-    "captures a separate completed run beside unrelated %s recovery",
-    async (kind) => {
-      const f = fixture();
-      const options = { env: f.params.opts.run.env };
-      const other = createUpdateRun({ trigger: "cli" }, options);
-      const runtime = {
-        root,
-        nodePath: process.execPath,
-        version: after.version,
-        buildId: after.buildId,
-      };
-      const recovery = createRetainedUpdateRecovery(
-        { runId: other.runId, from: runtime, to: runtime },
-        options,
-      );
-      finishUpdateRun(other.runId, { status: "succeeded" }, options);
-      const key = "update.recovery." + other.runId;
-      const raw =
-        kind === "corrupt"
-          ? '{"revision":1}'
-          : JSON.stringify(legacyRecord(retainedTerminalRecord(recovery)), null, 2);
-      openOpenClawStateDatabase(options)
-        .db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?")
-        .run(raw, key);
-      closeOpenClawStateDatabaseForTest();
-      const captured = await capture(f);
-      expect(captured?.record).toMatchObject({ runId: f.result.runId, status: "succeeded" });
-      f.release();
-      const settled = await resolveSettledUpdateCommandResult(
-        f.params,
-        f.result,
-        undefined,
-        captured,
-      );
-      expect(settled.result.status).toBe("ok");
-      expect(settled.captured).toBe(captured);
-      expect(
-        openOpenClawStateDatabase(options)
-          .db.prepare("SELECT value_json FROM config_machine_state WHERE state_key=?")
-          .get(key)?.value_json,
-      ).toBe(raw);
-    },
-  );
 
   it("does not let a prepared success mask failed executor cleanup", async () => {
     const f = fixture();

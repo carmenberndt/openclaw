@@ -189,15 +189,15 @@ export async function preparePackageActivationJournal(
   ) {
     throw new Error("Package publication recovery requires same-filesystem directories.");
   }
-  // The new operation owns replacement through its current executor. A fully
-  // retired receipt is history; unresolved artifacts still retain their owner.
+  // A completed receipt may be replaced only by this new, genuinely admitted
+  // operation under its current fence. Legacy/incomplete artifacts refuse.
   assertPackageActivationLayout(anchor);
   const priorJournal = fs.lstatSync(resolvePackageActivationControl(anchor), {
     throwIfNoEntry: false,
   })
     ? openPackageActivationJournal(anchor)
     : undefined;
-  const prior = priorJournal?.readForAdmission(liveRoot);
+  const prior = priorJournal?.read();
   if (prior && !isPackageActivationComplete(anchor, prior)) {
     throw new Error("An unresolved package operation already owns this installation.");
   }

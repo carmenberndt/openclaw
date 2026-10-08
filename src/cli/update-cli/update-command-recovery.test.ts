@@ -11,7 +11,7 @@ import {
 } from "../../infra/update-retained-recovery.test-support.js";
 import { createUpdateRun, finishUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { legacyRecord } from "../../infra/update-run-recovery-legacy.test-support.js";
-import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
+import { inspectUpdateRecoveries, loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -336,30 +336,25 @@ describe("historical terminal completion diagnostics", () => {
     expect(getUpdateRun(f.run.runId, f.options)?.status).toBe("running");
   });
 
-  it.each(["terminal-legacy", "corrupt"] as const)(
-    "completes a separate run without changing unrelated %s recovery",
-    async (kind) => {
-      const f = await historical(false);
+  it.each([false, true])(
+    "keeps unrelated legacy history separate from fallback completion (terminal=%s)",
+    async (terminal) => {
+      const f = await historical(false, terminal);
       const other = createUpdateRun({ trigger: "cli" }, f.options);
-      const key = "update.recovery." + f.run.runId;
-      const saved = kind === "corrupt" ? '{"revision":1}' : f.saved;
-      const db = openOpenClawStateDatabase(f.options).db;
-      db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?").run(saved, key);
-      const original = getUpdateRun(f.run.runId, f.options);
       closeOpenClawStateDatabaseForTest();
+      const before = await f.family();
       const result = completeUpdateCommandRun(
         { status: "ok", mode: "npm", steps: [], durationMs: 1 },
         { runId: other.runId, env: f.opts.run!.env },
       );
-      expect(result).toMatchObject({ status: "ok", runId: other.runId });
-      expect(getUpdateRun(other.runId, f.options)?.status).toBe("succeeded");
-      expect(getUpdateRun(f.run.runId, f.options)).toEqual(original);
-      expect(
-        openOpenClawStateDatabase(f.options)
-          .db.prepare("SELECT value_json FROM config_machine_state WHERE state_key=?")
-          .get(key)?.value_json,
-      ).toBe(saved);
-      expect(() => loadUpdateRecovery(f.run.runId, f.options)).toThrow();
+      expect(result).toMatchObject(
+        terminal ? { status: "ok" } : { status: "error", reason: "update-recovery-pending" },
+      );
+      if (!terminal) {
+        expect(await f.family()).toEqual(before);
+      }
+      expect(getUpdateRun(other.runId, f.options)?.status).toBe(terminal ? "succeeded" : "running");
+      expect(inspectUpdateRecoveries(f.options)[0]?.raw).toBe(f.saved);
     },
   );
 });
