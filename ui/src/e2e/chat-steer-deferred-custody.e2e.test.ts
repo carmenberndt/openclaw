@@ -64,7 +64,7 @@ suite.define(() => {
       const queued = page.locator(".chat-queue__item", { hasText: correction });
       const sent = await gateway.waitForRequest("chat.send");
       expect(sent.params).toMatchObject({ queueMode: "steer" });
-      const pendingRunId = String((sent.params as { idempotencyKey: string }).idempotencyKey);
+      const pendingRunId = (sent.params as { idempotencyKey: string }).idempotencyKey;
       await gateway.resolveDeferred("chat.send", { runId: pendingRunId, status: "started" });
       await expect
         .poll(() => page.locator(".chat-group.user", { hasText: correction }).count())

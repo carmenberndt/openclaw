@@ -74,12 +74,14 @@ function observe(page: Page) {
 /** Use the paired browser's real RPC client for public fixture setup only. */
 async function rpc(page: Page, method: string, params: Record<string, unknown>) {
   return page.evaluate(
-    async ({ method, params }) => {
+    async (request) => {
       const client = document.querySelector<HTMLElement & { runtime?: ApplicationRuntime }>(
         "openclaw-app",
       )?.runtime?.context.gateway.snapshot.client;
-      if (!client) throw new Error("Paired Gateway client missing");
-      return client.request(method, params);
+      if (!client) {
+        throw new Error("Paired Gateway client missing");
+      }
+      return client.request(request.method, request.params);
     },
     { method, params },
   );
@@ -107,8 +109,9 @@ describe.skipIf(!variant)("Task proof: actual deferred steering custody", () => 
     name: "Mobile deferred steering through a real Gateway",
     startServerBeforeBrowser: true,
     async startServer() {
-      if (variant !== "baseline" && variant !== "fixed")
+      if (variant !== "baseline" && variant !== "fixed") {
         throw new Error("Set OPENCLAW_STEER_CUSTODY_PROOF to baseline or fixed");
+      }
       artifactDir = createControlUiE2eArtifactDir("steer-custody-real-gateway-" + variant);
       provider = await startScrollInferenceFixture();
       const close = () =>
@@ -241,8 +244,9 @@ describe.skipIf(!variant)("Task proof: actual deferred steering custody", () => 
                 await expect.poll(provider.requests).toBe(active.index);
                 await active.append("The original reply is active while I check the shared queue.");
                 await pane
-                  .getByText("The original reply is active while I check the shared queue.", {
-                    exact: true,
+                  .getByRole("paragraph")
+                  .filter({
+                    hasText: "The original reply is active while I check the shared queue.",
                   })
                   .waitFor();
                 await stop.waitFor();
@@ -265,20 +269,12 @@ describe.skipIf(!variant)("Task proof: actual deferred steering custody", () => 
                   queueMode: "steer",
                 });
                 const runId = record(sent.params)?.idempotencyKey;
-                if (typeof runId !== "string")
+                if (typeof runId !== "string") {
                   throw new Error("Actual steer idempotency key missing");
+                }
                 await expect.poll(() => wire.response(sent.id)).toMatchObject({ ok: true });
-                await expect.poll(() => instance.logs()).toContain("tool_authority_mismatch");
-                proof.rejectionObserved = instance
-                  .logs()
-                  .split("\n")
-                  .filter(
-                    (line) =>
-                      line.includes("steering rejected") &&
-                      line.includes("tool_authority_mismatch") &&
-                      line.includes(runId),
-                  );
-                expect(proof.rejectionObserved).not.toEqual([]);
+                // Pre-ACK rejection has no warning log. Prove disposition through the
+                // authoritative receipt and automatic history refresh below instead.
                 await expect
                   .poll(() =>
                     wire.frames
@@ -304,8 +300,9 @@ describe.skipIf(!variant)("Task proof: actual deferred steering custody", () => 
                           .some(
                             (request) => request.frame.id === frame.id && request.index >= before,
                           )
-                      )
+                      ) {
                         return false;
+                      }
                       const history = frame.payload as History;
                       return (
                         history.pendingInputs?.queuedCount === 1 &&
