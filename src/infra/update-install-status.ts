@@ -31,7 +31,8 @@ export async function resolveStartupInstallStatus(
     fetchGit: fetchRemoteGit,
     includeRegistry: false,
     ...(installReceipt ? { gitSourceHint: installReceipt } : {}),
-    ...(fetchRemoteGit ? { useDetachedDevUpstream: true } : {}),
+    // Read-only admission must use the same live source policy as a remote refresh.
+    useDetachedDevUpstream: true,
   };
   for (let attempt = 0; ; attempt++) {
     let status: UpdateCheckResult | undefined;
