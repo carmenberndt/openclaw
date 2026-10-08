@@ -1,3 +1,5 @@
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import { writeUpdateInstallReceiptRowSync } from "./restart-sentinel-store.js";
 import type { UpdateCheckResult } from "./update-check.js";
 
 export function createDevGitStatus(params?: {
@@ -32,4 +34,24 @@ export function createDevGitStatus(params?: {
     },
   } satisfies UpdateCheckResult;
   return status;
+}
+
+export function writeDevGitInstallReceipt(params: {
+  status: "ok" | "error";
+  ts: number;
+  reason?: string;
+}) {
+  runOpenClawStateWriteTransaction(({ db }) => {
+    writeUpdateInstallReceiptRowSync(db, {
+      kind: "update",
+      status: params.status,
+      ts: params.ts,
+      stats: {
+        mode: "git",
+        ...(params.reason ? { reason: params.reason } : {}),
+        root: "/opt/openclaw",
+        after: { sha: "current-sha", version: "1.0.0", upstreamRef: "origin/main" },
+      },
+    });
+  });
 }

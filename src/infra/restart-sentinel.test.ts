@@ -765,6 +765,7 @@ describe("restart sentinel", () => {
         await expect(readVerifiedGitUpdateReceipt()).resolves.toEqual({
           root: await fs.realpath(installRoot),
           sha: "bbbbbbbb",
+          upstreamRef: "origin/main",
           installedAtMs: ts,
         });
       });

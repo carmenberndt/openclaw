@@ -7,7 +7,7 @@ import { hasErrnoCode } from "./errno.js";
 import { readPackageManagerSpec } from "./package-json.js";
 import { DEV_BRANCH } from "./update-channels.js";
 import { resolveDevUpdateTargetRevision, type DevUpdateTarget } from "./update-dev-target.js";
-import { readGitUpdateFetchTarget, resolveGitUpdateTrackingRef } from "./update-git-metadata.js";
+import { resolveGitUpdateTrackingRef, type GitFetchTarget } from "./update-git-metadata.js";
 import {
   parsePnpmPackageManagerVersion,
   resolveUpdateBuildManager,
@@ -122,6 +122,7 @@ async function resolveUpstreamCandidates(params: {
   gitRoot: string;
   needsCheckoutMain: boolean;
   refreshedRemotes: readonly string[];
+  devSource?: GitFetchTarget & { revision?: string };
   step: StepFactory;
 }): Promise<
   | {
@@ -145,7 +146,7 @@ async function resolveUpstreamCandidates(params: {
     const result = await runStep(step("upstream-check", ...args));
     return !isFailedUpdateStep(result) ? result.stdoutTail?.trim() || null : null;
   };
-  const source = await readGitUpdateFetchTarget(readGit, DEV_BRANCH, params.needsCheckoutMain);
+  const source = params.devSource;
   if (!source || (source.remote !== "." && !params.refreshedRemotes.includes(source.remote))) {
     return { status: "skipped", reason: "no-upstream" };
   }
@@ -427,6 +428,7 @@ export async function runGitCandidatePreflight(params: {
   artifactRoot: string;
   devTarget?: DevUpdateTarget;
   refreshedRemotes: readonly string[];
+  devSource?: GitFetchTarget & { revision?: string };
   targetRevision?: string;
   beforeSha?: string | null;
   referenceSource?: {
@@ -507,7 +509,7 @@ export async function runGitCandidatePreflight(params: {
           "merge-base",
           "--is-ancestor",
           targetSha,
-          `${params.devTarget.upstreamRef}^{commit}`,
+          `${params.devSource?.revision ?? params.devTarget.upstreamRef}^{commit}`,
         ),
       );
       if (isFailedUpdateStep(ancestryStep)) {

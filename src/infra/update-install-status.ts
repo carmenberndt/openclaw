@@ -30,6 +30,7 @@ export async function resolveStartupInstallStatus(
     ...(fetchRemoteGit ? {} : { timeoutMs }),
     fetchGit: fetchRemoteGit,
     includeRegistry: false,
+    ...(installReceipt ? { gitSourceHint: installReceipt } : {}),
     ...(fetchRemoteGit ? { useDetachedDevUpstream: true } : {}),
   };
   for (let attempt = 0; ; attempt++) {

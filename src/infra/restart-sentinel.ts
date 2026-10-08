@@ -49,6 +49,7 @@ export type { UpdateFailureReportReceipt } from "./update-failure-report-receipt
 export type VerifiedGitUpdateReceipt = {
   root: string;
   sha: string;
+  upstreamRef?: string;
   installedAtMs: number;
 };
 
@@ -458,9 +459,14 @@ export async function readVerifiedGitUpdateReceipt(
   if (!root || !sha) {
     return null;
   }
+  const upstreamRef =
+    typeof payload.stats.after.upstreamRef === "string"
+      ? payload.stats.after.upstreamRef.trim()
+      : "";
   return {
     root,
     sha,
+    ...(upstreamRef ? { upstreamRef } : {}),
     installedAtMs: payload.ts,
   };
 }

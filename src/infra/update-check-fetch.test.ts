@@ -325,3 +325,148 @@ it("preserves configured custom tracking ahead of the Dev origin default", async
     });
   });
 });
+
+it.each([
+  "full",
+  "missing-full",
+  "missing-short",
+  "local",
+  "excluded",
+  "ambiguous",
+  "configured",
+  "tag-priority",
+  "tail-nonmatch",
+  "abbreviated-excluded",
+  "object-source",
+  "wrong-object-format",
+  "at-source",
+])("resolves optional source hints through live Git mappings (%s)", async (mode) => {
+  await withTestDir({ prefix: "openclaw-source-hint-mapping-" }, async (base) => {
+    const source = path.join(base, "source");
+    const root = path.join(base, "install");
+    await initialize(source);
+    await commit(source, "installed");
+    const sha = await git(source, "rev-parse", "HEAD");
+    await git(base, "clone", "--quiet", source, root);
+    await git(root, "checkout", "--detach", sha);
+    await git(root, "branch", "-D", "main");
+    await git(root, "remote", "add", "team/fork", source);
+    const sourceRef =
+      mode === "wrong-object-format"
+        ? sha + "a".repeat(24)
+        : mode === "object-source"
+          ? sha
+          : mode === "at-source"
+            ? "@"
+            : mode === "tail-nonmatch"
+              ? "missing"
+              : ["tag-priority", "abbreviated-excluded"].includes(mode)
+                ? "main"
+                : "refs/heads/main";
+    await git(root, "config", "remote.team/fork.fetch", "+" + sourceRef + ":refs/status/main");
+    if (!mode.startsWith("missing")) {
+      await git(root, "update-ref", "refs/status/main", sha);
+    }
+    if (mode === "local") {
+      await git(root, "branch", "saved", sha);
+    } else if (mode === "excluded" || mode === "abbreviated-excluded") {
+      await git(root, "config", "--add", "remote.team/fork.fetch", "^refs/heads/main");
+    } else if (mode === "ambiguous") {
+      await git(root, "remote", "add", "other", source);
+      await git(root, "config", "remote.other.fetch", "+refs/heads/main:refs/status/main");
+    } else if (mode === "configured") {
+      await git(root, "config", "branch.main.remote", "origin");
+      await git(root, "config", "branch.main.merge", "refs/heads/main");
+    }
+    if (mode === "tag-priority") {
+      await git(source, "tag", "main", sha);
+    } else if (mode === "tail-nonmatch") {
+      await git(source, "branch", "other/missing", sha);
+    }
+    await commit(source, "available");
+    const target = await git(source, "rev-parse", "HEAD");
+    const upstreamRef =
+      mode === "local" ? "saved" : mode === "missing-short" ? "status/main" : "refs/status/main";
+    const configBefore = await fs.readFile(path.join(root, ".git", "config"));
+    const result = await checkUpdateStatus({
+      root,
+      fetchGit: true,
+      useDetachedDevUpstream: true,
+      includeRegistry: false,
+      gitSourceHint: { root, sha, upstreamRef },
+    });
+    const usesHint = ![
+      "excluded",
+      "ambiguous",
+      "configured",
+      "abbreviated-excluded",
+      "tail-nonmatch",
+      "wrong-object-format",
+    ].includes(mode);
+    const selectsCurrent = ["local", "tag-priority", "object-source"].includes(mode);
+    expect(result.git).toMatchObject({
+      upstream: usesHint ? upstreamRef : "origin/main",
+      upstreamSource: usesHint ? "receipt" : "tracking",
+      upstreamSha: selectsCurrent ? sha : target,
+      fetchOk: true,
+      ahead: 0,
+      behind: selectsCurrent ? 0 : 1,
+    });
+    expect(await fs.readFile(path.join(root, ".git", "config"))).toEqual(configBefore);
+    expect(await git(root, "rev-parse", "HEAD")).toBe(sha);
+  });
+});
+
+it("rejects an ambiguous hexadecimal receipt prefix without interpreting it as a ref", async () => {
+  await withTestDir({ prefix: "openclaw-source-hint-ambiguous-sha-" }, async (root) => {
+    await git(root, "init", "--initial-branch=main", "--object-format=sha1");
+    const writeObject = async (type: "tree" | "commit", input: string) => {
+      const result = await runCommandWithTimeout(
+        ["git", "-C", root, "hash-object", "-t", type, "-w", "--stdin"],
+        { timeoutMs: 5000, input },
+      );
+      expect(result.code, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    const tree = await writeObject("tree", "");
+    // These two synthetic commits share seven hex digits. No collision search runs in CI.
+    const commitWithNonce = (nonce: number) =>
+      writeObject(
+        "commit",
+        "tree " +
+          tree +
+          "\nauthor Test <test@openclaw.invalid> 1 +0000\n" +
+          "committer Test <test@openclaw.invalid> 1 +0000\n\nambiguity fixture " +
+          nonce +
+          "\n",
+      );
+    const sha = await commitWithNonce(2465);
+    expect(sha).toBe("4c236745f0e4c2f009c8042ce7e712df871bd0de");
+    await git(root, "update-ref", "refs/heads/main", sha);
+    await git(root, "checkout", "--detach", sha);
+    await git(root, "remote", "add", "origin", root);
+    await git(root, "remote", "add", "upstream", root);
+    const receiptSha = sha.slice(0, 7);
+    const inspect = () =>
+      checkUpdateStatus({
+        root,
+        fetchGit: true,
+        useDetachedDevUpstream: true,
+        includeRegistry: false,
+        gitSourceHint: { root, sha: receiptSha, upstreamRef: "upstream/main" },
+      });
+    expect((await inspect()).git).toMatchObject({
+      upstream: "upstream/main",
+      upstreamSource: "receipt",
+    });
+    const collision = await commitWithNonce(11791);
+    expect(collision).toBe("4c236746ae2c51a39c70d768fe4fe99c426fc830");
+    expect(
+      (await git(root, "rev-parse", "--disambiguate=" + receiptSha)).split("\n").toSorted(),
+    ).toEqual([sha, collision]);
+    expect((await inspect()).git).toMatchObject({
+      upstream: "origin/main",
+      upstreamSource: "tracking",
+    });
+  });
+});

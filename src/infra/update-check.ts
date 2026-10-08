@@ -21,6 +21,7 @@ import {
   readGitUpdateFetchTarget,
   resolveGitUpdateTrackingRef,
   resolveGitRepositoryMetadata,
+  type GitUpdateSourceHint,
 } from "./update-git-metadata.js";
 import { readBuiltRuntimeCommit, readGitRuntimeArtifactStatus } from "./update-git-runtime.js";
 import { detectGlobalInstallManagerForRoot } from "./update-global.js";
@@ -46,6 +47,7 @@ type GitUpdateStatus = {
   tag: string | null;
   branch: string | null;
   upstream: string | null;
+  upstreamSource?: "tracking" | "receipt";
   upstreamSha?: string | null;
   repositoryUrl?: string;
   commitAtMs?: number | null;
@@ -343,6 +345,7 @@ async function checkGitUpdateStatus(params: {
   onGitProbeTimeout?: GitUpdateOptions["onGitProbeTimeout"];
   fetch?: boolean;
   useDetachedDevUpstream?: boolean;
+  gitSourceHint?: GitUpdateSourceHint | null;
 }): Promise<GitUpdateStatus> {
   const timeoutMs = params.timeoutMs ?? (params.fetch ? UPDATE_NETWORK_TIMEOUT_MS : 6000);
   const root = path.resolve(params.root);
@@ -354,7 +357,7 @@ async function checkGitUpdateStatus(params: {
     });
   const readGit = async (...args: string[]) => {
     const result = await runGit(...args);
-    return result?.code === 0 ? result.stdout.trim() || null : null;
+    return result?.code === 0 ? result.stdout.trim() : null;
   };
 
   const base: GitUpdateStatus = {
@@ -380,9 +383,23 @@ async function checkGitUpdateStatus(params: {
     return { ...base, error };
   }
   const trackingBranch =
-    branch === "HEAD" ? (params.useDetachedDevUpstream ? DEV_BRANCH : null) : branch;
+    branch === "HEAD"
+      ? params.useDetachedDevUpstream || params.gitSourceHint?.upstreamRef
+        ? DEV_BRANCH
+        : null
+      : branch;
   const fetchTarget = trackingBranch
-    ? await readGitUpdateFetchTarget(readGit, trackingBranch, branch === "HEAD")
+    ? await readGitUpdateFetchTarget(
+        readGit,
+        trackingBranch,
+        branch === "HEAD" && Boolean(params.useDetachedDevUpstream),
+        {
+          root,
+          sha,
+          receipt: params.gitSourceHint ?? null,
+          fetchRemote: Boolean(params.fetch),
+        },
+      )
     : null;
 
   const commitAtSeconds = Number.parseInt(commitAtRaw ?? "", 10);
@@ -422,9 +439,12 @@ async function checkGitUpdateStatus(params: {
     fetchTarget && trackingBranch
       ? await resolveGitUpdateTrackingRef(readGit, trackingBranch, fetchTarget)
       : null;
-  const upstream = trackingRevision
-    ? await readGit("rev-parse", "--abbrev-ref", "--symbolic-full-name", trackingRevision)
-    : null;
+  const upstream =
+    fetchTarget?.upstreamSource === "receipt"
+      ? params.gitSourceHint?.upstreamRef?.trim() || null
+      : trackingRevision
+        ? await readGit("rev-parse", "--abbrev-ref", "--symbolic-full-name", trackingRevision)
+        : null;
   const upstreamRevision = `${trackingRevision}^{commit}`;
   let upstreamCommit =
     (!params.fetch || fetchOk === true) && upstream && sha
@@ -469,6 +489,7 @@ async function checkGitUpdateStatus(params: {
     tag,
     branch,
     upstream,
+    ...(fetchTarget ? { upstreamSource: fetchTarget.upstreamSource } : {}),
     upstreamSha: upstreamCommit,
     ...(await resolveGitRepositoryMetadata(readGit, fetchTarget)),
     commitAtMs,
@@ -601,6 +622,7 @@ export async function checkUpdateStatus(params: {
   onGitProbeTimeout?: GitUpdateOptions["onGitProbeTimeout"];
   fetchGit?: boolean;
   useDetachedDevUpstream?: boolean;
+  gitSourceHint?: GitUpdateSourceHint | null;
   includeRegistry?: boolean;
   registryChannel?: UpdateChannel;
   resolveRegistryChannel?: (status: UpdateInstallIdentity) => UpdateChannel;
@@ -707,6 +729,7 @@ export async function checkUpdateStatus(params: {
           onGitProbeTimeout: params.onGitProbeTimeout,
           fetch: Boolean(params.fetchGit),
           useDetachedDevUpstream: params.useDetachedDevUpstream,
+          gitSourceHint: params.gitSourceHint,
         })
       : Promise.resolve(undefined),
     checkDepsStatus({ root, manager: packageManager }),

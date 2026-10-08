@@ -139,6 +139,7 @@ describe("Git checkout execution", () => {
       await git(root, "remote", "add", "aaa-fork", other);
       if (mode === "missing-origin") {
         await git(root, "remote", "remove", "origin");
+        await git(root, "remote", "add", "another-fork", remote);
       }
       const config = await fs.readFile(path.join(root, ".git", "config"));
       const result = await update();
@@ -155,22 +156,42 @@ describe("Git checkout execution", () => {
     },
   );
 
-  it("keeps a pinned custom tracking target on its configured source", async () => {
-    const target = await advanceRemote();
-    await git(root, "remote", "rename", "origin", "team/fork");
-    await git(root, "config", "remote.team/fork.fetch", "+refs/heads/main:refs/status/main");
-    await git(root, "update-ref", "-d", "refs/remotes/team/fork/main");
-    await git(root, "checkout", "--detach", beforeSha);
-    await git(root, "remote", "add", "origin", path.join(directory, "unavailable"));
-    const config = await fs.readFile(path.join(root, ".git", "config"));
-    const result = await update({
-      devTarget: { mode: "tracked", upstreamRef: "refs/status/main", upstreamSha: target },
-    });
-    expect(result).toMatchObject({ status: "ok", after: { sha: target } });
-    expect(await git(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD");
-    expect(await fs.readFile(path.join(root, ".git", "config"))).toEqual(config);
-    await expectRuntime(root, target);
-  });
+  it.each([
+    ["refs/heads/main", "refs/status/main", "refs/status/main"],
+    ["main", "refs/status/main", "refs/status/main"],
+    ["HEAD", "refs/status/main", "refs/status/main"],
+    ["", "refs/status/main", "refs/status/main"],
+    ["refs/heads/main", "remotes/team/fork/main", "refs/remotes/team/fork/main"],
+    ["refs/heads/main", "heads/saved", "refs/heads/saved"],
+    ["refs/heads/main", "tags/saved", "refs/tags/saved"],
+    ["refs/heads/main", "saved", "refs/heads/saved"],
+    ["refs/heads/*", "refs/remotes/team/fork/*", "refs/remotes/team/fork/release-$&"],
+  ])(
+    "keeps a pinned custom tracking target on its configured source (%s -> %s)",
+    async (sourceRef, destination, trackingRef) => {
+      const target = await advanceRemote();
+      if (sourceRef.includes("*")) {
+        await git(remote, "branch", trackingRef.slice(trackingRef.lastIndexOf("/") + 1), target);
+      }
+      await git(root, "remote", "rename", "origin", "team/fork");
+      await git(root, "config", "remote.team/fork.fetch", "+" + sourceRef + ":" + destination);
+      await git(root, "update-ref", "-d", "refs/remotes/team/fork/main");
+      await git(root, "checkout", "--detach", beforeSha);
+      await git(root, "branch", "-D", "main");
+      const other = path.join(directory, "other");
+      await git(directory, "clone", "--quiet", remote, other);
+      await git(other, "reset", "--hard", beforeSha);
+      await git(root, "remote", "add", "origin", other);
+      const config = await fs.readFile(path.join(root, ".git", "config"));
+      const result = await update({
+        devTarget: { mode: "tracked", upstreamRef: trackingRef, upstreamSha: target },
+      });
+      expect(result).toMatchObject({ status: "ok", after: { sha: target } });
+      expect(await git(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe("HEAD");
+      expect(await fs.readFile(path.join(root, ".git", "config"))).toEqual(config);
+      await expectRuntime(root, target);
+    },
+  );
 
   it("fails before activation when the authoritative remote is unavailable", async () => {
     await advanceRemote();
