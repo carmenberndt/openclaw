@@ -42,6 +42,33 @@ function fixture(bytes: Buffer, basename = "fixture.bin") {
   };
 }
 
+// Small sources copy from OpenClaw's pinned descriptor; `around` wraps the fixture's copy.
+function aroundPinnedCopy(
+  filename: string,
+  around: (target: string, copy: () => number) => number,
+) {
+  const source = fs.statSync(filename);
+  const openSync = fs.openSync;
+  const targets = new Map<number, string>();
+  vi.spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof fs.openSync>) => {
+    const fd = openSync(...args);
+    if (args[1] === "wx") {
+      targets.set(fd, String(args[0]));
+    }
+    return fd;
+  });
+  const copyFileDescriptorSync = fsSafeAdvanced.copyFileDescriptorSync;
+  return vi
+    .spyOn(fsSafeAdvanced, "copyFileDescriptorSync")
+    .mockImplementation((sourceFd, targetFd, options) => {
+      const copy = () => copyFileDescriptorSync(sourceFd, targetFd, options);
+      const stat = fs.fstatSync(sourceFd);
+      return stat.dev === source.dev && stat.ino === source.ino
+        ? around(targets.get(targetFd)!, copy)
+        : copy();
+    });
+}
+
 it.skipIf(process.platform !== "darwin")(
   "clones ordinary source files and their captured aliases on APFS",
   async ({ skip }) => {
@@ -168,22 +195,15 @@ it.each(["cold", "warm", "lazy"] as const)(
       source.capture();
     }
     const lazy = phase === "lazy" ? source.capture(entry) : undefined;
-    const copyRootFileSync = fsSafeAdvanced.copyRootFileSync;
     let replaced = false;
-    vi.spyOn(fsSafeAdvanced, "copyRootFileSync").mockImplementation((options) => {
-      const copied = copyRootFileSync(options);
-      if (options.source.absolutePath !== source.filename) {
-        return copied;
+    aroundPinnedCopy(source.filename, (target, copy) => {
+      const copied = copy();
+      if (!replaced) {
+        replaced = true;
+        fs.renameSync(target, `${target}.original`);
+        fs.writeFileSync(target, "replaced");
       }
-      const close = () => {
-        copied.close();
-        if (!replaced) {
-          replaced = true;
-          fs.renameSync(copied.path, `${copied.path}.original`);
-          fs.writeFileSync(copied.path, "replaced");
-        }
-      };
-      return { ...copied, close, [Symbol.dispose]: close };
+      return copied;
     });
 
     const capture = () => (lazy ? lazy.captureResolvedModule(source.filename) : source.capture());
@@ -205,30 +225,21 @@ it.each(["cold", "warm", "lazy"] as const)(
   },
 );
 
-it("refuses a source swapped after OpenClaw pins it without leaving a capture", () => {
+it("copies the pinned bytes and refuses a source swapped after OpenClaw pins it", () => {
   const source = fixture(Buffer.from("pinned source"), "fixture.js");
-  const admitted = fs.statSync(source.filename, { bigint: true });
-  const copyRootFileSync = fsSafeAdvanced.copyRootFileSync;
   let target: string | undefined;
-  let refused: unknown;
-  vi.spyOn(fsSafeAdvanced, "copyRootFileSync").mockImplementation((options) => {
-    if (options.source.absolutePath !== source.filename) {
-      return copyRootFileSync(options);
-    }
-    target = options.destination.absolutePath;
-    expect(options.expectedSourceIdentity).toEqual({ dev: admitted.dev, ino: admitted.ino });
+  let copied: string | undefined;
+  aroundPinnedCopy(source.filename, (destination, copy) => {
+    target = destination;
     fs.renameSync(source.filename, `${source.filename}.retained`);
     fs.writeFileSync(source.filename, "replacement");
-    try {
-      return copyRootFileSync(options);
-    } catch (error) {
-      refused = error;
-      throw error;
-    }
+    const bytes = copy();
+    copied = fs.readFileSync(destination, "utf8");
+    return bytes;
   });
 
-  expect(() => source.capture()).toThrow();
-  expect(refused).toMatchObject({ code: "path-mismatch" });
+  expect(() => source.capture()).toThrow("Plugin source changed while preparing its reload");
+  expect(copied).toBe("pinned source");
   expect(target).toBeDefined();
   expect(fs.existsSync(target!)).toBe(false);
   expect(fs.readFileSync(`${source.filename}.retained`, "utf8")).toBe("pinned source");
@@ -237,14 +248,11 @@ it("refuses a source swapped after OpenClaw pins it without leaving a capture", 
 
 it("maps growth beyond the pinned size to the reload retry error with its cause", () => {
   const source = fixture(Buffer.from("bounded"), "fixture.js");
-  const copyRootFileSync = fsSafeAdvanced.copyRootFileSync;
   let target: string | undefined;
-  vi.spyOn(fsSafeAdvanced, "copyRootFileSync").mockImplementation((options) => {
-    if (options.source.absolutePath === source.filename) {
-      target = options.destination.absolutePath;
-      fs.appendFileSync(source.filename, " growth");
-    }
-    return copyRootFileSync(options);
+  aroundPinnedCopy(source.filename, (destination, copy) => {
+    target = destination;
+    fs.appendFileSync(source.filename, " growth");
+    return copy();
   });
 
   let failure: unknown;
@@ -263,27 +271,23 @@ it("maps growth beyond the pinned size to the reload retry error with its cause"
 
 it.each(["EIO", "EBADF"])("propagates fatal %s copy failures without retry", (code) => {
   const source = fixture(Buffer.from("captured"), "fixture.js");
-  const copyRootFileSync = fsSafeAdvanced.copyRootFileSync;
-  const failure = new FsSafeError("helper-failed", "guarded synchronous file copy failed", {
-    cause: Object.assign(new Error("injected copy failure"), { code }),
-  });
-  const copies = vi.spyOn(fsSafeAdvanced, "copyRootFileSync").mockImplementation((options) => {
-    if (options.source.absolutePath === source.filename) {
-      throw failure;
-    }
-    return copyRootFileSync(options);
+  const failure = Object.assign(new Error("injected copy failure"), { code });
+  const targets: string[] = [];
+  aroundPinnedCopy(source.filename, (destination) => {
+    targets.push(destination);
+    throw failure;
   });
 
   expect(() => source.capture()).toThrow(failure);
-  expect(
-    copies.mock.calls.filter(([options]) => options.source.absolutePath === source.filename),
-  ).toHaveLength(1);
+  expect(targets).toHaveLength(1);
+  expect(fs.existsSync(targets[0]!)).toBe(false);
 });
 
 it.each([false, true])(
   "preserves disk-full diagnostics when capture cleanup fails: %s",
   (cleanupFails) => {
-    const source = fixture(Buffer.from("captured"), "fixture.js");
+    // Sources of at least one transfer chunk keep fs-safe's guarded clone.
+    const source = fixture(Buffer.alloc(64 * 1024, "c"), "fixture.js");
     const copyRootFileSync = fsSafeAdvanced.copyRootFileSync;
     const cause = Object.assign(new Error("capture filesystem is full"), { code: "ENOSPC" });
     const primary = new FsSafeError("helper-failed", "guarded synchronous file copy failed", {

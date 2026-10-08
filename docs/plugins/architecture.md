@@ -156,7 +156,7 @@ Tool resolution treats plugins that the prepared generation recorded as disabled
 
 Plugin reload reconciles config watcher events after asynchronous metadata preparation. An unchanged source event does not cancel the operation; newer writes or changed config, install records, or source ownership still supersede it.
 
-Ordinary plugin source captures use independent files, including copies reached through aliases. On filesystems with copy-on-write support, these captures can share storage without sharing file identity, reducing data writes for large plugins. Source and receipt checks still reject changes detected during reload preparation.
+Ordinary plugin source captures use independent files, including copies reached through aliases. On filesystems with copy-on-write support, captured files of 64 KiB or more can share storage without sharing file identity, reducing data writes for large plugins. Smaller files are copied directly from the already-opened source file, because a guarded clone costs more than the bytes it saves. Source and receipt checks still reject changes detected during reload preparation.
 
 Legacy session-key migration selects plugins that declare that capability before checking channel presence. Owners already eligible under migration policy do not need a channel-presence check. Scoped selections check persisted credentials only for their channel owners, so unrelated authentication modules stay unloaded during Doctor repairs. This credential scope does not limit environment-based presence signals: configured channels with missing plugins still produce installation and recovery hints.
 

@@ -2,7 +2,6 @@ import "./doctor-health.test-support.js";
 import fs from "node:fs";
 import path from "node:path";
 import * as fsSafeAdvanced from "@openclaw/fs-safe/advanced";
-import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { afterEach, expect, it, vi } from "vitest";
 import { doctorCommand } from "../commands/doctor.js";
 import { loadPluginRegistryHandle } from "../plugins/loader.js";
@@ -62,16 +61,16 @@ it.each([
       mocks.config.mockReturnValue(cfg);
       let failedWrite = false;
       if (failure === "ENOSPC") {
-        const copy = fsSafeAdvanced.copyRootFileSync;
-        vi.spyOn(fsSafeAdvanced, "copyRootFileSync").mockImplementation((options) => {
-          if (options.source.absolutePath === source) {
-            failedWrite = true;
-            throw new FsSafeError("helper-failed", "guarded synchronous file copy failed", {
-              cause: Object.assign(new Error("fixture capture write failed"), { code: "ENOSPC" }),
-            });
-          }
-          return copy(options);
-        });
+        const copy = fsSafeAdvanced.copyFileDescriptorSync;
+        vi.spyOn(fsSafeAdvanced, "copyFileDescriptorSync").mockImplementation(
+          (sourceFd, targetFd, options) => {
+            if (fs.fstatSync(sourceFd).ino === fs.statSync(source).ino) {
+              failedWrite = true;
+              throw Object.assign(new Error("fixture capture write failed"), { code: "ENOSPC" });
+            }
+            return copy(sourceFd, targetFd, options);
+          },
+        );
       }
       mocks.runContributions.mockImplementation(async () => {
         for (let attempt = 0; attempt < 2; attempt++) {

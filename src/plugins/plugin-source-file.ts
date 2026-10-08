@@ -1,7 +1,7 @@
 import { createHash, type Hash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { copyRootFileSync } from "@openclaw/fs-safe/advanced";
+import { copyFileDescriptorSync, copyRootFileSync } from "@openclaw/fs-safe/advanced";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
 import {
@@ -19,6 +19,11 @@ export const isPluginSourceEntry = (name: string): boolean =>
 
 // Capture and native module hooks are synchronous; no read retains this scratch buffer.
 const scratch = Buffer.allocUnsafe(64 * 1024);
+
+// fs-safe's guarded clone re-resolves both trees around every step, a fixed ~2 ms per file.
+// Below one transfer chunk that cost outweighs the bytes a clone saves, so small sources copy
+// straight from OpenClaw's boundary-admitted pin into an exclusive file in the private capture.
+const CLONE_MIN_BYTES = scratch.length;
 
 export const pluginSourceStatIdentity = (
   stat: fs.BigIntStats,
@@ -78,7 +83,13 @@ export function copyPluginSourceFile(
 ) {
   return withPluginSourceFile(source, boundary, (fd) => {
     const admitted = fs.fstatSync(fd, { bigint: true });
+    const mode = options.preserveSourceMode
+      ? Number(admitted.mode & 0o777n)
+      : 0o600 | Number(admitted.mode & 0o100n);
     try {
+      if (admitted.size < CLONE_MIN_BYTES) {
+        return copyPinnedPluginSourceFile(fd, admitted, target, mode, options.hashCopiedContent);
+      }
       // Keep our pin alive; fs-safe binds its own admitted open to this exact inode.
       using copied = copyRootFileSync({
         source: { rootPath: boundary, absolutePath: source },
@@ -86,9 +97,7 @@ export function copyPluginSourceFile(
         expectedSourceIdentity: { dev: admitted.dev, ino: admitted.ino },
         clone: "auto",
         maxBytes: Number(admitted.size),
-        mode: options.preserveSourceMode
-          ? Number(admitted.mode & 0o777n)
-          : 0o600 | Number(admitted.mode & 0o100n),
+        mode,
         sourceHardlinks: "allow",
       });
       // The initial hash belongs to the copied descriptor; receipts still recheck its path.
@@ -120,6 +129,47 @@ export function copyPluginSourceFile(
       throw error;
     }
   });
+}
+
+// The pin already passed root admission. Bytes come from that descriptor, so path swaps
+// cannot redirect them; later receipt and source verification recheck both pathnames.
+function copyPinnedPluginSourceFile(
+  fd: number,
+  admitted: fs.BigIntStats,
+  target: string,
+  mode: number,
+  hashCopiedContent?: boolean,
+) {
+  // Exclusive creation never follows or replaces an existing entry in the private capture.
+  const output = fs.openSync(target, "wx", 0o600);
+  let copied: { contentHash: string; sizeBytes: number; sourceIdentity: string } | undefined;
+  try {
+    const content = hashCopiedContent ? createHash("sha256") : undefined;
+    const sizeBytes = copyFileDescriptorSync(fd, output, {
+      maxBytes: Number(admitted.size),
+      onChunk: (chunk) => {
+        content?.update(chunk);
+      },
+    });
+    if (sizeBytes !== Number(admitted.size)) {
+      throw new Error(
+        "Plugin source changed while preparing its reload; retry after the edit finishes.",
+      );
+    }
+    fs.fchmodSync(output, mode);
+    copied = content && {
+      contentHash: content.digest("hex"),
+      sizeBytes,
+      sourceIdentity: pluginSourceStatIdentity(admitted),
+    };
+  } catch (error) {
+    // Windows cannot unlink a file that is still open.
+    fs.closeSync(output);
+    fs.rmSync(target, { force: true });
+    throw error;
+  }
+  fs.closeSync(output);
+  return copied;
 }
 
 export function linkPluginSourceFile(source: string, boundary: string, target: string): void {
