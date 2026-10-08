@@ -115,7 +115,7 @@ export async function prepareChatMetadataModelProjection(params: {
   read: () => { models?: ModelChoice[] };
   isCurrent: () => boolean;
 }> {
-  const [{ prepareModelsListResult }, { createModelCatalogDecisions }] = await Promise.all([
+  const [{ prepareModelsListResult }, { prepareModelCatalogDecisions }] = await Promise.all([
     import("./models-list-result.js"),
     import("../../agents/model-catalog-decisions.js"),
   ]);
@@ -124,7 +124,7 @@ export async function prepareChatMetadataModelProjection(params: {
   // Chat metadata must stay on process-published facts. Live discovery belongs to explicit
   // models.list refresh requests so a slow provider cannot delay chat startup.
   const snapshot = params.facts.modelCatalog;
-  const projectorParams: Parameters<typeof createModelCatalogDecisions>[0] = {
+  const projectorParams: Parameters<typeof prepareModelCatalogDecisions>[0] = {
     cfg: params.facts.owner.config,
     agentId: params.facts.agentId,
     snapshot,
@@ -145,9 +145,7 @@ export async function prepareChatMetadataModelProjection(params: {
     ...(params.profileProvider ? { profileProvider: params.profileProvider } : {}),
     ...(params.runtimeOverride ? { runtimeOverride: params.runtimeOverride } : {}),
   };
-  const projector = await withCurrentReadAuthority(params, () =>
-    createModelCatalogDecisions(projectorParams),
-  );
+  const projector = await prepareModelCatalogDecisions(projectorParams, params);
   const work = [
     projector.projectCatalog(params),
     prepareModelsListResult({

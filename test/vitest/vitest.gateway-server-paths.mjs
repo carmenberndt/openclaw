@@ -11,6 +11,7 @@ export const gatewayPluginTestFiles = [
 
 // Native database consumers retain lifecycle cleanup within each forked process.
 export const gatewayDatabaseWorkerTestFiles = [
+  "src/gateway/agent-runtime-identity-token.test.ts",
   "src/gateway/agent-turn/agent-run-media.test.ts",
   "src/gateway/approval-fixture.test.ts",
   "src/gateway/auth-token-store-ref.test.ts",
@@ -148,6 +149,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/server-methods/cron.scratch-read.test.ts",
   "src/gateway/server-methods/cron.self-removal.test.ts",
   "src/gateway/server-methods/cron.validation.test.ts",
+  "src/gateway/server-methods/exec-approvals.test.ts",
   "src/gateway/server-methods/models-auth-api-key.integration.test.ts",
   "src/gateway/server-methods/models-auth-login.catalog.integration.test.ts",
   "src/gateway/server-methods/models-auth-refresh.catalog.integration.test.ts",
@@ -241,8 +243,6 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-row-projection.membership.test.ts",
   "src/gateway/session-row-projection.prepared-read.test.ts",
   "src/gateway/session-row-projection.publication.test.ts",
-  "src/gateway/session-row-projection.registry-refresh.test.ts",
-  "src/gateway/session-row-projection.search-facts.test.ts",
   "src/gateway/session-row-projection.subagent-index.test.ts",
   "src/gateway/session-row-projection.test.ts",
   "src/gateway/session-row-projection.topology.test.ts",
@@ -251,6 +251,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-sharing-groups.test.ts",
   "src/gateway/session-sharing-preparation.creation-settlement.test.ts",
   "src/gateway/session-sharing-preparation.test.ts",
+  "src/gateway/session-sharing.incognito.test.ts",
   "src/gateway/session-sharing.worker.test.ts",
   "src/gateway/session-startup-migration.test.ts",
   "src/gateway/session-subagent-resume.test.ts",
@@ -527,6 +528,7 @@ export const gatewayServerIsolatedTestFiles = [
   "src/gateway/server-close.progress-card.test.ts",
   "src/gateway/server-close.question-publication.test.ts",
   "src/gateway/server-close.session-signals.test.ts",
+  "src/gateway/server-close.voice-session.test.ts",
   "src/gateway/server-close.channel-pairing.test.ts",
   "src/gateway/server-close.acp-diagnostics.test.ts",
   "src/gateway/server.chat.canonical-publication.test.ts",
