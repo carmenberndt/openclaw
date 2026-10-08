@@ -457,7 +457,7 @@ if (legacy && args[0] === "run" && args[1] === "download" && args[2] === "77" &&
   process.exit(0);
 }
 if (args[0] !== "api" || (!legacy && (!args.includes("GET") || !args.includes("github.com"))) || !args.includes("Cache-Control: max-age=0")) reject();
-if (args.includes("--include") || (!legacy && args.includes("--paginate"))) reject();
+if (!legacy && (args.includes("--include") || args.includes("--paginate"))) reject();
 let path = args.find(a => a.startsWith("repos/"));
 if (legacy && path.endsWith("/jobs?per_page=100")) path += "&page=1";
 const table = JSON.parse(fs.readFileSync("responses.json", "utf8"));
@@ -468,6 +468,7 @@ if (value.sequence) {
   value = value.sequence[Math.min(reads - 1, value.sequence.length - 1)];
 }
 if (value.failure) { console.error(value.failure); process.exit(1); }
+if (legacy && args.includes("--include")) process.stdout.write("HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n");
 if (legacy && value.jobs) process.stdout.write(value.jobs.map(job => JSON.stringify(job)).join("\\n"));
 else if (value.binary) process.stdout.write(Buffer.from(value.binary, "base64"));
 else if (value.raw) process.stdout.write(value.raw);
