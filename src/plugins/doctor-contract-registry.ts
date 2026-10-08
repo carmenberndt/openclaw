@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
-import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { shouldIncludeChannelSetupFeatureForConfig } from "../channels/plugins/bundled-setup-policy.js";
@@ -33,6 +32,7 @@ import { pluginDoctorContractRegistryLoaderState } from "./doctor-contract-regis
 import {
   collectRelevantDoctorPluginIds,
   collectRelevantDoctorPluginIdsForTouchedPaths,
+  filterPluginDoctorRecordsByScope,
 } from "./doctor-contract-relevance.js";
 import type { PluginDoctorMigrationResourceCollectionParams } from "./doctor-migration-resources.js";
 import type { DoctorSessionRouteStateOwner } from "./doctor-session-route-state-owner-types.js";
@@ -52,7 +52,7 @@ const log = createSubsystemLogger("plugins/doctor-contracts");
 
 const deferredPluginMigrations = new AsyncLocalStorage<ReadonlySet<string>>();
 
-/** A prepared Doctor generation excludes unavailable owners from every migration surface. */
+/** Defer unavailable plugin repairs while retaining host-owned historical listener facts. */
 export function withDeferredPluginDoctorMigrations<T>(
   pluginIds: readonly string[],
   run: () => T,
@@ -113,23 +113,6 @@ function loadPluginDoctorContractModule(modulePath: string): PluginDoctorContrac
       ? { createLoader: pluginDoctorContractRegistryLoaderState.moduleLoaderFactory }
       : {}),
   })(modulePath) as PluginDoctorContractModule;
-}
-
-function hasScopedProviderAuthAlias(
-  record: PluginManifestRegistryRecord,
-  scopedProviderIds: ReadonlySet<string>,
-): boolean {
-  return Object.entries(record.providerAuthAliases ?? {}).some(([rawAlias, rawTarget]) => {
-    if (typeof rawTarget !== "string") {
-      return false;
-    }
-    const target = normalizeProviderId(rawTarget);
-    return (
-      scopedProviderIds.has(normalizeProviderId(rawAlias)) &&
-      target !== "" &&
-      record.providers.some((providerId) => normalizeProviderId(providerId) === target)
-    );
-  });
 }
 
 /** Include manifest-owned legacy roots for config repair, never session ownership. */
@@ -194,6 +177,7 @@ function loadPluginDoctorContractEntry(
 
 function resolvePluginDoctorManifestRecords(
   params: PluginDoctorRegistryParams & { artifactPreservingReadOnly?: boolean },
+  includeDeferred = false,
 ): PluginManifestRegistryRecord[] {
   if (params?.pluginIds && params.pluginIds.length === 0) {
     return [];
@@ -209,29 +193,10 @@ function resolvePluginDoctorManifestRecords(
       artifactPreservingReadOnly: params.artifactPreservingReadOnly,
     });
 
-  return filterPluginDoctorRecordsByScope(manifestRegistry.plugins, params.pluginIds);
-}
-
-function filterPluginDoctorRecordsByScope(
-  records: readonly PluginManifestRegistryRecord[],
-  pluginIds?: readonly string[],
-): PluginManifestRegistryRecord[] {
-  const scopedPluginIds = pluginIds ? new Set(pluginIds) : null;
-  const scopedProviderIds = pluginIds
-    ? new Set(pluginIds.map(normalizeProviderId).filter(Boolean))
-    : null;
-  return records.filter(
-    (record) =>
-      !deferredPluginMigrations.getStore()?.has(record.id) &&
-      !(
-        scopedPluginIds &&
-        !scopedPluginIds.has(record.id) &&
-        !(record.packageName && scopedPluginIds.has(record.packageName)) &&
-        !record.legacyPluginIds?.some((pluginId) => scopedPluginIds.has(pluginId)) &&
-        !record.channels.some((channelId) => scopedPluginIds.has(channelId)) &&
-        !record.providers.some((providerId) => scopedPluginIds.has(providerId)) &&
-        !(scopedProviderIds && hasScopedProviderAuthAlias(record, scopedProviderIds))
-      ),
+  return filterPluginDoctorRecordsByScope(
+    manifestRegistry.plugins,
+    params.pluginIds,
+    includeDeferred ? undefined : deferredPluginMigrations.getStore(),
   );
 }
 
@@ -248,12 +213,19 @@ function resolvePluginDoctorContracts(
       return [];
     }
   }
-  const records = resolvePluginDoctorManifestRecords(params);
-  const entries = loadPluginDoctorContractEntries({ records, surface: params.surface });
+  const includeDeferred = params.surface === "configRepair";
+  const records = resolvePluginDoctorManifestRecords(params, includeDeferred);
+  const entries = loadPluginDoctorContractEntries({
+    records: includeDeferred
+      ? records.filter((record) => !isPluginDoctorMigrationDeferred(record.id))
+      : records,
+    surface: params.surface,
+  });
   if (params.surface !== "configRepair") {
     return entries;
   }
   for (const { channelId, pluginId } of GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA) {
+    // A deferred owner still shadows the host contract even though its code cannot run.
     const owner = records.find(
       (record) => record.id === pluginId || record.channels.includes(channelId),
     );
@@ -264,7 +236,7 @@ function resolvePluginDoctorContracts(
         ? entries.find((entry) => entry.pluginId === pluginId && !entry.historicalWebhookListener)
         : undefined;
     if (
-      deferredPluginMigrations.getStore()?.has(pluginId) ||
+      (isPluginDoctorMigrationDeferred(pluginId) && !params.historicalWebhookListeners) ||
       (!params.historicalWebhookListeners &&
         !Object.hasOwn(params.config?.channels ?? {}, channelId) &&
         !Object.hasOwn(params.config?.plugins?.entries ?? {}, pluginId)) ||
@@ -292,7 +264,22 @@ function resolvePluginDoctorContracts(
       supplement.historicalWebhookListener = contract.historicalWebhookListener;
       supplement.historicalWebhookNormalizer = contract.normalizeCompatibilityConfig;
     } else if (!owner) {
-      entries.push({ pluginId, ...contract, origin: "bundled" });
+      if (isPluginDoctorMigrationDeferred(pluginId)) {
+        const normalize = contract.normalizeHistoricalWebhookConfig;
+        if (!contract.historicalWebhookListener || !normalize) {
+          continue;
+        }
+        entries.push({
+          pluginId,
+          ...contract,
+          origin: "bundled",
+          rules: [],
+          // Preserve authored endpoints through their owner without other deferred repairs.
+          normalizeCompatibilityConfig: normalize,
+        });
+      } else {
+        entries.push({ pluginId, ...contract, origin: "bundled" });
+      }
     }
   }
   return entries;
@@ -512,7 +499,11 @@ export function resolvePluginDoctorStateMigrationRecords(
   }
   const registry = params.manifestRegistry ?? discoverConfigWidePluginManifestRegistry(params);
   return filterPluginDoctorStateMigrationRecords(
-    filterPluginDoctorRecordsByScope(registry.plugins, params.pluginIds),
+    filterPluginDoctorRecordsByScope(
+      registry.plugins,
+      params.pluginIds,
+      deferredPluginMigrations.getStore(),
+    ),
     params.config,
   );
 }
@@ -745,10 +736,12 @@ export function applyPluginDoctorCompatibilityMigrations(
       config: params?.config ?? cfg,
       surface: "configRepair",
     }).map((entry) => {
-      params?.onInspectedPlugin?.(
-        entry.pluginId,
-        entry.rules.length > 0 || Boolean(entry.normalizeCompatibilityConfig),
-      );
+      if (!isPluginDoctorMigrationDeferred(entry.pluginId)) {
+        params?.onInspectedPlugin?.(
+          entry.pluginId,
+          entry.rules.length > 0 || Boolean(entry.normalizeCompatibilityConfig),
+        );
+      }
       return {
         pluginId: entry.pluginId,
         normalizeCompatibilityConfig: entry.normalizeCompatibilityConfig,
