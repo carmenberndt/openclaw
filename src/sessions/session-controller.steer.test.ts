@@ -25,7 +25,10 @@ afterEach(() => {
   }
 });
 
-type QueueMessage = (options: { onQueueAccepted?: (accepted: boolean) => void }) => Promise<void>;
+type QueueMessage = (
+  options: { onQueueAccepted?: (accepted: boolean) => void },
+  text: string,
+) => Promise<void>;
 
 /** One running turn whose backend injection behavior is chosen per case. */
 function startTurn(params: {
@@ -40,8 +43,8 @@ function startTurn(params: {
     resetTriggered: false,
   });
   operation.setPhase("running");
-  const queueMessage = (_text: string, options?: Parameters<QueueMessage>[0]) =>
-    params.queueMessage(options ?? {});
+  const queueMessage = (text: string, options?: Parameters<QueueMessage>[0]) =>
+    params.queueMessage(options ?? {}, text);
   const backend: ReplyBackendHandle = {
     kind: "embedded",
     runId: "steer-run",
@@ -201,6 +204,35 @@ describe("steerSessionControllerOperation", () => {
       expect(input.mailbox.entries.filter((entry) => entry.phase !== "consumed")).toEqual([]);
     },
   );
+
+  it("injects a later steer once the earlier one is accepted, before its commit", async () => {
+    // A native commit can wait on later input, such as the answer to a pending question.
+    const commit = createDeferredCore();
+    const injected: string[] = [];
+    const { operation, input } = startTurn({
+      queueMessage: async ({ onQueueAccepted }, text) => {
+        injected.push(text);
+        onQueueAccepted?.(true);
+        await commit.promise;
+      },
+    });
+    retireSessionControllerInput(input);
+
+    const first = steerSessionControllerOperation({ operation, text: "first", options: {} });
+    const second = steerSessionControllerOperation({ operation, text: "second", options: {} });
+    try {
+      // Admission and injection are promise continuations; one macrotask drains them all.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(injected).toEqual(["first", "second"]);
+    } finally {
+      commit.resolve();
+    }
+
+    await expect(Promise.all([first, second])).resolves.toMatchObject([
+      { status: "accepted" },
+      { status: "accepted" },
+    ]);
+  });
 
   it("refuses a turn that already settled without reserving input", async () => {
     const { operation, input } = startTurn({ queueMessage: async () => {} });

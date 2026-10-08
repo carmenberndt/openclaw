@@ -163,10 +163,12 @@ to wait for transcript commitment is refused unless the backend declares
 
 In-process steering (`sessions_send`, the embedded TUI, Talk, and the SDK
 `queueAgentHarnessMessage`) uses the same path as channel input. The caller
-reserves a steer input on the exact turn's own mailbox. That input waits behind
-older queued inputs, then injects into the turn it captured. A refusal retires
-the reservation and leaves the caller's own fallback in charge. A detached
-attempt has no turn, so nothing can steer it.
+reserves a steer input on the exact turn's own mailbox. That input waits until
+each older input is accepted by the native owner, claimed, or settled, then
+injects into the turn it captured. It does not wait for an older steer's
+transcript commit, which can depend on later input such as a question's answer.
+A refusal retires the reservation and leaves the caller's own fallback in charge.
+A detached attempt has no turn, so nothing can steer it.
 
 Collecting or steering requires compatible sender authority, tool permissions,
 visibility, and delivery contracts. Mismatch must not let an input borrow the

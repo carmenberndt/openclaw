@@ -41,7 +41,10 @@ export function isSessionControllerSourceQueued(input: SessionControllerInput): 
   return input.phase === "preparing" || input.phase === "waiting" || input.phase === "injecting";
 }
 
-/** Releases successors only after this reservation can no longer inject ahead of them. */
+/**
+ * Releases successors only after this reservation can no longer inject ahead of them:
+ * its native acceptance, its settled outcome, a turn claim, or its retirement.
+ */
 export function settleSessionControllerSourceInjectionOrder(
   input: SessionControllerInput,
   consumed: boolean,
@@ -189,6 +192,12 @@ export function beginSessionControllerSourceInjection(
       // A later rejection cannot undo observed ownership. False alone does not
       // prove safe replay: an indeterminate final outcome still consumes input.
       pending.accepted = pending.accepted === true || accepted;
+      if (accepted) {
+        // The native owner now holds this input ahead of any later steer and it can
+        // never be replayed, so successors need not wait for its transcript commit.
+        // Native commits can depend on later input, e.g. an answer to a pending question.
+        settleSessionControllerSourceInjectionOrder(input, true);
+      }
     },
     finish,
   };

@@ -240,9 +240,10 @@ describe("parked steering admission", () => {
     middleReservation.consume();
     await vi.advanceTimersByTimeAsync(0);
     expect(admittedLast).not.toHaveBeenCalled();
+    // Native acceptance fixes the predecessor's order; its commit may need later input.
     firstReservation.accepted(true);
     await vi.advanceTimersByTimeAsync(0);
-    expect(admittedLast).not.toHaveBeenCalled();
+    expect(admittedLast).toHaveBeenCalledExactlyOnceWith("steer");
     firstReservation.consume("consumed");
     await expect(lastAdmission).resolves.toBe("steer");
     lastReservation.accepted(true);
