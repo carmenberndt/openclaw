@@ -32,6 +32,17 @@ it("publishes bounded redacted progress evidence after failure and success", () 
     JSON.stringify({ exitCode: 124, processTreeState: "terminated" }),
   );
   write("phase.txt", "progress-repair\n");
+  for (const phase of [
+    "service-probe-install",
+    "service-probe-reload",
+    "service-probe-verify",
+    "service-probe-restore",
+    "service-probe-restore-reload",
+    "service-probe-restore-verify",
+  ]) {
+    write(phase + ".stdout", JSON.stringify({ sha256: "a".repeat(64) }));
+    write(phase + "-exit.json", JSON.stringify({ exitCode: 0 }));
+  }
   write("progress-cell.json", JSON.stringify({ phase: "progress-repair", exitStatus: 124 }));
   for (const name of ["held", "released", "observed", "heartbeat", "result"]) {
     write(`progress-repair/${name}.json`, JSON.stringify(evidence));
@@ -91,6 +102,17 @@ it("publishes bounded redacted progress evidence after failure and success", () 
     expect(report.omissions["progress-repair.stderr"]).toContain("truncated");
     expect(JSON.parse(report.logs["progress-repair-exit.json"]).exitCode).toBe(124);
     expect(report.logs["phase.txt"]).toBe("progress-repair\n");
+    for (const phase of [
+      "service-probe-install",
+      "service-probe-reload",
+      "service-probe-verify",
+      "service-probe-restore",
+      "service-probe-restore-reload",
+      "service-probe-restore-verify",
+    ]) {
+      expect(JSON.parse(report.logs[phase + ".stdout"]).sha256).toBe("a".repeat(64));
+      expect(JSON.parse(report.logs[phase + "-exit.json"]).exitCode).toBe(0);
+    }
     for (const name of ["held", "released", "observed", "heartbeat", "result"]) {
       expect(JSON.parse(report.logs[`progress-repair/${name}.json`])).toEqual(evidence);
     }

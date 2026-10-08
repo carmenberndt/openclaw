@@ -5,6 +5,7 @@ import path from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { toErrorObject } from "../../../lib/error-format.mts";
+import { createServiceProbe } from "./service-probe.mjs";
 import {
   assertWorkerCellPackageIdentity,
   readWorkerCellPackageIdentity,
@@ -156,7 +157,8 @@ export async function prepareRepairProgress({
     baseline: { ...before, package: legacy.package },
   });
 
-  return async () => {
+  let managedProbe;
+  const prove = async () => {
     assertWorkerCellPackageIdentity(readWorkerCellPackageIdentity(packageRoot), expected);
     const stop = () =>
       run("progress-stop", path.join(bin, "systemctl"), [
@@ -234,15 +236,24 @@ export async function prepareRepairProgress({
           fs.writeSync(gate, Buffer.from([1]));
         }
       };
-      env.OPENCLAW_REPAIR_PROGRESS_PROBE = directory;
-      env.NODE_OPTIONS = "--stack-trace-limit=32 --import=" + probe;
-      env.OPENCLAW_LOG_LEVEL = fixture.quiet ? "silent" : "info";
+      const scoped = createServiceProbe({
+        run,
+        bin,
+        artifacts,
+        env,
+        preload: probe,
+        selectors: {
+          OPENCLAW_REPAIR_PROGRESS_PROBE: directory,
+          OPENCLAW_LOG_LEVEL: fixture.quiet ? "silent" : "info",
+        },
+      });
       try {
-        await run(name, "openclaw", args, false, observe);
+        if (fixture.migrated) {
+          managedProbe = scoped;
+          await scoped.install();
+        }
+        await scoped.withCaller(() => run(name, "openclaw", args, false, observe));
       } finally {
-        delete env.OPENCLAW_REPAIR_PROGRESS_PROBE;
-        delete env.NODE_OPTIONS;
-        delete env.OPENCLAW_LOG_LEVEL;
         fs.closeSync(gate);
       }
       if (observerFailure) {
@@ -347,5 +358,9 @@ export async function prepareRepairProgress({
       limitation:
         "Controlled native-boundary hold; not a large-data timing benchmark. Published driver output remains buffered.",
     });
+  };
+  return {
+    prove,
+    restore: (settlement) => managedProbe?.finish(settlement) ?? { retained: false },
   };
 }

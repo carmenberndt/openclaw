@@ -96,7 +96,10 @@ function writeJson(name, value) {
 async function run(name, command, args, allowFailure = false, observe = null) {
   const started = Date.now();
   const diagnostic =
-    name === "recorded-run" || name === "stop-service" || name === "capture-diagnostics";
+    name === "recorded-run" ||
+    name === "stop-service" ||
+    name === "capture-diagnostics" ||
+    name.startsWith("service-probe-restore");
   const deadline = diagnostic ? cellDeadline - 5_000 : workDeadline;
   const cap = name === "stop-service" ? 5_000 : diagnostic ? 20_000 : Infinity;
   // Each managed command can spend another 5s terminating and 5s draining.
@@ -228,6 +231,8 @@ async function ready(name, port) {
 process.exitCode = await runCancelableCommand(async (signal) => {
   commandSignal = signal;
   let fixtureInstalled = false;
+  let progress;
+  let retainInstrumentation;
   const failures = [];
   try {
     let driverVersion = driverTag;
@@ -286,7 +291,7 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         : {}),
     });
 
-    const proveRepairProgress = repairProgress
+    progress = repairProgress
       ? await (
           await import("./repair-progress.mjs")
         ).prepareRepairProgress({
@@ -566,7 +571,7 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         "Second maintenance repeated conversion",
       );
     }
-    await proveRepairProgress?.();
+    await progress?.prove();
     writeJson("summary", {
       driverVersion,
       candidate: repairProgress ? { ...build, kind: "tarball" } : build,
@@ -595,6 +600,7 @@ process.exitCode = await runCancelableCommand(async (signal) => {
       failures.push(error);
     }
   }
+  let serviceStopped = false;
   if (!failures.some(hasUnjoinedWork) && fixtureInstalled) {
     try {
       await run("stop-service", path.join(bin, "systemctl"), [
@@ -602,9 +608,17 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         "stop",
         "openclaw-gateway.service",
       ]);
+      serviceStopped = true;
     } catch (error) {
       failures.push(error);
     }
+  }
+  try {
+    retainInstrumentation =
+      (await progress?.restore({ failures, serviceStopped }))?.retained ?? false;
+  } catch (error) {
+    failures.push(error);
+    retainInstrumentation = true;
   }
   if (repairProgress && !failures.some(hasUnjoinedWork)) {
     try {
@@ -632,10 +646,13 @@ process.exitCode = await runCancelableCommand(async (signal) => {
       failures.push(error);
     }
   }
-  if (failures.some((error) => hasUnjoinedWork(error) || error.command === "stop-service")) {
+  if (
+    retainInstrumentation ||
+    failures.some((error) => hasUnjoinedWork(error) || error.command === "stop-service")
+  ) {
     writeJson("retained-runtime", {
       runtime,
-      reason: "Owned work or service cleanup did not settle",
+      reason: "Owned work, service cleanup, or instrumentation restoration did not settle",
     });
   } else {
     try {
