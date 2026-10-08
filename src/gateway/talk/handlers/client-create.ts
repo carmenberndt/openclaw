@@ -427,24 +427,30 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           if (sessionEntryDeadlineAt !== undefined && Date.now() >= sessionEntryDeadlineAt) {
             throw new Error("Realtime browser session expired during startup; try again");
           }
-          // Defer persistent session creation until the provider has returned a
-          // usable client transport. The write boundary rechecks the credential
-          // deadline so queued storage work cannot leave a phantom chat.
-          const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
-            ...sessionTarget,
-            creation:
-              resolveSandboxedSessionCreation(client, runtimeConfig) ??
-              resolveOperatorSessionCreation(client),
-            deadlineAt: sessionEntryDeadlineAt,
-            assertCommitAllowed,
-            onCommittedSource: (readSource, entry) =>
-              sessionMutationAuthorization?.recordCreatedSession?.({
-                ...sessionTarget,
-                sessionId: entry.sessionId,
-                lifecycleRevision: entry.lifecycleRevision,
-                readSource,
-              }),
-          });
+          // Existing rows use the admitted identity; the live guards below and
+          // voice transaction still revalidate it. Missing rows are initialized
+          // only after the provider returns a usable client transport.
+          const admittedTarget = sessionMutationAuthorization?.admittedTarget;
+          const ensuredSessionId =
+            admittedTarget?.agentId === sessionTarget.agentId &&
+            admittedTarget.sessionKey === sessionTarget.sessionKey &&
+            admittedTarget.sessionId
+              ? admittedTarget.sessionId
+              : await ensureClientVoiceAgentSessionEntry({
+                  ...sessionTarget,
+                  creation:
+                    resolveSandboxedSessionCreation(client, runtimeConfig) ??
+                    resolveOperatorSessionCreation(client),
+                  deadlineAt: sessionEntryDeadlineAt,
+                  assertCommitAllowed,
+                  onCommittedSource: (readSource, entry) =>
+                    sessionMutationAuthorization?.recordCreatedSession?.({
+                      ...sessionTarget,
+                      sessionId: entry.sessionId,
+                      lifecycleRevision: entry.lifecycleRevision,
+                      readSource,
+                    }),
+                });
           sessionMutationCommitGuard?.();
           sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
           replacement?.assertCurrent(target);

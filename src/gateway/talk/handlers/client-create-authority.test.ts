@@ -4,6 +4,7 @@ import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isSessionEntryDataSql,
+  observeHostDataSql,
   observeSqliteReadSql,
   trackSqliteStatementExecutions,
 } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
@@ -618,6 +619,36 @@ describe("voice creation authority", () => {
       }
     },
   );
+
+  it("creates voice on an admitted chat without a caller-thread write transaction", async () => {
+    const fixture = configureDelegatedBrowserProvider(async () => browserSession);
+    ownedVoiceSessionKey = "main";
+    const source = openOpenClawAgentDatabase({ agentId: "main" });
+    const respond = vi.fn();
+    const transactions: string[] = [];
+    const statements = observeHostDataSql((sql, database) => {
+      if (database === source.db && /^\s*begin\s+immediate\b/i.test(sql)) {
+        transactions.push(sql);
+      }
+    });
+    try {
+      await invokeCreate({
+        params: { sessionKey: "main", provider: "openai" },
+        respond,
+        context: fixture.context,
+        client: fixture.client,
+      } as never);
+      expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(true);
+      ownedVoiceSessionId = respond.mock.lastCall?.[1].voiceSessionId;
+      expect(transactions).toEqual([]);
+      expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
+      expect(clientVoiceSessionTesting.readRecord("main", ownedVoiceSessionId!)?.status).toBe(
+        "open",
+      );
+    } finally {
+      statements.restore();
+    }
+  });
 
   it.each(["missing", "idless"])(
     "publishes the ensured %s chat before preparing voice authority",

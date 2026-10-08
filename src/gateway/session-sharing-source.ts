@@ -176,7 +176,7 @@ export function withPreparedSessionSharingSource(params: {
   request: SessionMutationAuthorizationParams;
   ownSessionProfileId?: string;
   talk: ReturnType<typeof resolveTalkSessionTargetInput>;
-  assertTalkTargetCurrent: (cfg: OpenClawConfig) => void;
+  assertTalkTargetCurrent: (cfg: OpenClawConfig) => PreparedTalkSessionTarget | undefined;
   assertTargetCurrent: (
     target: SessionMutationTarget,
     expected: AuthorizedSessionMutationTarget | undefined,
@@ -184,6 +184,7 @@ export function withPreparedSessionSharingSource(params: {
     caches?: SessionSharingLookupCaches,
     ensuredSessionId?: string,
     prepared?: { target: SessionSharingTarget | null; members: readonly string[] },
+    currentTalkTarget?: PreparedTalkSessionTarget,
   ) => void;
 }): SessionSourceAssertion {
   const targetChanged = (key: string) => sessionMutationTargetChanged(params.request.method, key);
@@ -200,10 +201,18 @@ export function withPreparedSessionSharingSource(params: {
   };
   const assertCurrent = () => {
     const cfg = assertSource();
-    params.assertTalkTargetCurrent(cfg);
+    const currentTalkTarget = params.assertTalkTargetCurrent(cfg);
     const caches = createSessionSharingLookupCaches();
     for (const target of params.targets) {
-      params.assertTargetCurrent(target, target, cfg, caches);
+      params.assertTargetCurrent(
+        target,
+        target,
+        cfg,
+        caches,
+        undefined,
+        undefined,
+        currentTalkTarget,
+      );
     }
   };
   const changed = () => targetChanged(params.targets[0]?.sessionKey ?? "");
@@ -494,6 +503,7 @@ export function captureSessionSharingTalkAuthority({
     if (error) {
       throw new SessionMutationAuthorizationChangedError(error);
     }
+    return current;
   };
 }
 

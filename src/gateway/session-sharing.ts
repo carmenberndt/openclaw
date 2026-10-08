@@ -392,11 +392,12 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         ? {
             absentTarget: consuming.sharing
               ? consuming.sharing.storageTarget
-              : resolveGatewaySessionStoreTarget({
+              : (talkSessionTarget ??
+                resolveGatewaySessionStoreTarget({
                   cfg: getCfg(),
                   key: targetRef.sessionKey,
                   agentId: targetRef.agentId,
-                }),
+                })),
           }
         : {}),
       ...(bindsProgressLifecycle || bindsOwnProfile
@@ -423,15 +424,20 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         currentLookupCaches?: SessionSharingLookupCaches,
         ensuredSessionId?: string,
         prepared?: { target: SessionSharingTarget | null; members: readonly string[] },
+        currentTalkTarget?: PreparedTalkSessionTarget,
       ) => {
         if (!prepared && expected?.absentTarget && !expected.created) {
           const currentRoute = consuming.sharing
             ? consuming.sharing.storageTarget
-            : resolveGatewaySessionStoreTarget({
-                cfg: currentCfg,
-                key: targetRef.sessionKey,
-                agentId: targetRef.agentId,
-              });
+            : currentTalkTarget &&
+                currentTalkTarget.agentId === targetRef.agentId &&
+                currentTalkTarget.canonicalKey === targetRef.sessionKey
+              ? currentTalkTarget
+              : resolveGatewaySessionStoreTarget({
+                  cfg: currentCfg,
+                  key: targetRef.sessionKey,
+                  agentId: targetRef.agentId,
+                });
           // Absence is bound to its original store too. Checking the creation
           // notification would discover a redirected write only after COMMIT.
           if (
@@ -677,13 +683,15 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
               target.sessionKey === normalizedTarget.sessionKey &&
               target.agentId === normalizedTarget.agentId,
           );
-          assertTalkTargetCurrent(currentCfg);
+          const currentTalkTarget = assertTalkTargetCurrent(currentCfg);
           assertTargetCurrent(
             normalizedTarget,
             expected,
             currentCfg,
             undefined,
             targetRef.ensuredSessionId,
+            undefined,
+            currentTalkTarget,
           );
         },
       };

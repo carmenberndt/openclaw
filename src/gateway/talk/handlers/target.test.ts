@@ -10,7 +10,6 @@ import { setActivePluginRegistry } from "../../../plugins/runtime.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
-import * as clientVoiceSessionWrite from "../../../talk/client-voice-session-write.js";
 import * as clientVoiceSession from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { createCanonicalAgentConfigFixture } from "../../../test-utils/config-roster.js";
@@ -583,7 +582,7 @@ describe("Talk target preparation through Gateway authorization", () => {
   });
 
   it.each(["owner", "sharing", "incognito", "replacement"] as const)(
-    "rechecks %s after the guarded ensure settles and before publishing the call",
+    "rechecks %s after session preparation and before committing the voice call",
     async (change) => {
       if (change === "sharing") {
         await replaceSessionEntry(
@@ -596,24 +595,29 @@ describe("Talk target preparation through Gateway authorization", () => {
           },
         );
       }
-      const ensure = clientVoiceSessionWrite.ensureClientVoiceAgentSessionEntry;
-      vi.spyOn(
-        clientVoiceSessionWrite,
-        "ensureClientVoiceAgentSessionEntry",
-      ).mockImplementationOnce(async (params) => {
-        const sessionId = await ensure(params);
-        if (change === "owner") {
-          config = { ...config, talk: { agentId: "primary" } };
-        } else {
-          await replaceSessionEntry(params, {
-            sessionId: change === "replacement" ? "replacement-session" : sessionId,
-            updatedAt: 2,
-            createdActor: { type: "human", source: "profile", id: "another-person" },
-            ...(change === "incognito" ? { incognito: true } : { visibility: "read-only" }),
-          });
-        }
-        return sessionId;
-      });
+      const createVoice = clientVoiceSession.createOrResumeClientVoiceSession;
+      vi.spyOn(clientVoiceSession, "createOrResumeClientVoiceSession").mockImplementationOnce(
+        async (params) => {
+          const scope = {
+            agentId: params.agentId,
+            sessionKey: params.sessionKey,
+            storePath: params.source?.storePath,
+          };
+          const sessionId = loadSessionEntry(scope)?.sessionId;
+          expect(sessionId).toBeTruthy();
+          if (change === "owner") {
+            config = { ...config, talk: { agentId: "primary" } };
+          } else {
+            await replaceSessionEntry(scope, {
+              sessionId: change === "replacement" ? "replacement-session" : sessionId!,
+              updatedAt: 2,
+              createdActor: { type: "human", source: "profile", id: "another-person" },
+              ...(change === "incognito" ? { incognito: true } : { visibility: "read-only" }),
+            });
+          }
+          return createVoice(params);
+        },
+      );
       const respond = await dispatch("talk.client.create", {
         ...createParams,
         voiceSessionId: "provisional",
