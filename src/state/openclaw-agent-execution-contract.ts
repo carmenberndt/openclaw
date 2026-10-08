@@ -14,6 +14,7 @@ import type {
 } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { AgentCreationClaimWitness } from "./agent-creation-claim.js";
+import type { OpenClawAgentDatabase } from "./openclaw-agent-db-contract.js";
 import type { AgentDatabaseRegistryChange } from "./openclaw-agent-db-registry-listing.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
 import type { RegisteredAgentWorkerOperations } from "./openclaw-agent-execution-operations.js";
@@ -49,6 +50,8 @@ export type OpenClawAgentDatabaseExecution = {
   readonly path: string;
   /** The accepted native receipt; reading this never adopts the current pathname. */
   readonly fileIdentity: AgentDatabaseExecutionFileIdentity | undefined;
+  /** Accept the admitted native handle used by a synchronous SDK operation. */
+  adoptNativeDatabase(database: OpenClawAgentDatabase): Promise<void>;
   assertCurrent(): void;
   captureGenerationClaim(): AgentDatabaseGenerationClaim;
   /** Reuse only a native generation whose preparation and registration publication settled. */

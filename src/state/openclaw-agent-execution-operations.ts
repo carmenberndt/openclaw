@@ -424,7 +424,7 @@ export async function loadUsageCacheOperations() {
 
 export async function loadAgentVoiceSessionOperations() {
   const { readRefusedSessionSource } =
-    await import("../config/sessions/session-entry-patch.worker.js");
+    await import("../config/sessions/session-entry-patch-guard.js");
   const kernel = await import("../talk/client-voice-session-write.kernel.js");
   const store = await import("../talk/client-voice-session-store.js");
   const entries = await import("../config/sessions/session-accessor.sqlite-entry-read.js");

@@ -13,10 +13,8 @@ import { prepareSessionEntryReplacementPublication } from "./session-accessor.sq
 import { readCommittedTranscriptMessageSequence } from "./session-accessor.sqlite-transcript-sequences.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
-import {
-  readRefusedSessionSource,
-  transferSessionEntryWorkerCandidate,
-} from "./session-entry-patch.worker.js";
+import { readRefusedSessionSource } from "./session-entry-patch-guard.js";
+import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
 import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
 import { readSessionPendingInputAuthorityFacts } from "./session-pending-input-authority.kernel.js";
 import { prepareSessionTurnRouting } from "./session-turn-predicate.js";

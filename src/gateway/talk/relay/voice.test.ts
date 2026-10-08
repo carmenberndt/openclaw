@@ -177,6 +177,27 @@ describe("realtime relay voice transcript persistence", () => {
     );
   });
 
+  it("closes a voice created by a later accepted transcript after the first creation fails", async () => {
+    const firstCreation = createDeferred<string>();
+    voiceSessionMocks.createOrResumeClientVoiceSession.mockReturnValueOnce(firstCreation.promise);
+    const { session } = createRelaySession();
+    expect(enqueueRelayVoiceTranscript(session, "user", "First accepted utterance")).toBe(true);
+    expect(enqueueRelayVoiceTranscript(session, "user", "Later accepted utterance")).toBe(true);
+    const closing = closeRelayVoiceSession(session);
+    firstCreation.reject(new Error("First creation was refused"));
+    await closing;
+    expect(voiceSessionMocks.createOrResumeClientVoiceSession).toHaveBeenCalledTimes(2);
+    expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ entryId: "2", text: "Later accepted utterance" }),
+      expect.objectContaining({ release: expect.any(Function) }),
+    );
+    expect(session.voiceTranscriptQueue.isIdle).toBe(true);
+    expect(voiceSessionMocks.closeRelayVoiceSessionRecord).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ voiceSessionId: session.id }),
+      expect.objectContaining({ release: expect.any(Function) }),
+    );
+  });
+
   it.each([false, true])(
     "drains bounded finals before close settles (source refused=%s)",
     async (refuseCloseSource) => {

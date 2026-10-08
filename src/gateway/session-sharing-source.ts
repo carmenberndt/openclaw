@@ -7,20 +7,20 @@ import {
   type SessionSourceAssertion,
   type SessionSourcePredicateFacts,
 } from "../config/sessions/session-source-authority.js";
-import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
-import { captureSessionStoreReadCandidate } from "../config/sessions/session-store-read-candidates.js";
+import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import {
+  assertSessionStoreReadCandidate,
+  captureSessionStoreCandidateIdentities,
+  isSessionStoreReadCandidateCurrent,
+} from "../config/sessions/session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "../config/sessions/session-store-target-inventory.js";
 import { retainSessionHistoryWorkerDatabase } from "../config/sessions/session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "../config/sessions/transcript-target-binding.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  assertExistingDatabaseIdentity,
-  readDatabasePathIdentitySync,
-} from "../infra/sqlite-worker-identity.js";
+import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
-import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
 import {
   assertIncognitoAgentDatabasePathAvailable,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -48,6 +48,59 @@ import type {
 import { prepareTalkSessionTarget, assertTalkSessionStorageTarget } from "./talk/session-target.js";
 import type { PreparedTalkSessionTarget } from "./talk/session-target.types.js";
 
+/** Capture the complete selector family before resolving its physical owner. */
+function captureSessionSharingStore(
+  target: Pick<SessionSharingTarget, "agentId" | "storePath" | "readSource">,
+  env: NodeJS.ProcessEnv,
+  assertCallerCurrent: () => void,
+) {
+  const candidates = captureSessionStoreReadCandidates(target.storePath);
+  const identities = captureSessionStoreCandidateIdentities(candidates);
+  const { agentId, storePath, readSource } = target;
+  return async () => {
+    assertCallerCurrent();
+    const resolved =
+      readSource ?? (await prepareSqliteTargetFromSessionStorePath(storePath, { agentId, env }));
+    const assertSourcePathCurrent = () => {
+      if (!candidates.every(isSessionStoreReadCandidateCurrent)) {
+        throw new Error("Session sharing source changed");
+      }
+      try {
+        return assertSessionStoreReadCandidate(resolved.path, candidates);
+      } catch (cause) {
+        throw new Error("Session sharing source changed", { cause });
+      }
+    };
+    const pathname = assertSourcePathCurrent();
+    const identity = identities.get(pathname);
+    if (!resolved.agentId || !identity?.key.startsWith("file:")) {
+      throw new Error("Session sharing source is unavailable");
+    }
+    const source: CapturedSessionEntryReadSource = readSource ?? {
+      agentId: resolved.agentId,
+      path: pathname,
+      databaseIdentity: identity.key.slice("file:".length),
+      databaseBirthtime: identity.birthtime,
+    };
+    const databaseIdentity = source.databaseIdentity;
+    if (typeof databaseIdentity !== "string") {
+      throw new Error("Session sharing reader requires a file-backed source");
+    }
+    const assertCurrent = () => {
+      assertSourcePathCurrent();
+      assertExistingDatabaseIdentity(pathname, identity.key, identity.birthtime);
+      assertExistingDatabaseIdentity(
+        source.path,
+        `file:${databaseIdentity}`,
+        source.databaseBirthtime,
+      );
+    };
+    assertCallerCurrent();
+    assertCurrent();
+    return { source, assertCurrent };
+  };
+}
+
 /** Hold the existing reader only until the prepared writer operation settles. */
 export async function prepareSessionSharingSource(
   target: Pick<
@@ -56,62 +109,16 @@ export async function prepareSessionSharingSource(
   >,
   assertCallerCurrent: () => void,
 ) {
-  const locators = captureSessionStoreReadCandidates(target.storePath);
-  const candidate = captureSessionStoreReadCandidate(
-    target.readSource?.path ??
-      resolveUnsuffixedSqliteTargetFromSessionStorePath(target.storePath).path,
-  );
-  if (
-    !locators.some((locator) =>
-      matchesAgentDatabaseReadCandidatePath(
-        { ...locator, path: locator.physicalPath },
-        candidate.physicalPath,
-      ),
-    )
-  ) {
-    throw new Error("Session sharing source changed");
-  }
-  const identity = readDatabasePathIdentitySync(candidate.physicalPath);
-  if (!target.readSource && !identity.key.startsWith("file:")) {
-    throw new Error("Session sharing source is unavailable");
-  }
-  const source: CapturedSessionEntryReadSource = target.readSource ?? {
-    agentId: target.agentId,
-    path: candidate.physicalPath,
-    databaseIdentity: identity.key.slice("file:".length),
-    databaseBirthtime: identity.birthtime,
-  };
-  const databaseIdentity = source.databaseIdentity;
-  if (typeof databaseIdentity !== "string") {
-    throw new Error("Session sharing reader requires a file-backed source");
-  }
-  const assertSourceCurrent = () => {
-    assertCallerCurrent();
-    assertExistingDatabaseIdentity(
-      source.path,
-      `file:${databaseIdentity}`,
-      source.databaseBirthtime,
-    );
-    if (captureSessionStoreReadCandidate(candidate.path).physicalPath !== candidate.physicalPath) {
-      throw new Error("Session sharing source changed");
-    }
-    for (const locator of locators) {
-      if (
-        captureSessionStoreReadCandidate(locator.path, locator.scope).physicalPath !==
-        locator.physicalPath
-      ) {
-        throw new Error("Session sharing source changed");
-      }
-    }
-  };
-  assertSourceCurrent();
   const env = captureSessionTranscriptStorageEnvironment(process.env);
+  const prepareSource = captureSessionSharingStore(target, env, assertCallerCurrent);
+  const { source, assertCurrent: assertSourceCurrent } = await prepareSource();
   const retained = retainSessionHistoryWorkerDatabase({
     agentId: source.agentId,
     path: source.path,
     env,
   });
   const assertCurrent = () => {
+    assertCallerCurrent();
     assertSourceCurrent();
     retained.owner.assertCurrent();
   };
@@ -290,40 +297,70 @@ async function prepareNativeSessionSharingSource(
   try {
     assertSourceCurrent();
     const sharedContext = captureOpenClawStateReadWorkerContext({ env });
-    const reads = params.targets.map((expected) => {
-      const target = expected.resolved ?? expected.absentTarget;
-      if (!target) {
-        throw sessionMutationTargetChanged(params.request.method, expected.sessionKey);
-      }
-      const incognito = isIncognitoSessionKey(expected.sessionKey);
-      const pathname = incognito
-        ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: target.agentId, env })
-        : resolveUnsuffixedSqliteTargetFromSessionStorePath(target.storePath).path;
-      const retained = retainOpenClawAgentDatabaseReadOnly({
-        agentId: target.agentId,
-        path: pathname,
-        env,
-      });
+    const retainSource = (agentId: string, path: string) => {
+      const retained = retainOpenClawAgentDatabaseReadOnly({ agentId, path, env });
       if (!retained.found) {
         throw new Error("Session sharing source is unavailable");
       }
       resources.push(retained.claim);
+      return retained;
+    };
+    const selections = params.targets.map((expected) => {
+      const target = expected.resolved ?? expected.absentTarget;
+      if (!target) {
+        throw sessionMutationTargetChanged(params.request.method, expected.sessionKey);
+      }
+      if (isIncognitoSessionKey(expected.sessionKey)) {
+        // Pin every process-held source before durable owner discovery can yield.
+        const pathname = resolveIncognitoOpenClawAgentSqlitePath({ agentId: target.agentId, env });
+        return {
+          expected,
+          target,
+          incognito: true as const,
+          retained: retainSource(target.agentId, pathname),
+        };
+      }
+      return {
+        expected,
+        target,
+        incognito: false as const,
+        prepareSource: captureSessionSharingStore(target, env, assertSourceCurrent),
+      };
+    });
+    const reads: Array<
+      Pick<(typeof selections)[number], "expected" | "target" | "incognito"> & {
+        retained: ReturnType<typeof retainSource>;
+        readSource: CapturedSessionEntryReadSource;
+        assertSourceCurrent: (() => void) | undefined;
+        key: string;
+      }
+    > = [];
+    for (const selection of selections) {
+      const { expected, target, incognito } = selection;
+      const native = selection.incognito
+        ? { retained: selection.retained, assertCurrent: undefined }
+        : await selection.prepareSource().then((prepared) => ({
+            retained: retainSource(prepared.source.agentId, prepared.source.path),
+            assertCurrent: prepared.assertCurrent,
+          }));
+      const retained = native.retained;
       const identity = readOpenClawAgentDatabaseIdentity(retained.database);
       const readSource = {
-        agentId: target.agentId,
-        path: pathname,
+        agentId: retained.database.agentId,
+        path: retained.database.path,
         databaseIdentity: identity.identity,
         databaseBirthtime: identity.birthtime,
       };
-      return {
+      reads.push({
         expected,
         target,
         incognito,
         retained,
         readSource,
+        assertSourceCurrent: native.assertCurrent,
         key: expected.resolved?.storeKey ?? target.canonicalKey,
-      };
-    });
+      });
+    }
     const [{ prepareOpenClawStateCurrentReader }, { readAgentDeletionJournalInDatabase }] =
       await Promise.all([
         import("../state/openclaw-state-db-current-reader.js"),
@@ -337,6 +374,7 @@ async function prepareNativeSessionSharingSource(
     const assertCurrent = () => {
       assertSourceCurrent();
       for (const read of reads) {
+        read.assertSourceCurrent?.();
         read.retained.claim.assertCurrent();
         if (read.incognito) {
           assertIncognitoAgentDatabasePathAvailable(read.readSource.path);

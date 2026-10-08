@@ -19,6 +19,10 @@ import * as creationClaims from "./agent-creation-claim.js";
 import { AgentDatabaseExecutionAdmissionClosedError } from "./agent-database-admission-error.js";
 import { captureAgentDatabaseAdmission } from "./agent-database-admission.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
+import {
+  isOpenClawAgentDatabasePathCurrent,
+  readOpenClawAgentDatabaseIdentity,
+} from "./openclaw-agent-db-identity.js";
 import { agentDatabaseLifecycle } from "./openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
@@ -179,6 +183,17 @@ function createAgentDatabaseExecution(
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let idleDrainListener: Disposable | undefined;
 
+  const acceptFileIdentity = (received: AgentDatabaseExecutionFileIdentity) => {
+    if (
+      fileIdentity &&
+      (fileIdentity.physicalIdentity !== received.physicalIdentity ||
+        fileIdentity.birthtime !== received.birthtime)
+    ) {
+      throw new Error("Agent database execution belongs to another physical file");
+    }
+    fileIdentity ??= Object.freeze({ ...received });
+  };
+
   const clearIdleTimer = () => {
     idleDrainListener?.[Symbol.dispose]();
     idleDrainListener = undefined;
@@ -300,16 +315,7 @@ function createAgentDatabaseExecution(
           }
         },
         expectedIdentity ?? fileIdentity,
-        (received) => {
-          if (
-            fileIdentity &&
-            (fileIdentity.physicalIdentity !== received.physicalIdentity ||
-              fileIdentity.birthtime !== received.birthtime)
-          ) {
-            throw new Error("Agent database execution belongs to another physical file");
-          }
-          fileIdentity ??= Object.freeze({ ...received });
-        },
+        acceptFileIdentity,
         () => {
           const retained = owner.borrow(pathname);
           return () => retained.release();
@@ -460,6 +466,47 @@ function createAgentDatabaseExecution(
         get fileIdentity() {
           assertBorrowed();
           return fileIdentity;
+        },
+        async adoptNativeDatabase(database) {
+          const adoption = (async () => {
+            assertBorrowed();
+            const native = readOpenClawAgentDatabaseIdentity(database);
+            const assertNativeCurrent = () => {
+              assertBorrowed();
+              if (
+                database.agentId !== agentId ||
+                agentDatabaseLifecycle.databases.get(database.path) !== database ||
+                readOpenClawAgentDatabaseIdentity(database) !== native ||
+                native.canonicalPath !== identity.canonicalPath ||
+                !isOpenClawAgentDatabasePathCurrent(database)
+              ) {
+                throw new Error("Agent execution cannot adopt a different native database owner");
+              }
+            };
+            assertNativeCurrent();
+            if (typeof native.identity !== "string") {
+              throw new Error("Agent execution requires an admitted native file");
+            }
+            // A refused prepare can retain an unopened generation with the old absence witness.
+            if (generation && !fileIdentity) {
+              await closeNative(generation);
+              assertNativeCurrent();
+            }
+            const received: AgentDatabaseExecutionFileIdentity = {
+              kind: "file",
+              physicalIdentity: native.identity,
+              birthtime: native.birthtime,
+              nativeLocation: native.canonicalPath,
+            };
+            assertReferenceCurrent(received);
+            acceptFileIdentity(received);
+          })();
+          pending.add(adoption);
+          try {
+            await adoption;
+          } finally {
+            pending.delete(adoption);
+          }
         },
         assertCurrent: assertBorrowed,
         captureGenerationClaim,

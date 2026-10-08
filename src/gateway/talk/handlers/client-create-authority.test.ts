@@ -1,30 +1,44 @@
 import path from "node:path";
-import { StatementSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   isSessionEntryDataSql,
+  observeHostDataSql,
   observeSqliteReadSql,
+  trackSqliteStatementExecutions,
 } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import { captureGatewayToolReceiptAssertion } from "../../../agents/tools/gateway-caller-context.js";
 import {
   loadSessionEntry,
   replaceSessionEntry,
   replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
+import {
+  captureExternalSessionCommitGuard,
+  composeSessionSourceAssertion,
+} from "../../../config/sessions/session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target-paths.js";
 import * as sqliteSnapshotSource from "../../../infra/sqlite-snapshot-source.js";
 import * as operationAdmission from "../../../infra/sqlite-worker-operation-admission.js";
 import { closeCachedOpenClawAgentDatabase } from "../../../state/openclaw-agent-db-lifecycle.js";
 import * as readonlyOpen from "../../../state/openclaw-agent-db-readonly-open.js";
 import { closeIdleOpenClawAgentDatabaseReadOnly } from "../../../state/openclaw-agent-db-readonly-scope.js";
-import { getOpenClawAgentDatabaseIfOpen } from "../../../state/openclaw-agent-db.js";
+import { retainOpenClawAgentDatabaseReadOnly } from "../../../state/openclaw-agent-db-readonly.js";
+import {
+  getOpenClawAgentDatabaseIfOpen,
+  openOpenClawAgentDatabase,
+} from "../../../state/openclaw-agent-db.js";
+import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import { resetClientVoiceConfirmationStateForTest } from "../../../talk/client-voice-confirmation.test-support.js";
 import * as voiceSessions from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
+import { SessionMutationAuthorizationChangedError } from "../../session-mutation-authorization-error.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
+import { roleClient, rolePolicyConfig } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { cleanupTalkConnection } from "../session-registry.js";
 import {
@@ -160,6 +174,131 @@ describe("voice creation authority", () => {
       { sessionId, updatedAt: Date.now() },
     );
   });
+  it.each([
+    { mixed: false, revoked: undefined },
+    { mixed: false, revoked: "foreign" },
+    { mixed: true, revoked: undefined },
+    { mixed: true, revoked: "foreign" },
+    { mixed: true, revoked: "local" },
+  ])(
+    "validates cross-store voice authority on its owning database (mixed=$mixed, revoked=$revoked)",
+    async ({ mixed, revoked }) => {
+      const local = { agentId: "main", sessionKey };
+      const foreign = { agentId: "source", sessionKey: "agent:source:main" };
+      await replaceSessionEntry(foreign, { sessionId: "foreign-source", updatedAt: 1 });
+      const config = {
+        ...rolePolicyConfig(),
+        agents: { list: [{ id: "main" }, { id: "source" }] },
+      };
+      const client = roleClient("write", "cross-store-voice");
+      const prepare = (scope: typeof local) => {
+        const result = resolveSessionMutationAuthorization({
+          method: "sessions.patch",
+          requestParams: { key: scope.sessionKey, agentId: scope.agentId },
+          context: { getRuntimeConfig: () => config } as GatewayRequestHandlerOptions["context"],
+          client,
+        });
+        expect(result.error).toBeNull();
+        return result.authorization!.assertCurrent;
+      };
+      openOpenClawAgentDatabase(local);
+      const localReader = retainOpenClawAgentDatabaseReadOnly(local);
+      if (!localReader.found) {
+        throw new Error("Expected the authorization owner's native reader");
+      }
+      const localReads = trackSqliteStatementExecutions(localReader.database.db, ["data"], (sql) =>
+        isSessionEntryDataSql(sql) || /\bcache_entries\b/i.test(sql) ? "data" : null,
+      );
+      const foreignAuthority = prepare(foreign);
+      const localAuthority = mixed ? prepare(local) : undefined;
+      if (mixed) {
+        expect(localReads.counts.data).toBeGreaterThan(0);
+      }
+      let grantLocalReads = 0;
+      let grants = 0;
+      let revokedSource = false;
+      let inGrant = false;
+      const open = readonlyOpen.openOpenClawAgentDatabaseReadOnly;
+      const openSpy = vi
+        .spyOn(readonlyOpen, "openOpenClawAgentDatabaseReadOnly")
+        .mockImplementation((...args) => {
+          if (inGrant) {
+            throw new Error("Cold source admission ran inside the voice worker grant");
+          }
+          return open(...args);
+        });
+      observeAdmission = (request, run) => {
+        if (
+          revoked &&
+          !revokedSource &&
+          request.stage === (revoked === "local" ? "prepare" : "commit")
+        ) {
+          const scope = revoked === "local" ? local : foreign;
+          const peer = new DatabaseSync(resolveOpenClawAgentSqlitePath(scope));
+          try {
+            peer
+              .prepare(
+                "UPDATE session_nodes SET current_session_id = 'revoked-source', entry_json = json_set(entry_json, '$.sessionId', 'revoked-source') WHERE session_key = ?",
+              )
+              .run(scope.sessionKey);
+          } finally {
+            peer.close();
+          }
+          revokedSource = true;
+        }
+        const start = localReads.counts.data;
+        inGrant = true;
+        try {
+          grants += 1;
+          run();
+        } finally {
+          inGrant = false;
+          grantLocalReads += localReads.counts.data - start;
+        }
+      };
+      const voiceSessionId = "cross-store-voice";
+      const metadataSql = observeHostDataSql();
+      try {
+        const creating = voiceSessions.createOrResumeClientVoiceSession({
+          ...local,
+          voiceSessionId,
+          origin: "client",
+          ...(mixed
+            ? {
+                source: {
+                  storePath: resolveOpenClawAgentSqlitePath(foreign),
+                  assertCurrent: composeSessionSourceAssertion([localAuthority, foreignAuthority]),
+                },
+              }
+            : { requester: foreignAuthority }),
+        });
+        if (revoked) {
+          await expect(creating).rejects.toBeInstanceOf(SessionMutationAuthorizationChangedError);
+          await expect(creating).rejects.toThrow(
+            "session changed before sessions.patch; retry the request",
+          );
+          expect(revokedSource).toBe(true);
+          expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)).toBeUndefined();
+        } else {
+          await expect(creating).resolves.toBe(voiceSessionId);
+          expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("open");
+        }
+        expect(grants).toBeGreaterThan(0);
+        expect(grantLocalReads).toBe(0);
+        expect(
+          metadataSql.queries.filter((sql) =>
+            /\b(?:insert|update|delete)\b[\s\S]*\bcache_entries\b/i.test(sql),
+          ),
+        ).toEqual([]);
+      } finally {
+        observeAdmission = undefined;
+        metadataSql.restore();
+        openSpy.mockRestore();
+        localReads.restore();
+        localReader.claim.release();
+      }
+    },
+  );
   it("replaces a voice on the same chat only after both the browser and provider are ready", async () => {
     const createBrowserSession = vi.fn(async (request: BrowserRequest) => ({
       ...browserSession,
@@ -482,9 +621,11 @@ describe("voice creation authority", () => {
     }
   });
 
-  it.each([false, true])(
-    "retains a replacement source SDK guard at native commit (revoked=%s)",
-    async (revoked) => {
+  it.each(
+    [false, true].flatMap((receipt) => [false, true].map((revoked) => ({ receipt, revoked }))),
+  )(
+    "retains a replacement source SDK guard at native commit (revoked=$revoked, receipt=$receipt)",
+    async ({ revoked, receipt }) => {
       const createBrowserSession = vi.fn(async (request: BrowserRequest) => ({
         ...browserSession,
         voice: request.voice ?? "cove",
@@ -512,6 +653,19 @@ describe("voice creation authority", () => {
           return createVoice(...args);
         });
       let nativeCommitGuard = false;
+      const assertSdkCurrent = () => {
+        expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
+        if (
+          replacementId &&
+          getOpenClawAgentDatabaseIfOpen({ agentId: "main" })?.db.isTransaction &&
+          clientVoiceSessionTesting.readRecord("main", replacementId)
+        ) {
+          nativeCommitGuard = true;
+          if (revoked) {
+            throw new Error("Replacement SDK authority revoked");
+          }
+        }
+      };
       const change = Promise.resolve(
         talkVoiceHandlers["talk.voice.set"]!({
           req: { type: "req", id: "sdk-change", method: "talk.voice.set", params: {} },
@@ -520,19 +674,13 @@ describe("voice creation authority", () => {
           context: fixture.context,
           client: fixture.client,
           isWebchatConnect: () => false,
-          sessionMutationCommitGuard: () => {
-            expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
-            if (
-              replacementId &&
-              getOpenClawAgentDatabaseIfOpen({ agentId: "main" })?.db.isTransaction &&
-              clientVoiceSessionTesting.readRecord("main", replacementId)
-            ) {
-              nativeCommitGuard = true;
-              if (revoked) {
-                throw new Error("Replacement SDK authority revoked");
-              }
-            }
-          },
+          sessionMutationCommitGuard: receipt
+            ? captureGatewayToolReceiptAssertion(
+                composeSessionSourceAssertion([
+                  captureExternalSessionCommitGuard(assertSdkCurrent),
+                ]),
+              )
+            : assertSdkCurrent,
         } as never),
       );
       const changeId = fixture.context.broadcastToConnIds.mock.calls.find(

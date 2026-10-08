@@ -167,9 +167,9 @@ export function closeRelayVoiceSession(
         throw error;
       }
       try {
-        const voiceSessionReady = ensureRelayVoiceSession(session, writer);
+        await ensureRelayVoiceSession(session, writer);
         await session.voiceTranscriptQueue.flush();
-        if (!(await voiceSessionReady)) {
+        if (!session.voiceSessionCreated) {
           return;
         }
         const config = session.voiceConfig ?? session.context.getRuntimeConfig();

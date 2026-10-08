@@ -1860,3 +1860,7 @@ scripts/github/security-sensitive-guard.mjs
 scripts/lib/bounded-response.mjs
 scripts/pr-lib/merge-prior-ci-cancellation.mjs
 scripts/pr-lib/merge-prior-ci-security.mjs
+src/config/sessions/session-entry-patch-guard.ts
+src/config/sessions/session-accessor.sqlite-entry-read.ts
+src/config/sessions/session-accessor.sqlite-transcript-state.ts
+src/config/sessions/session-sharing-store.kernel.ts

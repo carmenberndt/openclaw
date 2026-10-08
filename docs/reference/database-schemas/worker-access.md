@@ -1626,6 +1626,10 @@ from the released v2026.9.8 Gateway SDK, including guards retained by voice repl
 keep native voice admission through the same FIFO and mutation kernel. These callbacks
 may read SQLite and remain live throughout native preparation and commit. Prepared
 Gateway requests and incognito voice metadata continue through the worker.
+Native SDK opening hands its admitted file identity to that same executor; refused
+worker preparations finish cleanup before the handoff. Fixed stores retain their
+physical schema owner independently of logical agent routing. Each create/resume
+operation checks its own current authority even when reusing a writer.
 Consult registration settles before execution starts.
 Transcript failure reservations remain durable before the
 fallible append. Same-store append and success bookkeeping commit together, then

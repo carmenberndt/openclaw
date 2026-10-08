@@ -2756,6 +2756,11 @@ describe("talk.client.toolCall handler", () => {
           sessionKey: "main",
           origin: "client",
           assertCurrent: expect.any(Function),
+          requester: expect.any(Function),
+          source: {
+            assertCurrent: expect.any(Function),
+            storePath: expect.any(String),
+          },
         });
         expect(mocks.registerClientVoiceConsultRun).toHaveBeenCalledWith(
           expect.objectContaining({ voiceSessionId: "voice-test", runId: "run-voice-1" }),

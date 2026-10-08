@@ -1,8 +1,12 @@
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../test/helpers/promise.js";
 import {
   observeHostDataSql,
   observeSqliteReadSql,
@@ -12,22 +16,26 @@ import { captureExternalSessionCommitGuard } from "../config/sessions/session-so
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { setTestEnvValue } from "../test-utils/env.js";
 import { prepareClientVoiceSessionClose } from "./client-voice-session-lifecycle.js";
 import { readVoiceSessionRecord } from "./client-voice-session-store.js";
+import { captureClientVoiceSessionWriter } from "./client-voice-session-write.js";
 import { recordMutation, seedSession } from "./client-voice-session.fixture.test-support.js";
 import {
   appendClientVoiceTranscript,
   assertClientVoiceSessionOpen,
   closeClientVoiceSession,
+  closeStaleClientVoiceSessions,
   createOrResumeClientVoiceSession,
   flushClientVoiceSessionWrites,
   isClientVoiceSessionConfirmable,
   registerClientVoiceConsultRun,
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
+import { VoiceTranscriptOperationRegistry } from "./voice-transcript.js";
 
 // Install shared mocks before fixture imports load the voice persistence graph.
 const { useClientVoiceSessionHarness } = await vi.hoisted(
@@ -68,36 +76,124 @@ describe("client voice session worker contract", () => {
     });
   });
 
-  it("refuses revoked admission after waiting for the existing writer FIFO", async () => {
-    const target = { agentId: "main", sessionKey: "agent:main:main" };
-    await seedSession(target.sessionKey);
-    const entered = createDeferred();
+  it.each([false, true])(
+    "refuses revoked admission after the FIFO wait (retained=%s)",
+    async (retained) => {
+      const target = { agentId: "main", sessionKey: "agent:main:main" };
+      await seedSession(target.sessionKey);
+      const entered = createDeferred();
+      const release = createDeferred();
+      releaseHeldWrites.push(() => release.resolve());
+      const blocker = runOpenClawAgentWorkerWrite({ agentId: target.agentId }, async () => {
+        entered.resolve();
+        await release.promise;
+      });
+      await entered.promise;
+      const controller = new AbortController();
+      const voiceSessionId = "voice-revoked-admission";
+      const writer = retained ? captureClientVoiceSessionWriter(target) : undefined;
+      const prepare = vi.fn(async () => ({ assertCurrent() {}, checks: [] }));
+      const creating = createOrResumeClientVoiceSession(
+        {
+          ...target,
+          voiceSessionId,
+          origin: "client",
+          assertCurrent: () => controller.signal.throwIfAborted(),
+          requester: Object.assign(() => {}, { prepareSessionSource: prepare }),
+        },
+        writer,
+      );
+      controller.abort(new Error("voice access revoked"));
+      const rejected = expect(creating).rejects.toThrow("voice access revoked");
+      release.resolve();
+      try {
+        await blocker;
+        await rejected;
+        expect(prepare).not.toHaveBeenCalled();
+        expect(
+          clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId),
+        ).toBeUndefined();
+      } finally {
+        await writer?.release();
+      }
+    },
+  );
+
+  it("keeps a preparing resume ahead of later stale recovery", async ({ signal }) => {
+    const target = { agentId: "main", sessionKey: "agent:main:main", origin: "client" as const };
+    const voiceSessionId = await createOrResumeClientVoiceSession({ ...target, now: 1 });
+    const now = 6 * 60 * 60_000 + 2;
+    const preparing = createDeferred();
     const release = createDeferred();
-    releaseHeldWrites.push(() => release.resolve());
-    const blocker = runOpenClawAgentWorkerWrite({ agentId: target.agentId }, async () => {
-      entered.resolve();
-      await release.promise;
-    });
-    await entered.promise;
-    const controller = new AbortController();
-    const voiceSessionId = "voice-revoked-admission";
-    const creating = createOrResumeClientVoiceSession({
+    const closeQueued = createDeferred();
+    // oxlint-disable-next-line typescript/unbound-method -- Called with the original registry receiver.
+    const close = VoiceTranscriptOperationRegistry.prototype.close;
+    const observer = vi
+      .spyOn(VoiceTranscriptOperationRegistry.prototype, "close")
+      .mockImplementationOnce(function (this: VoiceTranscriptOperationRegistry, key, operation) {
+        return close.call(this, key, () => {
+          const pending = operation();
+          closeQueued.resolve();
+          return pending;
+        });
+      });
+    const resumed = createOrResumeClientVoiceSession({
       ...target,
       voiceSessionId,
-      origin: "client",
-      assertCurrent: () => controller.signal.throwIfAborted(),
+      now,
+      requester: Object.assign(() => {}, {
+        async prepareSessionSource() {
+          preparing.resolve();
+          await release.promise;
+          return { assertCurrent() {}, checks: [] };
+        },
+      }),
     });
-    controller.abort(new Error("voice access revoked"));
-    const rejected = expect(creating).rejects.toThrow("voice access revoked");
-    release.resolve();
-    await blocker;
-    await rejected;
-    expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toBeUndefined();
+    const resumeResult = resumed.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let recovery: Promise<number> | undefined;
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(
+          preparing.promise,
+          resumed,
+          "Resume skipped authority preparation",
+        ),
+        signal,
+      );
+      recovery = closeStaleClientVoiceSessions({ agentId: target.agentId, config: {}, now });
+      await withinTest(
+        awaitGateBeforeSettlement(
+          closeQueued.promise,
+          recovery,
+          "Recovery skipped its stale close",
+        ),
+        signal,
+      );
+      release.resolve();
+      expect(await resumeResult).toEqual({ value: voiceSessionId });
+      expect(await recovery).toBe(0);
+      expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toMatchObject({
+        status: "open",
+        updatedAt: now,
+      });
+    } finally {
+      release.resolve();
+      await Promise.allSettled([resumeResult, recovery]);
+      observer.mockRestore();
+    }
   });
 
-  it.each([false, true])(
-    "guards cold SDK admission after the FIFO wait (revoked=%s)",
-    async (revoked) => {
+  it.each([
+    { revoked: false, retained: false },
+    { revoked: true, retained: false },
+    { revoked: false, retained: true },
+    { revoked: true, retained: true },
+  ])(
+    "guards cold SDK admission after the FIFO wait (revoked=$revoked, retained=$retained)",
+    async ({ revoked, retained }) => {
       await seedSession("agent:main:main");
       const target = { agentId: "cold-sdk", sessionKey: "agent:cold-sdk:main" };
       const entered = createDeferred();
@@ -110,38 +206,227 @@ describe("client voice session worker contract", () => {
       });
       await entered.promise;
       let allowed = true;
-      const creating = createOrResumeClientVoiceSession({
-        ...target,
-        voiceSessionId: "cold-sdk-voice",
-        origin: "client",
-        requester: captureExternalSessionCommitGuard(() => {
-          checked.resolve();
-          if (!allowed) {
-            throw new Error("SDK authority revoked");
-          }
-        }),
-      });
+      const writer = retained ? captureClientVoiceSessionWriter(target) : undefined;
+      const creating = createOrResumeClientVoiceSession(
+        {
+          ...target,
+          voiceSessionId: "cold-sdk-voice",
+          origin: "client",
+          requester: captureExternalSessionCommitGuard(() => {
+            checked.resolve();
+            if (!allowed) {
+              throw new Error("SDK authority revoked");
+            }
+          }),
+        },
+        writer,
+      );
       const completed = revoked
         ? expect(creating).rejects.toThrow("SDK authority revoked")
         : expect(creating).resolves.toBe("cold-sdk-voice");
-      await checked.promise;
-      allowed = !revoked;
-      release.resolve();
-      await blocker;
-      await completed;
-      expect(existsSync(resolveOpenClawAgentSqlitePath(target))).toBe(!revoked);
-      const database = new DatabaseSync(resolveOpenClawStateSqlitePath(), { readOnly: true });
       try {
-        expect(
-          database
-            .prepare("SELECT agent_id FROM agent_databases WHERE agent_id = ?")
-            .all(target.agentId),
-        ).toHaveLength(revoked ? 0 : 1);
+        allowed = !revoked;
+        release.resolve();
+        await awaitGateBeforeSettlement(
+          checked.promise,
+          creating,
+          "Voice creation settled without checking SDK authority",
+        );
+        await blocker;
+        await completed;
+        expect(existsSync(resolveOpenClawAgentSqlitePath(target))).toBe(!revoked);
+        if (writer && !revoked) {
+          await closeClientVoiceSession(
+            {
+              ...target,
+              voiceSessionId: "cold-sdk-voice",
+              config: {},
+            },
+            writer,
+          );
+          expect(
+            clientVoiceSessionTesting.readRecord(target.agentId, "cold-sdk-voice"),
+          ).toMatchObject({ status: "closed" });
+        }
+        const database = new DatabaseSync(resolveOpenClawStateSqlitePath(), { readOnly: true });
+        try {
+          expect(
+            database
+              .prepare("SELECT agent_id FROM agent_databases WHERE agent_id = ?")
+              .all(target.agentId),
+          ).toHaveLength(revoked ? 0 : 1);
+        } finally {
+          database.close();
+        }
       } finally {
-        database.close();
+        release.resolve();
+        await Promise.allSettled([blocker, creating, completed]);
+        await writer?.release();
       }
     },
   );
+
+  it.each([false, true])(
+    "refuses a retargeted same-file SDK source alias (requester SDK=%s)",
+    async (nativeRequester) => {
+      const target = { agentId: "main", sessionKey: "agent:main:main" };
+      const replacement = {
+        agentId: "alias-replacement",
+        sessionKey: "agent:alias-replacement:main",
+      };
+      await seedSession(target.sessionKey);
+      await createOrResumeClientVoiceSession({
+        ...replacement,
+        voiceSessionId: "replacement",
+        origin: "client",
+      });
+      const originalPath = resolveOpenClawAgentSqlitePath(target);
+      const alias = path.join(process.env.OPENCLAW_STATE_DIR!, "voice-source-alias");
+      symlinkSync(path.dirname(originalPath), alias, "junction");
+      const changed = createDeferred();
+      let scheduled = false;
+      const voiceSessionId = "voice-source-alias";
+      await expect(
+        createOrResumeClientVoiceSession({
+          ...target,
+          voiceSessionId,
+          origin: "client",
+          requester: nativeRequester ? captureExternalSessionCommitGuard(() => {}) : undefined,
+          source: {
+            storePath: path.join(alias, path.basename(originalPath)),
+            assertCurrent: captureExternalSessionCommitGuard(() => {
+              if (!scheduled) {
+                scheduled = true;
+                queueMicrotask(() => {
+                  unlinkSync(alias);
+                  symlinkSync(
+                    path.dirname(resolveOpenClawAgentSqlitePath(replacement)),
+                    alias,
+                    "junction",
+                  );
+                  changed.resolve();
+                });
+              }
+            })!,
+          },
+        }),
+      ).rejects.toThrow("Voice session source changed");
+      await changed.promise;
+      expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toBeUndefined();
+    },
+  );
+
+  it.each([false, true])(
+    "refuses a replaced separate source before invoking its SDK guard (requester SDK=%s)",
+    async (nativeRequester) => {
+      const target = { agentId: "main", sessionKey: "agent:main:main" };
+      const source = { agentId: "source", sessionKey: "agent:source:main" };
+      await seedSession(target.sessionKey);
+      await createOrResumeClientVoiceSession({
+        ...source,
+        voiceSessionId: "source-authority",
+        origin: "client",
+      });
+      const sourcePath = resolveOpenClawAgentSqlitePath(source);
+      const originalPath = `${sourcePath}.original`;
+      const sourceDatabase = new DatabaseSync(sourcePath);
+      sourceDatabase.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+      const readAuthority = sourceDatabase.prepare(
+        "SELECT json_extract(value_json, '$.status') AS status FROM cache_entries WHERE scope = ? AND key = ?",
+      );
+      let scheduled = false;
+      let replaced = false;
+      let guardCallsAfterReplacement = 0;
+      const voiceSessionId = "voice-replaced-source";
+      try {
+        const failure = await createOrResumeClientVoiceSession({
+          ...target,
+          voiceSessionId,
+          origin: "client",
+          requester: nativeRequester ? captureExternalSessionCommitGuard(() => {}) : undefined,
+          source: {
+            storePath: sourcePath,
+            assertCurrent: captureExternalSessionCommitGuard(() => {
+              if (replaced) {
+                guardCallsAfterReplacement++;
+              }
+              if (
+                readAuthority.get("talk-client-voice-sessions", "source-authority")?.status !==
+                "open"
+              ) {
+                throw new Error("SDK source authority revoked");
+              }
+              if (!scheduled) {
+                scheduled = true;
+                queueMicrotask(() => {
+                  renameSync(sourcePath, originalPath);
+                  copyFileSync(originalPath, sourcePath);
+                  replaced = true;
+                });
+              }
+            })!,
+          },
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(replaced).toBe(true);
+        expect(
+          clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId),
+        ).toBeUndefined();
+        expect(failure).toBeInstanceOf(Error);
+        expect(guardCallsAfterReplacement).toBe(0);
+      } finally {
+        if (existsSync(originalPath)) {
+          unlinkSync(sourcePath);
+          renameSync(originalPath, sourcePath);
+        }
+        sourceDatabase.close();
+      }
+    },
+  );
+
+  it("continues native creation after a retained worker preparation is refused", async () => {
+    await seedSession("agent:main:main");
+    const target = {
+      agentId: "native-after-refusal",
+      sessionKey: "agent:native-after-refusal:main",
+    };
+    const writer = captureClientVoiceSessionWriter(target);
+    const peer = captureOpenClawAgentDatabaseExecution(target, {
+      expectedCreationIdentity: writer.identity,
+    });
+    try {
+      await expect(
+        peer.prepare({
+          assertCurrent() {
+            throw new Error("previous preparation refused");
+          },
+          createAdmission() {
+            throw new Error("refused preparation cannot open");
+          },
+        }),
+      ).rejects.toThrow("previous preparation refused");
+      const input = {
+        ...target,
+        voiceSessionId: "native-after-refusal-voice",
+        origin: "client" as const,
+        requester: captureExternalSessionCommitGuard(() => {}),
+      };
+      await createOrResumeClientVoiceSession(input, writer);
+      expect(peer.fileIdentity?.physicalIdentity).toBe(
+        writer.source.identity.key.slice("file:".length),
+      );
+      await createOrResumeClientVoiceSession(input, writer);
+      await closeClientVoiceSession({ ...input, config: {} }, writer);
+      expect(
+        clientVoiceSessionTesting.readRecord(target.agentId, input.voiceSessionId),
+      ).toMatchObject({ status: "closed" });
+    } finally {
+      await peer.release();
+      await writer.release();
+    }
+  });
 
   it.each([false, true])(
     "keeps delayed effects with the original store and close owner (closing=%s)",
