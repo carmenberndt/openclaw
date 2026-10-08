@@ -1263,7 +1263,7 @@ src/agents/compaction-planning.ts	1
 src/agents/compaction-planning.worker.ts	1
 src/agents/compaction-real-conversation.ts	4
 src/agents/compaction-usage.ts	1
-src/agents/compaction.ts	4
+src/agents/compaction.ts	3
 src/agents/content-blocks.ts	1
 src/agents/context-cache.ts	1
 src/agents/context-runtime-state.ts	1
@@ -1271,9 +1271,9 @@ src/agents/cron-creator-authority-context.ts	1
 src/agents/custom-api-registry.ts	2
 src/agents/delegation-capability.ts	1
 src/agents/embedded-agent-helpers/bootstrap.ts	2
-src/agents/embedded-agent-helpers/images.ts	7
+src/agents/embedded-agent-helpers/images.ts	6
 src/agents/embedded-agent-helpers/openai.ts	17
-src/agents/embedded-agent-helpers/turns.ts	15
+src/agents/embedded-agent-helpers/turns.ts	14
 src/agents/embedded-agent-live-edit-diff.ts	3
 src/agents/embedded-agent-messaging-extraction.ts	1
 src/agents/embedded-agent-messaging.ts	1
@@ -1345,11 +1345,11 @@ src/agents/embedded-agent-runner/tool-result-context-guard.ts	8
 src/agents/embedded-agent-runner/tool-result-truncation.ts	12
 src/agents/embedded-agent-runner/tool-schema-runtime.ts	1
 src/agents/embedded-agent-runner/transcript-rewrite.ts	1
-src/agents/embedded-agent-subscribe.handlers.messages.lifecycle.ts	2
+src/agents/embedded-agent-subscribe.handlers.messages.lifecycle.ts	1
 src/agents/embedded-agent-subscribe.handlers.messages.stream.ts	3
-src/agents/embedded-agent-subscribe.handlers.messages.update.ts	5
+src/agents/embedded-agent-subscribe.handlers.messages.update.ts	3
 src/agents/embedded-agent-subscribe.handlers.tools.completion.ts	1
-src/agents/embedded-agent-subscribe.handlers.tools.results.ts	2
+src/agents/embedded-agent-subscribe.handlers.tools.results.ts	1
 src/agents/embedded-agent-subscribe.handlers.tools.start.ts	6
 src/agents/embedded-agent-subscribe.tool-text-diagnostics.ts	6
 src/agents/embedded-agent-tool-media.ts	5
@@ -1679,12 +1679,11 @@ src/claws/update-capability-changes.ts	7
 src/claws/workspace.ts	2
 src/cli/acp-cli.ts	7
 src/cli/attach-cli.ts	3
-src/cli/capability-cli/audio.ts	3
 src/cli/capability-cli/embedding.ts	2
 src/cli/capability-cli/image.ts	10
 src/cli/capability-cli/model.ts	4
 src/cli/capability-cli/tts.ts	6
-src/cli/capability-cli/video.ts	6
+src/cli/capability-cli/video.ts	5
 src/cli/capability-cli/web.ts	5
 src/cli/channel-auth.ts	4
 src/cli/channels-cli.ts	5
@@ -1736,7 +1735,7 @@ src/cli/program/register.configure.ts	1
 src/cli/program/register.migrate.ts	7
 src/cli/program/register.onboard.ts	27
 src/cli/program/register.setup.ts	2
-src/cli/program/register.status-health-sessions.ts	18
+src/cli/program/register.status-health-sessions.ts	9
 src/cli/run-main.ts	1
 src/cli/secrets-cli.ts	2
 src/cli/secrets-store-cli.ts	1
@@ -2110,7 +2109,6 @@ src/gateway/system-ca-warmup.ts	1
 src/gateway/talk/handlers/index.ts	3
 src/gateway/talk/relay/session-create.ts	1
 src/gateway/talk/session-config.ts	1
-src/gateway/terminal/node-relay.ts	1
 src/gateway/test-http-response.ts	4
 src/gateway/test-temp-config.ts	1
 src/gateway/tools-invoke-http.ts	1
@@ -2178,7 +2176,6 @@ src/infra/exec-host.ts	3
 src/infra/fetch-headers.ts	3
 src/infra/fetch.ts	5
 src/infra/file-lock-manager.ts	1
-src/infra/file-lock-sync.ts	1
 src/infra/fs-safe-remove.ts	4
 src/infra/gateway-lock.ts	2
 src/infra/gateway-processes.ts	1

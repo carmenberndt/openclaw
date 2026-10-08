@@ -255,7 +255,10 @@ export const WorkerRuntimeContextMessageSchema = Type.Union([
 export const WorkerTranscriptMessageSchema = Type.Union([
   WorkerTranscriptUserMessageSchema,
   WorkerRuntimeContextMessageSchema,
-  transcriptSchemas.contextAssistant,
+  closedObject({
+    ...transcriptSchemas.contextAssistant.properties,
+    itemId: Type.Optional(WorkerIdentifierSchema),
+  }),
   transcriptSchemas.toolResult,
 ]);
 
