@@ -233,8 +233,9 @@ export async function withSqliteSessionContextReset<T>(
   scope: Parameters<typeof withSqliteSessionDeletions>[0],
   entry: DeletionEntry,
   run: SessionMutationRun<T>,
+  incognito?: IncognitoDeletionSource,
 ): Promise<T> {
-  return withSqliteSessionMutations(scope, [entry], run, { contextReset: true });
+  return withSqliteSessionMutations(scope, [entry], run, { contextReset: true, incognito });
 }
 
 async function withSqliteSessionMutations<T>(

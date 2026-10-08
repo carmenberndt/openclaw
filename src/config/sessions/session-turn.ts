@@ -18,6 +18,10 @@ import type {
   SessionTranscriptTurnWriteContext,
 } from "./session-accessor.types.js";
 import { runSessionEntryWorkerOperation } from "./session-entry-patch.js";
+import {
+  captureIncognitoSessionOperation,
+  publishIncognitoSessionEntry,
+} from "./session-incognito-binding.js";
 import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import {
   prepareSessionSourceAuthority,
@@ -29,6 +33,7 @@ import { completeSessionTranscriptCommit } from "./session-transcript-commit-com
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { prepareSessionTurnGoalMessage } from "./session-turn.kernel.js";
 import type {
+  IncognitoSessionTurnOperations,
   SessionTurnCommitted,
   SessionTurnPlan,
   SqliteSessionTurnOptions,
@@ -45,14 +50,18 @@ export async function appendSessionTurnInWorker(
 ): Promise<SqliteExpectedSessionTranscriptTurnResult> {
   const scope = captureLifecycleDatabaseScope(requested);
   const database = { ...toDatabaseOptions(scope), path: scope.path };
-  const execution = captureOpenClawAgentDatabaseExecution(database);
+  const incognito = captureIncognitoSessionOperation({ ...scope, storePath: scope.path });
+  const execution = incognito ? undefined : captureOpenClawAgentDatabaseExecution(database);
+  const ownerSource = options.ownerSource;
   const custody = captureSessionPendingInputWorkerCustody();
   const cliWriter = getCliHistoryWriter({ ...scope, storePath: scope.path });
   let custodyRequired = false;
   const freshCommitGuards = new Set<() => void>();
   const sources: (PreparedSessionSourceAuthority | undefined)[] = [];
   const assertCurrent = () => {
-    execution.assertCurrent();
+    execution?.assertCurrent();
+    incognito?.authority.assertCurrent();
+    (ownerSource?.assertPreparedCurrent ?? ownerSource?.assertCurrent)?.();
     options.assertCurrent?.();
     options.sessionTurnMutation?.assertCurrent?.();
     if (options.sessionTurnMutation) {
@@ -70,6 +79,7 @@ export async function appendSessionTurnInWorker(
     sessionTurnMutation,
     messages,
     config: _config,
+    ownerSource: _ownerSource,
     ...serializable
   } = options;
   const plan: SessionTurnPlan = {
@@ -97,53 +107,80 @@ export async function appendSessionTurnInWorker(
           lifecycleRevision: cliWriter.lifecycleRevision,
         }
       : undefined,
+    ownerSources: ownerSource?.checks.map(({ predicate }) => predicate),
     custody: custody?.facts,
     relocation: custody?.relocation,
   };
   const outcome = await (async () => {
-    const { restoreSessionColdTranscript, SessionColdTurnReboundError } =
-      await import("./session-cold-storage.js");
-    assertCurrent();
-    try {
-      await restoreSessionColdTranscript(
-        { ...scope, storePath: scope.path },
-        assertCurrent,
-        undefined,
-        options.keyFormat === "agent-qualified"
-          ? {
-              kind: "turn",
-              agentId: scope.agentId,
-              sessionKey: scope.sessionKey,
-              options: {
-                keyFormat: options.keyFormat,
-                expectedSessionId: options.expectedSessionId,
-                selectedSessionId: options.selectedSessionId,
-                selectedLifecycleRevision: options.selectedLifecycleRevision,
-                expectedLifecycleRevision: options.expectedLifecycleRevision,
-                expectedWriterRunId: options.expectedWriterRunId,
-                expectedSessionState: options.expectedSessionState,
-                initialSessionEntry: plan.options.initialSessionEntry,
-              },
-              goalOperation: options.sessionTurnMutation?.operation,
-            }
-          : undefined,
-      );
-    } catch (error) {
-      if (error instanceof SessionColdTurnReboundError) {
-        return { ...error.result, sessionFile: options.sessionFile };
-      }
-      throw error;
+    if (
+      incognito &&
+      ownerSource &&
+      (ownerSource.nativeSource ||
+        ownerSource.hasOpaqueCheck ||
+        ownerSource.checks.some(
+          ({ predicate }) =>
+            predicate.source.path !== incognito.actor.path ||
+            predicate.source.agentId !== incognito.actor.agentId ||
+            predicate.source.databaseIdentity !== incognito.actor.identity.incarnation,
+        ))
+    ) {
+      throw new Error("Incognito turns require owner authority prepared for the same actor");
     }
-    return await runSessionEntryWorkerOperation<
-      SessionTurnCommitted,
-      SqliteExpectedSessionTranscriptTurnResult
-    >({
+    if (!incognito) {
+      const { restoreSessionColdTranscript, SessionColdTurnReboundError } =
+        await import("./session-cold-storage.js");
+      assertCurrent();
+      try {
+        await restoreSessionColdTranscript(
+          { ...scope, storePath: scope.path },
+          assertCurrent,
+          undefined,
+          options.keyFormat === "agent-qualified"
+            ? {
+                kind: "turn",
+                agentId: scope.agentId,
+                sessionKey: scope.sessionKey,
+                options: {
+                  keyFormat: options.keyFormat,
+                  expectedSessionId: options.expectedSessionId,
+                  selectedSessionId: options.selectedSessionId,
+                  selectedLifecycleRevision: options.selectedLifecycleRevision,
+                  expectedLifecycleRevision: options.expectedLifecycleRevision,
+                  expectedWriterRunId: options.expectedWriterRunId,
+                  expectedSessionState: options.expectedSessionState,
+                  initialSessionEntry: plan.options.initialSessionEntry,
+                },
+                goalOperation: options.sessionTurnMutation?.operation,
+              }
+            : undefined,
+        );
+      } catch (error) {
+        if (error instanceof SessionColdTurnReboundError) {
+          return { ...error.result, sessionFile: options.sessionFile };
+        }
+        throw error;
+      }
+    }
+    const operation = {
       database,
       retainedExecution: execution,
       agentId: scope.agentId,
       assertCurrent,
       candidateKind: "session-turn",
       onTransactionFacts(facts) {
+        if (isRecord(facts) && facts.kind === "session-turn-owner") {
+          if (
+            isRecord(facts.refusedOwnerSource) &&
+            typeof facts.refusedOwnerSource.index === "number"
+          ) {
+            ownerSource?.checks[facts.refusedOwnerSource.index]?.refuse(
+              // SAFETY: The paired worker compares these exact owner predicates before any turn effect.
+              facts.refusedOwnerSource.facts as SessionSourcePredicateFacts,
+            );
+            throw new Error("Session owner source refusal omitted its authority assertion");
+          }
+          return true;
+        }
         if (isRecord(facts) && facts.kind === "session-turn-fresh") {
           const source = typeof facts.index === "number" ? sources[facts.index] : undefined;
           if (!source) {
@@ -176,10 +213,20 @@ export async function appendSessionTurnInWorker(
           custody?.assertCurrent(candidate.authority, assertCurrent);
         }
       },
-      async run(worker, commit) {
+      async run(prepareTurn, commit) {
+        const prepareOwnedTurn = async () => {
+          const prepared = await prepareTurn();
+          if (prepared.refusedOwnerSource) {
+            ownerSource?.checks[prepared.refusedOwnerSource.index]?.refuse(
+              prepared.refusedOwnerSource.facts,
+            );
+            throw new Error("Session owner source refusal omitted its authority assertion");
+          }
+          return prepared;
+        };
         // Selection must precede observable callbacks; ordinary turns validate in COMMIT.
         if (messages.some((append) => append.shouldAppend)) {
-          const selected = await worker.execute({ type: "session.turn.prepare", input: plan });
+          const selected = await prepareOwnedTurn();
           assertCurrent();
           if (selected.result) {
             return selected.result;
@@ -196,6 +243,7 @@ export async function appendSessionTurnInWorker(
           ({
             config: _messageConfig,
             workerPreparation: _preparation,
+            preparation: _publicPreparation,
             shouldAppend: _shouldAppend,
             shouldAppendInTransaction: _predicate,
             prepareMessageAfterIdempotencyCheck: _prepare,
@@ -213,9 +261,7 @@ export async function appendSessionTurnInWorker(
                 append.message.role === "user" &&
                 typeof append.message.idempotencyKey === "string"),
           );
-        const preparation = needsPreparation
-          ? await worker.execute({ type: "session.turn.prepare", input: plan })
-          : undefined;
+        const preparation = needsPreparation ? await prepareOwnedTurn() : undefined;
         assertCurrent();
         if (preparation?.result) {
           return preparation.result;
@@ -229,9 +275,15 @@ export async function appendSessionTurnInWorker(
             sources[index] = source;
             if (
               source.nativeSource ||
+              (incognito && source.hasOpaqueCheck) ||
               source.checks.some((check) => check.predicate.source.path !== database.path)
             ) {
               assertCurrent();
+              if (incognito) {
+                throw new Error(
+                  "Incognito turns require source authority prepared for the same actor",
+                );
+              }
               return native(accepted.map(({ shouldAppend: _shouldAppend, ...message }) => message));
             }
           }
@@ -267,12 +319,18 @@ export async function appendSessionTurnInWorker(
             ...append,
             message: prepare ? append.message : message,
             ...(prepare && !facts?.pending
-              ? { preparation: { prepared: !facts?.existing, expected: facts?.existing, message } }
+              ? {
+                  preparedMessage: {
+                    prepared: !facts?.existing,
+                    expected: facts?.existing,
+                    message,
+                  },
+                }
               : {}),
           };
         }
         assertCurrent();
-        return commit(() => worker.execute({ type: "session.turn.commit", input: plan }));
+        return commit();
       },
       onAcknowledged(candidate) {
         try {
@@ -281,16 +339,18 @@ export async function appendSessionTurnInWorker(
             !candidate.result.rejectedReason &&
             candidate.result.sessionEntry
           ) {
-            const identity = execution.fileIdentity;
-            if (!identity) {
+            const identity = execution?.fileIdentity;
+            if (!identity && !incognito) {
               throw new Error("Committed transcript turn omitted its admitted database identity");
             }
             options.onCommittedSource(
               {
-                agentId: execution.agentId,
+                agentId: scope.agentId,
                 path: database.path,
-                databaseIdentity: identity.physicalIdentity,
-                databaseBirthtime: identity.birthtime,
+                databaseIdentity: incognito
+                  ? incognito.actor.identity.incarnation
+                  : identity!.physicalIdentity,
+                databaseBirthtime: identity?.birthtime,
               },
               candidate.result.sessionEntry,
             );
@@ -327,6 +387,81 @@ export async function appendSessionTurnInWorker(
         );
         return candidate.result;
       },
+    } satisfies Omit<
+      Parameters<
+        typeof runSessionEntryWorkerOperation<
+          SessionTurnCommitted,
+          SqliteExpectedSessionTranscriptTurnResult
+        >
+      >[0],
+      "run"
+    > & {
+      run(
+        prepare: () => Promise<IncognitoSessionTurnOperations["session.turn.prepare"]["output"]>,
+        commit: () => Promise<SqliteExpectedSessionTranscriptTurnResult>,
+      ): Promise<SqliteExpectedSessionTranscriptTurnResult>;
+    };
+    if (incognito) {
+      return incognito.actor.sessions.withSharedState(() =>
+        operation.run(
+          () =>
+            incognito.actor.sessions.entry(
+              { assertCurrent },
+              { type: "session.turn.prepare", input: plan },
+              incognito.admissionSignal,
+            ),
+          async () => {
+            incognito.admissionSignal?.throwIfAborted();
+            const candidate = await incognito.actor.sessions.entry(
+              { assertCurrent },
+              { type: "session.turn.commit", input: plan },
+              undefined,
+              (committed) => {
+                try {
+                  operation.onAcknowledged(committed);
+                } finally {
+                  if (committed.publication && committed.result.sessionEntry) {
+                    publishIncognitoSessionEntry(
+                      incognito.actor,
+                      scope.sessionKey,
+                      committed.publication.previous.get(scope.sessionKey),
+                      committed.result.sessionEntry,
+                    );
+                  }
+                }
+              },
+              undefined,
+              undefined,
+              (facts) => {
+                if (isRecord(facts) && facts.kind === "session-turn") {
+                  if (custodyRequired) {
+                    custody?.assertCurrent(
+                      // SAFETY: The paired turn kernel supplies these transaction-local custody facts.
+                      facts.authority as SessionPendingInputAuthorityFacts,
+                      assertCurrent,
+                    );
+                  }
+                } else {
+                  operation.onTransactionFacts(facts);
+                }
+              },
+            );
+            await completeSessionTranscriptCommit(
+              candidate.result.appendedMessages,
+              options.onMessageCommitted,
+            );
+            return candidate.result;
+          },
+        ),
+      );
+    }
+    return runSessionEntryWorkerOperation({
+      ...operation,
+      run: (worker, commit) =>
+        operation.run(
+          () => worker.execute({ type: "session.turn.prepare", input: plan }),
+          () => commit(() => worker.execute({ type: "session.turn.commit", input: plan })),
+        ),
     });
   })().then(
     (value) => ({ ok: true as const, value }),
@@ -336,7 +471,7 @@ export async function appendSessionTurnInWorker(
     try {
       await releaseSessionSourceAuthorities(sources.filter((source) => source !== undefined));
     } finally {
-      await execution.release();
+      await execution?.release();
     }
   } catch (error) {
     if (outcome.ok) {

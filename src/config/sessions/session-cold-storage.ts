@@ -57,7 +57,7 @@ import type {
 } from "./session-cold-storage-worker.js";
 import type { SessionColdMutationResult } from "./session-cold-storage.types.js";
 import { reclaimSqliteFreePages } from "./session-history-archive-pruning.js";
-import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
+import { captureIncognitoSessionSource } from "./session-incognito-binding.js";
 import { prepareSessionStoreTargetInventory } from "./session-store-target-inventory.js";
 import {
   projectionLane,
@@ -392,10 +392,14 @@ export async function restoreSessionColdTranscript(
   guard?: SessionColdRestorationGuard,
 ): Promise<void> {
   assertCurrent?.();
-  const binding = captureIncognitoSessionBinding(scope);
+  const binding = captureIncognitoSessionSource(scope);
   if (binding) {
     binding.admissionSignal?.throwIfAborted();
-    binding.actor.assertReadable();
+    if ("kind" in binding) {
+      binding.assertCurrent();
+    } else {
+      binding.actor.assertReadable();
+    }
     // An actor has no cold archive to restore; loss must still reject this continuation.
     return;
   }

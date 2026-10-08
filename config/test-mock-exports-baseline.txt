@@ -46,7 +46,6 @@
 ["extensions/anthropic/lazy-import.test.ts","openclaw/plugin-sdk/provider-auth","ec752bcbd023909d97d92bbb1114655b51a308890d127762e2a7acdcfa50e325",1]
 ["extensions/anthropic/provider-discovery.test.ts","./cli-auth-seam.js","f5525a5ca82830d70b06b9607572905b0ab551e651c96f5f00b55791af6f6836",1]
 ["extensions/anthropic/session-catalog-desktop.test.ts","./session-catalog-tree-watch.js","fb6614cdb479d5ba570e3c3919b310956b7924ea05e3b8973f01fa5071128583",1]
-["extensions/anthropic/session-catalog-history.test.ts","openclaw/plugin-sdk/session-transcript-runtime","1a6622ab3c63136bdb82dbe740e5a40dce668a878a7a019dd5855136d4d27c06",1]
 ["extensions/apple-fm/index.test.ts","./native.js","23b1d2994c3f3e689b67ec22a76daec875805726890a8d85510332126f9715ca",1]
 ["extensions/apple-fm/native.test.ts","openclaw/plugin-sdk/process-runtime","70c66094bd7e51f8caf68ca8f9f67d0b397d1d8dfe5128def0ac8a63f5d8effd",1]
 ["extensions/apple-fm/native.test.ts","openclaw/plugin-sdk/temp-path","d75d56277f0a114be61eaee79b3e2881955d9373e844ad5fbbe7c539b9221fb9",1]

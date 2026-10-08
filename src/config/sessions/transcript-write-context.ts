@@ -21,6 +21,7 @@ import {
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import {
   captureSessionTranscriptStorageEnvironment,
+  captureSessionTranscriptTargetBinding,
   sameSessionTranscriptStorageEnvironment,
   sameSessionTranscriptTargetBinding,
   type SessionTranscriptTargetBinding,
@@ -149,9 +150,9 @@ export function captureSessionTranscriptSourcePublication(
 function captureWriteTarget(target: SessionTranscriptWriteTarget): SessionTranscriptWriteTarget {
   const storePath = target.storePath?.trim();
   return {
-    ...target,
-    ...(storePath ? { storePath: path.resolve(storePath) } : {}),
-    env: captureSessionTranscriptStorageEnvironment(target.env ?? process.env),
+    ...(storePath
+      ? captureSessionTranscriptTargetBinding({ ...target, storePath })
+      : { ...target, env: captureSessionTranscriptStorageEnvironment(target.env ?? process.env) }),
     ...(target.expectedOwner ? { expectedOwner: { ...target.expectedOwner } } : {}),
   };
 }

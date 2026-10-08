@@ -41,6 +41,7 @@ import type {
 import type { SessionEntryListWorkerInput } from "./session-entry-read.types.js";
 import {
   captureIncognitoSessionBinding,
+  captureIncognitoSessionSource,
   withIncognitoSessionEntry,
   withIncognitoSessionEntrySummaries,
   type IncognitoSessionBinding,
@@ -84,6 +85,15 @@ export async function withSessionEntryReadOnlyInWorker<T>(
     owner: SessionEntryReadWorkerOwner,
   ) => Promise<T>,
 ): Promise<T> {
+  const source = captureIncognitoSessionSource(input);
+  if (source && "kind" in source) {
+    return withIncognitoSessionEntry(
+      source,
+      input.sessionKey,
+      assertCallerCurrent,
+      (entry, assertCurrent) => consume(ok(entry), { kind: "incognito", assertCurrent }),
+    );
+  }
   const { scope, agentId } = captureSessionEntryReadScope(input);
   assertCallerCurrent();
   const binding = captureIncognitoSessionBinding(scope);

@@ -9,10 +9,8 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import { ensureSessionGoalOperationsSchema } from "../../state/openclaw-agent-goal-operations-schema.js";
-import {
-  mutateSessionGoalInDatabase,
-  type SessionGoalManagementInput,
-} from "./goals-operations.js";
+import { mutateSessionGoalInDatabase } from "./goals-operations.js";
+import type { SessionGoalManagementInput } from "./goals-operations.types.js";
 import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-state.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
