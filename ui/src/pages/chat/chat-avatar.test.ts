@@ -40,6 +40,50 @@ function renderAvatar(params: Parameters<typeof renderChatAvatar>) {
   return container.querySelector<HTMLElement>(".chat-avatar");
 }
 
+it.each([
+  ["", "sample-bot", "1000000001", true],
+  ["", "other-bot", "1000000001", false],
+  ["", "sample-bot", "1000000002", false],
+  ["/console", "sample-bot", "1000000001", true],
+  ["/console", "other-bot", "1000000001", false],
+  ["/console", "sample-bot", "1000000002", false],
+] as const)(
+  "binds footer portraits at %s to account %s and sender %s",
+  (basePath, accountId, id, matches) => {
+    setAvatarGatewayOrigin(window.location.origin, [], basePath);
+    const sender = {
+      name: "Riley Adams",
+      identity: {
+        type: "observation" as const,
+        pluginId: "telegram",
+        accountId,
+        id,
+        senderKind: "human" as const,
+      },
+    };
+    const identity = { ...sender.identity };
+    const container = document.createElement("div");
+    render(
+      renderChatAuthorAvatar(sender, "chat-author-avatar", undefined, {
+        key: "agent:main:main",
+        channelAvatarUrl:
+          basePath + "/__openclaw__/channel-avatar/agent%3Amain%3Amain?v=portrait-1",
+        origin: {
+          provider: "telegram",
+          accountId: "sample-bot",
+          chatType: "direct",
+          from: "telegram:1000000001",
+        },
+      }),
+      container,
+    );
+    expect(Boolean(container.querySelector("openclaw-channel-avatar"))).toBe(matches);
+    expect(container.querySelector("[role=img]")?.getAttribute("aria-label")).toBe("Riley Adams");
+    expect(sender.identity).toEqual(identity);
+    render(nothing, container);
+  },
+);
+
 it("renders a source-bound native portrait without borrowing the viewer's profile", () => {
   const sender = {
     name: "Riley Adams",
