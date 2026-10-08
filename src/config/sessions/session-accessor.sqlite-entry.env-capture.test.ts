@@ -36,11 +36,13 @@ vi.mock("../../infra/sqlite-number.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-identity.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly-scope.js", () => ({}));
 vi.mock("../../state/openclaw-agent-db-readonly.js", () => ({}));
+// mock-isolation: A native write must fail instead of opening the fixture's synthetic store.
 vi.mock("../../state/openclaw-agent-db-transaction.js", () => ({
   runOpenClawAgentWriteWithYieldingAdmission: () => {
     throw new Error("native entry writes are outside this worker environment-capture test");
   },
 }));
+// mock-isolation: Synthetic platform paths must never acquire real database owners.
 vi.mock("../../state/openclaw-agent-db.js", () => ({
   getOpenClawAgentDatabaseIfOpen: () => undefined,
   isIncognitoOpenClawAgentSqlitePath: () => false,
@@ -89,6 +91,7 @@ vi.mock("./session-accessor.sqlite-scope.js", () => ({
 vi.mock("./session-accessor.sqlite-status.js", () => ({}));
 vi.mock("./session-canonical-key.js", () => ({ assertCanonicalSessionKeyWrite() {} }));
 vi.mock("./session-entry-lineage.js", () => ({}));
+// mock-isolation: Observe captured worker inputs without starting persistence on synthetic paths.
 vi.mock("./session-entry-patch.js", () => ({ patchSessionEntryInWorker: boundary.worker }));
 vi.mock("./session-entry-provenance.js", () => ({}));
 vi.mock("./session-history-eviction.js", () => ({

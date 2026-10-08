@@ -3,7 +3,6 @@ import {
   createOperatorModelSelectionAssertion,
   type AdmittedRunOperatorAuthority,
 } from "../../agents/admitted-run-context.js";
-/** Resolves /model directive selections and auth profile overrides. */
 import { ensureAuthProfileStore } from "../../agents/auth-profiles.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
 import {
@@ -54,19 +53,11 @@ function resolveStoredNumericProfileModelDirective(
   }
 
   const modelRaw = raw.slice(0, profileDelimiter).trim();
-  if (!modelRaw) {
-    return null;
-  }
-
   const store = ensureAuthProfileStore(agentDir, {
     allowKeychainPrompt: false,
   });
   const profile = store.profiles[profileId];
-  if (!profile) {
-    return null;
-  }
-
-  return { modelRaw, profileId, profileProvider: profile.provider };
+  return profile ? { modelRaw, profileId, profileProvider: profile.provider } : null;
 }
 
 /** Resolves the requested model/profile override from parsed inline directives. */

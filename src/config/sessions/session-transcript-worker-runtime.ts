@@ -240,6 +240,7 @@ export function retainSessionHistoryWorkerDatabase(
       const deadline = performance.now() + 60_000;
       let sequence = 0;
       let retirement: Promise<void> | undefined;
+      const hostEffects = new Set<Promise<WorkerTaskResponse>>();
       try {
         const reply = await lane.pool.run(
           () => {
@@ -259,16 +260,30 @@ export function retainSessionHistoryWorkerDatabase(
             timeoutMs: 60_000,
             signal,
             onRequest: onRequest
-              ? async (value, context) => {
-                  context.signal.throwIfAborted();
-                  assertRequestCurrent();
-                  onRequest(value);
-                  assertRequestCurrent();
-                  const remaining = deadline - performance.now();
-                  if (remaining <= 0) {
-                    throw new WorkerTaskError("worker task timed out", "timeout");
-                  }
-                  return { input: null, timeoutMs: remaining };
+              ? (value, context) => {
+                  const effect = (async () => {
+                    context.signal.throwIfAborted();
+                    assertRequestCurrent();
+                    const response = await onRequest(value);
+                    context.signal.throwIfAborted();
+                    assertRequestCurrent();
+                    if (response) {
+                      return response;
+                    }
+                    const remaining = deadline - performance.now();
+                    if (remaining <= 0) {
+                      throw new WorkerTaskError("worker task timed out", "timeout");
+                    }
+                    return { input: null, timeoutMs: remaining };
+                  })();
+                  hostEffects.add(effect);
+                  owned.hostEffects.add(effect);
+                  const releaseEffect = () => {
+                    hostEffects.delete(effect);
+                    owned.hostEffects.delete(effect);
+                  };
+                  void effect.then(releaseEffect, releaseEffect);
+                  return effect;
                 }
               : undefined,
             onExecutionSettled: ({ retired }) => {
@@ -321,6 +336,9 @@ export function retainSessionHistoryWorkerDatabase(
           }
         }
         throw error;
+      } finally {
+        // A worker timeout does not cancel an admitted host-side status operation.
+        await Promise.allSettled(hostEffects);
       }
     };
     const owner: SessionHistoryWorkerDatabase = {

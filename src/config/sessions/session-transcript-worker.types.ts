@@ -137,12 +137,11 @@ import type {
   SessionTranscriptInventoryWorkerValues,
   SessionTranscriptInventoryReaders,
 } from "./session-transcript-inventory.types.js";
-import type { SessionTranscriptSearchReadResult } from "./session-transcript-search.types.js";
+import type { SessionTranscriptSearchResult } from "./session-transcript-search.types.js";
 import type { SessionTranscriptWorkerReadError } from "./session-transcript-worker-error.types.js";
 import type {
   SessionTranscriptMatchWorkerInput,
   SessionTranscriptSearchWorkerInput,
-  SessionTranscriptSearchCurrentWorkerInput,
   SessionProjectionStatusWorkerInput,
   SessionTranscriptAnchorsWorkerInput,
   SessionModelContextWorkerInput,
@@ -400,7 +399,6 @@ export type SessionHistoryWorkerInput =
   | VoiceSessionsWorkerInput
   | SessionUsageCacheWorkerInput
   | SessionTranscriptSearchWorkerInput
-  | SessionTranscriptSearchCurrentWorkerInput
   | SessionTranscriptMatchWorkerInput;
 
 export type SessionTranscriptWorkerInput =
@@ -451,8 +449,7 @@ export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValu
     kind: "session-archive-pruning";
     result: PublishedSessionTranscriptArchive[];
   };
-  "transcript-search": { kind: "transcript-search"; result: SessionTranscriptSearchReadResult };
-  "transcript-search-current": { kind: "transcript-search-current"; current: boolean };
+  "transcript-search": { kind: "transcript-search"; result: SessionTranscriptSearchResult };
   "transcript-match": { kind: "transcript-match"; result: { event: TranscriptEvent } | undefined };
   "cold-metadata": SessionColdMetadataWorkerResult;
   "cold-storage-inventory": {
@@ -631,11 +628,8 @@ export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
   readColdStorageInventory: SessionHistoryReader<SessionColdStorageInventoryWorkerInput>;
   searchTranscripts: (
     params: SessionTranscriptSearchWorkerInput["params"],
-  ) => Promise<SessionTranscriptSearchReadResult>;
-  isTranscriptSearchCurrent: SessionHistoryReader<
-    SessionTranscriptSearchCurrentWorkerInput,
-    boolean
-  >;
+    readIndexStatus: () => Promise<boolean>,
+  ) => Promise<SessionTranscriptSearchResult>;
   generation: number;
   assertCurrent: () => void;
   run: (

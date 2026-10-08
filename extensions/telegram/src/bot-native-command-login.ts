@@ -48,26 +48,23 @@ function formatTelegramLoginDeviceCode(params: TelegramLoginDeviceCode): string 
   ].join("\n");
 }
 
-function buildTelegramProviderLoginFlowKey(dispatch: TelegramCommandDispatch): string {
-  const threadKey =
-    dispatch.threadSpec.id == null
-      ? dispatch.threadSpec.scope
-      : `${dispatch.threadSpec.scope}:${dispatch.threadSpec.id}`;
-  return [
-    "telegram",
-    dispatch.route.accountId,
-    String(dispatch.chatId),
-    threadKey,
-    dispatch.route.agentId,
-  ].join(":");
-}
-
 export async function executeTelegramLoginCommand(params: {
   dispatch: TelegramCommandDispatch;
   commandText: string;
   currentProvider?: string;
 }): Promise<boolean> {
   const { dispatch } = params;
+  const threadKey =
+    dispatch.threadSpec.id == null
+      ? dispatch.threadSpec.scope
+      : `${dispatch.threadSpec.scope}:${dispatch.threadSpec.id}`;
+  const flowKey = [
+    "telegram",
+    dispatch.route.accountId,
+    String(dispatch.chatId),
+    threadKey,
+    dispatch.route.agentId,
+  ].join(":");
   const sendLoginMessage = async (text: string, parseMode?: "HTML") => {
     await withTelegramApiErrorLogging({
       operation: "sendMessage",
@@ -78,17 +75,6 @@ export async function executeTelegramLoginCommand(params: {
           ...(parseMode ? { parse_mode: parseMode } : {}),
         }),
     });
-  };
-  const sendLoginResultMessage = async (text: string) => {
-    await dispatch.telegramDeps.sendMessageTelegram(
-      buildTelegramRoutingTarget(dispatch.chatId, dispatch.threadSpec),
-      text,
-      {
-        cfg: dispatch.runtimeCfg,
-        token: dispatch.opts.token,
-        accountId: dispatch.route.accountId,
-      },
-    );
   };
   const assertCurrent = (config = dispatch.telegramDeps.getRuntimeConfig()) => {
     dispatch.assertOwnerCurrent?.();
@@ -133,12 +119,12 @@ export async function executeTelegramLoginCommand(params: {
     cancelLogin: () =>
       cancelProviderLoginFlow({
         flows: activeTelegramProviderLoginFlows,
-        flowKey: buildTelegramProviderLoginFlowKey(dispatch),
+        flowKey,
       }),
     answerChoice: (command) =>
       answerProviderLoginModelAccess({
         flows: activeTelegramProviderLoginFlows,
-        flowKey: buildTelegramProviderLoginFlowKey(dispatch),
+        flowKey,
         command,
         agentId: dispatch.route.agentId,
         readConfig: dispatch.telegramDeps.getRuntimeConfig,
@@ -158,7 +144,6 @@ export async function executeTelegramLoginCommand(params: {
     return (await sendLoginReply(prepared.reply)) && prepared.status === "reply";
   }
   const loginChoice = prepared.choice;
-  const flowKey = buildTelegramProviderLoginFlowKey(dispatch);
   const reservation = reserveProviderLoginFlow({
     flows: activeTelegramProviderLoginFlows,
     flowKey,
@@ -232,7 +217,6 @@ export async function executeTelegramLoginCommand(params: {
         const storePath = resolveStorePath(dispatch.runtimeCfg.session?.store, {
           agentId: dispatch.route.agentId,
         });
-        let entryObserved = false;
         let adoptionDecision: ReturnType<typeof decideProviderLoginSessionAdoption> | undefined;
         try {
           const persisted = await patchSessionEntry({
@@ -245,7 +229,6 @@ export async function executeTelegramLoginCommand(params: {
               assertCurrent();
             }),
             update: (entry) => {
-              entryObserved = true;
               adoptionDecision = decideProviderLoginSessionAdoption({
                 currentModelProvider: params.currentProvider,
                 loginProvider: loginChoice.providerId,
@@ -258,10 +241,10 @@ export async function executeTelegramLoginCommand(params: {
           });
           flowSignal.throwIfAborted();
           if (
-            entryObserved &&
-            (adoptionDecision?.status === "rejected" ||
+            adoptionDecision &&
+            (adoptionDecision.status === "rejected" ||
               !persisted ||
-              (adoptionDecision?.status === "patch" &&
+              (adoptionDecision.status === "patch" &&
                 !isProviderLoginPatchPersisted(persisted, nextProfileId)))
           ) {
             sessionSwitchFailed = true;
@@ -313,7 +296,15 @@ export async function executeTelegramLoginCommand(params: {
         });
         await sendLoginAction(() => sendLoginReply(reply));
       } else {
-        await sendLoginResultMessage(terminalMessage);
+        await dispatch.telegramDeps.sendMessageTelegram(
+          buildTelegramRoutingTarget(dispatch.chatId, dispatch.threadSpec),
+          terminalMessage,
+          {
+            cfg: dispatch.runtimeCfg,
+            token: dispatch.opts.token,
+            accountId: dispatch.route.accountId,
+          },
+        );
       }
     } catch (error) {
       dispatch.runtime.error?.(

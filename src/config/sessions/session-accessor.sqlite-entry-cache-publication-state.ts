@@ -271,13 +271,17 @@ export function prepareSessionEntryPublicationFacts(params: {
       const metadata = replacement?.unavailableParticipantKeys?.includes(key)
         ? replacement.current.get(key)
         : undefined;
-      const current =
+      const currentSharingMetadata =
         metadata && mutation && mutation !== foldedOwnerChanges.get(key)
           ? applySessionEntryOwnerChange(metadata, mutation)
           : metadata;
       // Missing participant display cannot erase acknowledged identity or certify an empty row.
-      return current
-        ? { entry: undefined, projection: undefined, sharing: projectSessionSharingEntry(current) }
+      return currentSharingMetadata
+        ? {
+            entry: undefined,
+            projection: undefined,
+            sharing: projectSessionSharingEntry(currentSharingMetadata),
+          }
         : undefined;
     }
     const projection = readCurrentSessionEntryProjection(owner, replacement, key)

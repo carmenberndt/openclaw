@@ -60,7 +60,7 @@ export function prepareSessionEntryReplacementPublication(
       {
         includeBoardPresence: true,
         includeMembership: true,
-        onParticipantProjectionError: (key) => unavailableParticipantKeys.add(key),
+        onParticipantProjectionError: (sessionKey) => unavailableParticipantKeys.add(sessionKey),
       },
     );
     // Read the final persisted bytes and side tables after assignment, alias moves and maintenance.
