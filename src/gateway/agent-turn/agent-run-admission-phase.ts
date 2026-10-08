@@ -494,6 +494,7 @@ export async function prepareAgentRunDispatch(
   try {
     assertInputAdmissionCurrent?.();
     userTurn = await prepareAgentRunUserTurn({
+      onMediaRetained: params.onUserTurnMediaRetained,
       assertCurrent: () => {
         assertInputOwnerCurrent();
         activeRunAbort.controller.signal.throwIfAborted();
@@ -527,11 +528,6 @@ export async function prepareAgentRunDispatch(
       client: params.client,
       context: params.context,
     });
-    if (userTurn.recorder) {
-      // Accepted input owns these media references before it enters the transcript.
-      // Later admission rejection must preserve the files retained by that custody.
-      params.onUserTurnMediaPersisted();
-    }
   } catch (err) {
     return rejectPreaccept(resolveAgentRunAdmissionError(ErrorCodes.UNAVAILABLE, err));
   }

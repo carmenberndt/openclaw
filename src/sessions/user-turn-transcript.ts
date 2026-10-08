@@ -3,12 +3,9 @@ import { isDeepStrictEqual } from "node:util";
 import {
   bindSessionPendingInputSources,
   persistSessionTranscriptTurn,
-  stageSessionPendingInput,
   withSessionPendingInputPersistence,
   publishTranscriptUpdate,
-  resolveSessionTranscriptRuntimeTarget,
   type TranscriptEntryAnchor,
-  type SessionTranscriptTurnPersistOptions,
 } from "../config/sessions/session-accessor.js";
 import { rewritePreparedTranscriptMessageAtAnchor } from "../config/sessions/session-message-rewrite.js";
 import { createDynamicSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
@@ -17,6 +14,7 @@ import { waitForSessionTranscriptProjection } from "../config/sessions/session-t
 import { captureOwnedTranscriptWriteAssertion } from "../config/sessions/transcript-write-context.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { registerUserTurnTranscriptAdmissionOwner } from "./user-turn-transcript-admission.js";
+import { stageUserTurnPendingInput } from "./user-turn-transcript-media.js";
 import { createUserTurnProcessingCompletion } from "./user-turn-transcript-processing.js";
 import {
   buildLateResolvedMediaMessage,
@@ -45,7 +43,7 @@ import type {
 
 const pendingInputReceipts = new WeakMap<
   UserTurnTranscriptRecorder,
-  () => Awaited<ReturnType<typeof stageSessionPendingInput>>
+  () => Awaited<ReturnType<typeof stageUserTurnPendingInput>>
 >();
 const originalInputCommitNotifiers = new WeakMap<
   UserTurnTranscriptRecorder,
@@ -95,9 +93,7 @@ async function persistUserTurnTranscript(
     },
     {
       ...(params.cwd ? { cwd: params.cwd } : {}),
-      ...(params.config
-        ? { config: params.config as SessionTranscriptTurnPersistOptions["config"] }
-        : {}),
+      ...(params.config ? { config: params.config } : {}),
       ...(params.expectedSessionId ? { expectedSessionId: params.expectedSessionId } : {}),
       ...(params.initialSessionEntry ? { initialSessionEntry: params.initialSessionEntry } : {}),
       ...(params.expectedSessionState ? { expectedSessionState: params.expectedSessionState } : {}),
@@ -236,7 +232,7 @@ export function createUserTurnTranscriptRecorder(
   let resolvedBeforeProvider = false;
   let replacementText: string | undefined;
   let confirmedSteerTargetRunId: string | undefined;
-  let pendingInput: Awaited<ReturnType<typeof stageSessionPendingInput>>;
+  let pendingInput: Awaited<ReturnType<typeof stageUserTurnPendingInput>>;
   const processing = createUserTurnProcessingCompletion(
     () => pendingInput,
     params.pendingInputSources,
@@ -572,24 +568,18 @@ export function createUserTurnTranscriptRecorder(
         if (!candidate || !target || persisted || runtimePersisted) {
           return false;
         }
-        const config = target.config as SessionTranscriptTurnPersistOptions["config"];
-        const runtimeTarget = await resolveSessionTranscriptRuntimeTarget(target, config);
-        pendingInput = await stageSessionPendingInput(
-          { ...target, ...runtimeTarget },
-          {
-            ...options,
-            requestFingerprint: params.pendingInputRequestFingerprint,
-            trackCompletion: params.trackInputCompletion,
-            replaySourceSessionKeys: params.pendingInputReplaySourceSessionKeys,
-            message: candidate,
-            config,
-            prepareMessageAfterIdempotencyCheck: (next) =>
-              preparePersistedUserTurnMessageForTranscriptWrite(next, {
-                ...target,
-                beforeMessageWrite: params.beforeMessageWrite ?? target.beforeMessageWrite,
-              }),
-          },
-        );
+        pendingInput = await stageUserTurnPendingInput(recorder, target, {
+          ...options,
+          requestFingerprint: params.pendingInputRequestFingerprint,
+          trackCompletion: params.trackInputCompletion,
+          replaySourceSessionKeys: params.pendingInputReplaySourceSessionKeys,
+          message: candidate,
+          prepareMessageAfterIdempotencyCheck: (next) =>
+            preparePersistedUserTurnMessageForTranscriptWrite(next, {
+              ...target,
+              beforeMessageWrite: params.beforeMessageWrite ?? target.beforeMessageWrite,
+            }),
+        });
         if (!pendingInput) {
           return false;
         }

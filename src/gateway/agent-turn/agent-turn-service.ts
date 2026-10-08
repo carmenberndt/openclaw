@@ -547,7 +547,7 @@ export function createAgentTurnService(
         effectiveTranscriptInputText,
         images,
         offloadedRefs,
-        onUserTurnMediaPersisted: () => {
+        onUserTurnMediaRetained: () => {
           preparedOffloadedRefs = [];
         },
         requestedPromptPersistenceSuppression,
