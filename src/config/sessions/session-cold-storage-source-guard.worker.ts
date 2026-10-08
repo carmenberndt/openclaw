@@ -28,6 +28,8 @@ import { readSessionSourceValidation } from "./session-source-predicate.worker.j
 import type { TranscriptAppendRefusal } from "./session-transcript-writer-claim-error.js";
 import type { InternalSessionEntry } from "./types.js";
 
+export type SessionColdSourceMatches = { index: number; matches: Int32Array<SharedArrayBuffer> }[];
+
 type SourceRefusal = NonNullable<ReturnType<typeof readSessionSourceValidation>["refusedSource"]>;
 
 export class SessionColdSourceRefusedError extends Error {
@@ -40,6 +42,7 @@ export class SessionColdSourceRefusedError extends Error {
 export function prepareSessionColdSourceGuard(
   target: OpenClawAgentDatabaseOptions & { path: string },
   sources: readonly SessionSourcePredicate[] = [],
+  acceptedMatches?: SessionColdSourceMatches,
 ) {
   const targetIdentity = sources.some(({ source }) => source.path !== target.path)
     ? readDatabasePathIdentitySync(target.path).key
@@ -128,14 +131,17 @@ export function prepareSessionColdSourceGuard(
   };
   return {
     read,
-    assertForeign(accepted?: SessionSourceValidation) {
+    assertForeign() {
       const current = read();
       if (current.refusedSource) {
         throw new SessionColdSourceRefusedError(current.refusedSource);
       }
       for (const match of current.conversationMatches) {
-        const previous = accepted?.conversationMatches.find(({ index }) => index === match.index);
-        if (previous?.alternatives.some((index) => !match.alternatives.includes(index))) {
+        const accepted = acceptedMatches?.find(({ index }) => index === match.index)?.matches;
+        if (
+          !accepted ||
+          !match.alternatives.some((index) => Atomics.load(accepted, index + 1) === 1)
+        ) {
           throw new SessionColdSourceRefusedError({
             index: match.index,
             facts: { entry: undefined },

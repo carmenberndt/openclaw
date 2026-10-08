@@ -220,19 +220,23 @@ export async function captureSessionEntryCurrentCheck(params: {
               refuse();
             }
             let matches: readonly number[] | undefined;
+            const accepted: number[] = [];
             return {
               alternatives: predicates,
               acceptMatches: (validated) => {
                 matches = validated;
+                accepted.length = 0;
+                return accepted;
               },
               assertCurrent: () => {
                 assertActive();
-                if (
-                  !alternatives.some(
-                    (alternative, index) =>
-                      (!matches || matches.includes(index)) && alternative.isActive?.() !== false,
-                  )
-                ) {
+                accepted.length = 0;
+                for (const [index, alternative] of alternatives.entries()) {
+                  if ((!matches || matches.includes(index)) && alternative.isActive?.() !== false) {
+                    accepted.push(index);
+                  }
+                }
+                if (accepted.length === 0) {
                   refuse();
                 }
               },

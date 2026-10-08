@@ -45,6 +45,7 @@ import {
 import {
   readSessionColdLockedValidation,
   type prepareSessionColdSourceGuard,
+  type SessionColdSourceMatches,
 } from "./session-cold-storage-source-guard.worker.js";
 import {
   readSessionColdTranscript,
@@ -115,7 +116,7 @@ export type SessionColdWorkerData = {
   type: "sqlite-transcript-archive-v2";
   operation: "cold-mutate";
   commitGate: SharedArrayBuffer;
-  sourceMatches?: { index: number; matches: Int32Array<SharedArrayBuffer> }[];
+  sourceMatches?: SessionColdSourceMatches;
   plan: SessionColdMutationPlan;
 };
 
@@ -686,7 +687,7 @@ export function mutateSessionColdTranscriptInWorker(
         )?.session_key;
       }
       onCommit(database, sourceValidation);
-      sourceGuard?.assertForeign(sourceValidation);
+      sourceGuard?.assertForeign();
       return result;
     },
     plan.databaseOptions,

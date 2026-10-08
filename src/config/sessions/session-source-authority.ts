@@ -26,7 +26,11 @@ export type SessionSourcePredicateFacts = {
 
 export type SessionSourceValidation = {
   refusedSource?: { index: number; facts: SessionSourcePredicateFacts };
-  conversationMatches: Array<{ index: number; alternatives: number[] }>;
+  conversationMatches: Array<{
+    index: number;
+    alternatives: number[];
+    acceptedAlternatives?: number[];
+  }>;
 };
 
 export type PreparedSessionSourceAuthority = {
@@ -38,7 +42,8 @@ export type PreparedSessionSourceAuthority = {
   checks: {
     predicate: SessionSourcePredicate;
     refuse: (facts: SessionSourcePredicateFacts) => never;
-    acceptConversationMatches?: (alternatives: readonly number[]) => void;
+    /** The returned array is filled by the next host assertion. */
+    acceptConversationMatches?: (alternatives: readonly number[]) => number[];
   }[];
   release?: () => void | Promise<void>;
 };
@@ -81,7 +86,7 @@ export function acceptSessionSourceValidation(
     ) {
       throw new Error("Session source validation omitted its matching alternatives");
     }
-    check.acceptConversationMatches(matched.alternatives);
+    matched.acceptedAlternatives = check.acceptConversationMatches(matched.alternatives);
   }
 }
 

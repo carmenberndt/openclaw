@@ -58,6 +58,7 @@ import type {
 import type { SessionColdMutationResult } from "./session-cold-storage.types.js";
 import { reclaimSqliteFreePages } from "./session-history-archive-pruning.js";
 import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
+import type { SessionSourceValidation } from "./session-source-authority.js";
 import { prepareSessionStoreTargetInventory } from "./session-store-target-inventory.js";
 import {
   projectionLane,
@@ -174,7 +175,7 @@ async function runColdMutation(
               if (!acceptSourceValidation) {
                 throw new Error("Cold restoration requires source validation acceptance");
               }
-              acceptSourceValidation({
+              const validation: SessionSourceValidation = {
                 conversationMatches: sourceMatches.map(({ index, matches }) => {
                   if (Atomics.load(matches, 0) !== 1) {
                     throw new Error("Cold restoration source alternatives are not ready");
@@ -187,7 +188,17 @@ async function runColdMutation(
                     ).filter((alternative) => Atomics.load(matches, alternative + 1) === 1),
                   };
                 }),
-              });
+              };
+              acceptSourceValidation(validation);
+              assertAllowed();
+              for (const match of validation.conversationMatches) {
+                const matches = sourceMatches.find(({ index }) => index === match.index)!.matches;
+                const accepted = match.acceptedAlternatives ?? match.alternatives;
+                for (let alternative = 0; alternative < matches.length - 1; alternative++) {
+                  Atomics.store(matches, alternative + 1, accepted.includes(alternative) ? 1 : 0);
+                }
+              }
+              return;
             }
             assertAllowed();
           },

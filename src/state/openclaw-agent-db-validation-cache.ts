@@ -13,6 +13,7 @@ import {
   type SqliteSchemaFacts,
 } from "../infra/sqlite-schema-facts.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
+import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import {
   AgentDatabaseSchemaAdmissionChangedError,
@@ -265,6 +266,11 @@ export function captureOpenClawAgentDatabaseReadValidation(
 ) {
   const current = getOpenClawAgentDatabaseValidationForTransfer(database);
   if (!current) {
+    return undefined;
+  }
+  const capturedIdentity = readDatabasePathIdentitySync(database.path);
+  if (capturedIdentity.key !== `file:${current.identity}`) {
+    // A retained pathname receipt cannot admit its replacement file.
     return undefined;
   }
   const { agentId, identity, receiptId, valid, canonicalReady } = current;

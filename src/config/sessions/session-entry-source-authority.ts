@@ -36,7 +36,7 @@ export function captureSessionEntrySourceAssertion(params: {
   ) => Promise<{
     alternatives: readonly (readonly SessionSourceConversationPredicate[])[];
     assertCurrent: () => void;
-    acceptMatches: (alternatives: readonly number[]) => void;
+    acceptMatches: (alternatives: readonly number[]) => number[];
   }>;
   refuse: () => never;
 }): SessionSourceAssertion {

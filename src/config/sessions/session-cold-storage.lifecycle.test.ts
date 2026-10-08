@@ -536,135 +536,171 @@ describe("cold current transcript lifecycle", () => {
     expect(fixture.snapshot()).toEqual(before);
   });
 
-  it.each(["before restoration read", "after host assertion"] as const)(
-    "keeps cold history unchanged when conversation alternatives split %s",
-    async (boundary) => {
-      const fixture = await createColdCurrentSession();
-      const foreign = boundary === "after host assertion";
-      const sourceScope = {
-        ...fixture.scope,
-        storePath: foreign
-          ? path.join(path.dirname(fixture.scope.storePath), "source.sqlite")
-          : fixture.scope.storePath,
-      };
-      if (foreign) {
-        stores.push(sourceScope.storePath);
-        await replaceSessionEntry(sourceScope, fixture.entry);
-      }
-      const sourceOptions = { agentId: sourceScope.agentId, path: sourceScope.storePath };
-      const conversations = ["active", "inactive"].map((peerId) => {
-        const identity = buildConversationIdentity({
-          channel: "reef",
-          accountId: "default",
-          kind: "direct",
-          peerId,
-          deliveryTarget: peerId,
-        });
-        if (!identity) {
-          throw new Error("Expected a valid compaction conversation");
-        }
-        return identity;
-      });
-      const preparedConversations = conversations.map((identity) => ({
-        identity,
-        encoded: prepareConversationIdentities([identity]),
-      }));
-      runOpenClawAgentWriteTransaction((database) => {
-        for (const { identity, encoded } of preparedConversations) {
-          upsertConversationIdentities(database, encoded, 1);
-          linkSessionConversation({
-            database,
-            sessionId: sourceScope.sessionId,
-            conversation: { identity, role: "participant" },
-            updatedAt: 1,
-          });
-        }
-      }, sourceOptions);
-      const current = await captureSessionEntryCurrentCheck({
-        ...sourceScope,
-        alternatives: conversations.map((identity, index) => ({
-          conversations: [{ ...identity, sessionKey: sourceScope.sessionKey }],
-          isActive: () => index === 0,
-        })),
-        errorMessage: "Compaction conversation authority revoked",
-      });
-      const source: SessionSourceAssertion = current.assertCurrent;
-      const before = fixture.snapshot();
-      const archiveBefore = await fs.readFile(fixture.archivePath);
-      let changed = false;
-      let inCommitGrant = false;
-      const revokeActiveBinding = () => {
-        runOpenClawAgentWriteTransaction((database) => {
-          linkSessionConversation({
-            database,
-            sessionId: sourceScope.sessionId,
-            conversation: { identity: conversations[0]!, role: "related" },
-            updatedAt: 2,
-          });
-        }, sourceOptions);
-        changed = true;
-      };
-      if (foreign) {
-        const prepare = source.prepareSessionSource!;
-        source.prepareSessionSource = async () => {
-          const prepared = await prepare();
-          return {
-            ...prepared,
-            assertCurrent() {
-              prepared.assertCurrent();
-              if (inCommitGrant && !changed) {
-                revokeActiveBinding();
-              }
-            },
-          };
-        };
-      }
-      const original = archiveWorkers.runSqliteTranscriptArchiveWorkerOperation;
-      vi.spyOn(archiveWorkers, "runSqliteTranscriptArchiveWorkerOperation").mockImplementation(
-        (params) => {
-          if (params.expectedMessageType !== "reclaimed") {
-            return original(params);
-          }
-          return original({
-            ...params,
-            withWriteAdmission: (run, diagnostics) =>
-              params.withWriteAdmission((refusal) => {
-                if (!refusal && !foreign && !changed) {
-                  revokeActiveBinding();
-                }
-                return run(refusal);
-              }, diagnostics),
-            onCommitRequest: (...args) => {
-              inCommitGrant = true;
-              try {
-                params.onCommitRequest(...args);
-              } finally {
-                inCommitGrant = false;
-              }
-            },
-          });
-        },
-      );
-      await expect(createCompactAuthority(fixture).trim(source)).rejects.toThrow(
-        "Compaction conversation authority revoked",
-      );
-      expect(changed).toBe(true);
-      expect(
-        resolveCurrentConversationSession(sourceScope, conversations[0]!.conversationRef),
-      ).toBeUndefined();
-      expect(
-        resolveCurrentConversationSession(sourceScope, conversations[1]!.conversationRef),
-      ).toEqual({
-        sessionKey: sourceScope.sessionKey,
-        sessionId: sourceScope.sessionId,
-      });
-      expect(readSessionColdTranscript(fixture.database(), fixture.scope.sessionId)).toEqual(
-        fixture.descriptor,
-      );
-      expect(fixture.snapshot()).toEqual(before);
-      expect(await fs.readFile(fixture.archivePath)).toEqual(archiveBefore);
+  it.each([
+    {
+      name: "keeps cold history unchanged when conversation alternatives split before restoration read",
+      boundary: "before restoration read",
+      revoked: 0,
+      bothActive: false,
     },
-  );
+    {
+      name: "keeps cold history unchanged when conversation alternatives split after host assertion",
+      boundary: "after host assertion",
+      revoked: 0,
+      bothActive: false,
+    },
+    {
+      name: "restores cold history when only the inactive conversation alternative changes",
+      boundary: "after host assertion",
+      revoked: 1,
+      bothActive: false,
+    },
+    {
+      name: "restores cold history when another active conversation alternative survives",
+      boundary: "after host assertion",
+      revoked: 0,
+      bothActive: true,
+    },
+  ] as const)("$name", async ({ boundary, revoked, bothActive }) => {
+    const fixture = await createColdCurrentSession();
+    const foreign = boundary === "after host assertion";
+    const sourceScope = {
+      ...fixture.scope,
+      storePath: foreign
+        ? path.join(path.dirname(fixture.scope.storePath), "source.sqlite")
+        : fixture.scope.storePath,
+    };
+    if (foreign) {
+      stores.push(sourceScope.storePath);
+      await replaceSessionEntry(sourceScope, fixture.entry);
+    }
+    const sourceOptions = { agentId: sourceScope.agentId, path: sourceScope.storePath };
+    const conversations = ["active", "inactive"].map((peerId) => {
+      const identity = buildConversationIdentity({
+        channel: "reef",
+        accountId: "default",
+        kind: "direct",
+        peerId,
+        deliveryTarget: peerId,
+      });
+      if (!identity) {
+        throw new Error("Expected a valid compaction conversation");
+      }
+      return identity;
+    });
+    const preparedConversations = conversations.map((identity) => ({
+      identity,
+      encoded: prepareConversationIdentities([identity]),
+    }));
+    runOpenClawAgentWriteTransaction((database) => {
+      for (const { identity, encoded } of preparedConversations) {
+        upsertConversationIdentities(database, encoded, 1);
+        linkSessionConversation({
+          database,
+          sessionId: sourceScope.sessionId,
+          conversation: { identity, role: "participant" },
+          updatedAt: 1,
+        });
+      }
+    }, sourceOptions);
+    const current = await captureSessionEntryCurrentCheck({
+      ...sourceScope,
+      alternatives: conversations.map((identity, index) => ({
+        conversations: [{ ...identity, sessionKey: sourceScope.sessionKey }],
+        isActive: () => index === 0 || bothActive,
+      })),
+      errorMessage: "Compaction conversation authority revoked",
+    });
+    const source: SessionSourceAssertion = current.assertCurrent;
+    const before = fixture.snapshot();
+    const archiveBefore = await fs.readFile(fixture.archivePath);
+    let changed = false;
+    let inCommitGrant = false;
+    const revokeBinding = () => {
+      runOpenClawAgentWriteTransaction((database) => {
+        linkSessionConversation({
+          database,
+          sessionId: sourceScope.sessionId,
+          conversation: { identity: conversations[revoked]!, role: "related" },
+          updatedAt: 2,
+        });
+      }, sourceOptions);
+      changed = true;
+    };
+    if (foreign) {
+      const prepare = source.prepareSessionSource!;
+      source.prepareSessionSource = async () => {
+        const prepared = await prepare();
+        return {
+          ...prepared,
+          assertCurrent() {
+            prepared.assertCurrent();
+            if (inCommitGrant && !changed) {
+              revokeBinding();
+            }
+          },
+        };
+      };
+    }
+    const original = archiveWorkers.runSqliteTranscriptArchiveWorkerOperation;
+    vi.spyOn(archiveWorkers, "runSqliteTranscriptArchiveWorkerOperation").mockImplementation(
+      (params) => {
+        if (params.expectedMessageType !== "reclaimed") {
+          return original(params);
+        }
+        return original({
+          ...params,
+          withWriteAdmission: (run, diagnostics) =>
+            params.withWriteAdmission((refusal) => {
+              if (!refusal && !foreign && !changed) {
+                revokeBinding();
+              }
+              return run(refusal);
+            }, diagnostics),
+          onCommitRequest: (...args) => {
+            inCommitGrant = true;
+            try {
+              params.onCommitRequest(...args);
+            } finally {
+              inCommitGrant = false;
+            }
+          },
+        });
+      },
+    );
+    const compact = createCompactAuthority(fixture).trim(source);
+    const survives = revoked === 1 || bothActive;
+    if (survives) {
+      await expect(compact).resolves.toEqual({ compacted: true, kept: 3 });
+    } else {
+      await expect(compact).rejects.toThrow("Compaction conversation authority revoked");
+    }
+    expect(changed).toBe(true);
+    expect(
+      resolveCurrentConversationSession(sourceScope, conversations[revoked]!.conversationRef),
+    ).toBeUndefined();
+    expect(
+      resolveCurrentConversationSession(sourceScope, conversations[1 - revoked]!.conversationRef),
+    ).toEqual({
+      sessionKey: sourceScope.sessionKey,
+      sessionId: sourceScope.sessionId,
+    });
+    if (survives) {
+      expect(
+        readSessionColdTranscript(fixture.database(), fixture.scope.sessionId),
+      ).toBeUndefined();
+      expect(loadTranscriptEventsSync(fixture.scope).slice(1)).toMatchObject([
+        { id: "alternate" },
+        { id: "selection" },
+      ]);
+      return;
+    }
+    expect(readSessionColdTranscript(fixture.database(), fixture.scope.sessionId)).toEqual(
+      fixture.descriptor,
+    );
+    expect(fixture.snapshot()).toEqual(before);
+    expect(await fs.readFile(fixture.archivePath)).toEqual(archiveBefore);
+  });
 
   it.each(["source", "lifecycle", "missing lifecycle"] as const)(
     "rechecks %s rows after cold restoration waits for write admission",

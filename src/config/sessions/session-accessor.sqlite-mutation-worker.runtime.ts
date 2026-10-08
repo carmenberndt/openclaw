@@ -135,6 +135,7 @@ async function runColdMutationWorker(port: MessagePort, data: SessionColdWorkerD
   using sourceGuard = prepareSessionColdSourceGuard(
     data.plan.databaseOptions,
     data.plan.kind === "cold-restore" ? data.plan.guard?.sources : undefined,
+    data.sourceMatches,
   );
   const commitGate = data.commitGate;
   let result: SessionColdMutationResult;

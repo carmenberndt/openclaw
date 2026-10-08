@@ -410,6 +410,7 @@ it.each(["owned", "fresh"] as const)(
                 },
                 acceptConversationMatches(matches: readonly number[]) {
                   acceptedMatches = matches;
+                  return [...matches];
                 },
                 refuse() {
                   throw new Error("Locked conversation source changed");
