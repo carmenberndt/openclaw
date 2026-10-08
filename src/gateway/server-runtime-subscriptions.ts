@@ -44,6 +44,7 @@ import {
   onSessionLifecycleEvent,
 } from "../sessions/session-lifecycle-events.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { runOutsideAsyncWorkScope } from "../shared/async-work-scope.js";
 import {
   createLazyPromise,
   createLazyPromiseLoader,
@@ -78,6 +79,10 @@ import {
 } from "./session-request-agent.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 
+// Emitters call listeners synchronously, so a dispatch would otherwise inherit the
+// producer's async-work scope (for example a tool call) and abort when that closes.
+// The Gateway owns this work: it still retains the producer's root work, and
+// agentUnsub joins agent-event dispatches before disposing their handler.
 function dispatchEventHandler<TEvent>(params: {
   loadHandler: () => Promise<(event: TEvent) => unknown>;
   event: TEvent;
@@ -86,15 +91,17 @@ function dispatchEventHandler<TEvent>(params: {
   context: Record<string, unknown>;
   onFailure?: (error: unknown) => void;
 }) {
-  return runWithRetainedGatewayRootWork(() =>
-    params
-      .loadHandler()
-      .then((handler) => handler(params.event))
-      .then(() => undefined)
-      .catch((error: unknown) => {
-        params.log.warn(params.failureMessage, { ...params.context, error });
-        params.onFailure?.(error);
-      }),
+  return runOutsideAsyncWorkScope(() =>
+    runWithRetainedGatewayRootWork(() =>
+      params
+        .loadHandler()
+        .then((handler) => handler(params.event))
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          params.log.warn(params.failureMessage, { ...params.context, error });
+          params.onFailure?.(error);
+        }),
+    ),
   );
 }
 

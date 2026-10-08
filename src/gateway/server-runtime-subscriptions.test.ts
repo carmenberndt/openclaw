@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { configureExecutionIdentityAdmissionSink } from "../audit/execution-identity-admission.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
+import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   type AgentEventPayload,
@@ -30,6 +32,8 @@ import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   waitForChatAbortControllerRemoval,
   waitForChatAbortTerminalPersistence,
@@ -44,8 +48,9 @@ import {
   registerSubscriptionChatRun,
   registerAuditSubscriptionTests,
 } from "./server-runtime-subscriptions.test-support.js";
-import type { SessionRowProjection } from "./session-row-projection.js";
+import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 import { createRpcSourceForTest, claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
+import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
 function waitForFast<T>(
   callback: () => T | Promise<T>,
@@ -897,6 +902,74 @@ describe("startGatewayEventSubscriptions", () => {
     expect(transcriptBroadcastMocks.readMessageById).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalledOnce();
     await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+  });
+
+  it("broadcasts a transcript update after the producer's async-work scope closes", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      transcriptBroadcastMocks.useActualHandler = true;
+      runtimeConfigState.value = { agents: { entries: { main: {} } } };
+      const target = {
+        agentId: "main",
+        sessionId: "sess-scoped",
+        sessionKey: "agent:main:main",
+        storePath: resolveSessionStorePathCore(undefined, { agentId: "main" }),
+      };
+      replaceSessionEntrySync(
+        { agentId: "main", sessionKey: target.sessionKey },
+        { sessionId: target.sessionId, updatedAt: 1 },
+      );
+      const message = { role: "assistant", content: [{ type: "text", text: "tool reply" }] };
+      transcriptBroadcastMocks.readMessageById.mockResolvedValue({
+        found: true,
+        oversized: false,
+        seq: 1,
+        message,
+      });
+      const projection = await createSessionRowProjection({
+        cfg: runtimeConfigState.value,
+        modelCatalog: [],
+        placementFactsReader: createWorkerSessionPlacementStore(),
+      });
+      try {
+        const params = createParams();
+        params.sessionEventSubscribers.subscribe("conn-transcript");
+        unsubs = startGatewayEventSubscriptions({
+          ...params,
+          getSessionRowProjection: () => projection,
+        });
+        await projection.ensureMaterialized();
+
+        // A dynamic tool call persists its row inside a per-call scope that closes on return.
+        await runWithAsyncWorkResources(async () => {
+          emitSessionTranscriptUpdate({
+            sessionFile: "/tmp/openclaw-scoped-transcript.sqlite",
+            sessionKey: target.sessionKey,
+            message,
+            messageId: "scoped-message",
+            target,
+          });
+        });
+
+        await waitForFast(() =>
+          expect(
+            warn.mock.calls.length + vi.mocked(params.broadcastToConnIds).mock.calls.length,
+          ).toBeGreaterThan(0),
+        );
+        expect(warn).not.toHaveBeenCalled();
+        expect(params.broadcastToConnIds).toHaveBeenCalledWith(
+          "session.message",
+          expect.objectContaining({ sessionKey: target.sessionKey, messageId: "scoped-message" }),
+          new Set(["conn-transcript"]),
+          expect.anything(),
+        );
+      } finally {
+        await unsubs?.agentUnsub();
+        unsubs?.transcriptUnsub();
+        unsubs?.lifecycleUnsub();
+        unsubs = undefined;
+        projection.dispose();
+      }
+    });
   });
 
   it("broadcasts progress-card retirement without session-list subscribers", () => {
