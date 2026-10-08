@@ -108,19 +108,15 @@ export function copyPluginSourceFile(
           }
         : undefined;
     } catch (error) {
-      // fs-safe wraps native failures; retain the disk-full code and detail that
-      // plugin-load diagnostics use to explain how to recover.
-      if (
-        error instanceof FsSafeError &&
-        collectErrorGraphCandidates(error, readErrorCauses).some(
-          (cause) => extractErrorCode(cause) === "ENOSPC",
-        )
-      ) {
+      // Copy failures can arrive wrapped with cleanup failures; retain the disk-full code and
+      // detail that plugin-load diagnostics use to explain how to recover.
+      const failures = collectErrorGraphCandidates(error, readErrorCauses);
+      if (failures.some((cause) => extractErrorCode(cause) === "ENOSPC")) {
         throw Object.assign(new Error(formatErrorMessage(error), { cause: error }), {
           code: "ENOSPC",
         });
       }
-      if (error instanceof FsSafeError && error.code === "too-large") {
+      if (failures.some((cause) => cause instanceof FsSafeError && cause.code === "too-large")) {
         throw new Error(
           "Plugin source changed while preparing its reload; retry after the edit finishes.",
           { cause: error },
@@ -163,9 +159,13 @@ function copyPinnedPluginSourceFile(
       sourceIdentity: pluginSourceStatIdentity(admitted),
     };
   } catch (error) {
-    // Windows cannot unlink a file that is still open.
-    fs.closeSync(output);
-    fs.rmSync(target, { force: true });
+    try {
+      // Windows cannot unlink a file that is still open.
+      fs.closeSync(output);
+      fs.rmSync(target, { force: true });
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], "copy and cleanup failed", { cause: error });
+    }
     throw error;
   }
   fs.closeSync(output);

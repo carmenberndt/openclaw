@@ -327,3 +327,37 @@ it.each([false, true])(
     ).toHaveLength(1);
   },
 );
+
+it.each([false, true])(
+  "preserves pinned-copy disk-full diagnostics when cleanup fails: %s",
+  (cleanupFails) => {
+    const source = fixture(Buffer.from("captured"), "fixture.js");
+    const failure = Object.assign(new Error("capture filesystem is full"), { code: "ENOSPC" });
+    const rmSync = fs.rmSync;
+    aroundPinnedCopy(source.filename, (target) => {
+      if (cleanupFails) {
+        vi.spyOn(fs, "rmSync").mockImplementation((filename, options) => {
+          if (filename === target) {
+            throw Object.assign(new Error("capture cleanup failed"), { code: "EACCES" });
+          }
+          rmSync(filename, options);
+        });
+      }
+      throw failure;
+    });
+
+    let reported: unknown;
+    try {
+      source.capture();
+    } catch (error) {
+      reported = error;
+    }
+    expect(reported).toMatchObject({
+      code: "ENOSPC",
+      message: expect.stringContaining("capture filesystem is full"),
+    });
+    if (cleanupFails) {
+      expect(reported).toHaveProperty("message", expect.stringContaining("capture cleanup failed"));
+    }
+  },
+);
