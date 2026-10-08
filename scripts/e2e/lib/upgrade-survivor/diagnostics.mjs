@@ -1989,6 +1989,18 @@ export function publishDiagnostics(
       throw new Error();
     }
     let redacted = redactSensitiveText(text, { mode: "tools" });
+    if (
+      label === "snapshot-cleanup-evidence.json" &&
+      Buffer.byteLength(JSON.stringify(redacted)) > 8 * 1024
+    ) {
+      omissions[label] = "critical snapshot summary exceeded 8 KiB after redaction";
+      return JSON.stringify({
+        version: 2,
+        overflow: true,
+        unknown: ["redacted-summary-overflow"],
+        sha256: createHash("sha256").update(redacted).digest("hex"),
+      });
+    }
     if (outcome === "failed" && Buffer.byteLength(JSON.stringify(redacted)) > outputLimit) {
       const context = failedUpdateContext(text, label);
       if (context) {

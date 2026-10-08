@@ -9,11 +9,26 @@ import sqlite, { DatabaseSync } from "node:sqlite";
 import { inspect } from "node:util";
 import { isMainThread, parentPort, threadId } from "node:worker_threads";
 import {
+  observeRequiredSnapshotRequests,
+  observeSnapshotAllocations,
+  readNativeSnapshotRequest,
+} from "./snapshot-capture-binding.mjs";
+import {
+  assertSelectedSnapshotAcquisitions,
+  createSnapshotAcquisitionRecorder,
+  snapshotEvidenceRecords,
+  summarizeSnapshotCleanupEvidence,
+} from "./snapshot-cleanup-evidence.mjs";
+import {
   assertWorkerCellPackageIdentity,
   readWorkerCellPackageIdentity,
 } from "./worker-cell-package.mjs";
 
 const fixtureName = "snapshot-cleanup-fixture.json";
+const monotonic = () => String(process.hrtime.bigint());
+const nativeReceipt = (artifacts, root) =>
+  path.join(artifacts, "snapshot-cleanup-native-" + hash(root) + ".json");
+const optionalJson = (file) => (fs.existsSync(file) ? readJson(file) : undefined);
 const refusal = "SQLite artifact-preserving copy and cleanup failed";
 const denial = "snapshot cleanup refusal fixture";
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -221,7 +236,80 @@ function installFault() {
       identity,
       updateInProgress: process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1",
       fullPayloadVerified: true,
+      start: fs
+        .readFileSync("/proc/" + process.pid + "/stat", "utf8")
+        .split(") ")[1]
+        .split(" ")[19],
     });
+  }
+  const doctorFile = path.join(artifacts, "snapshot-cleanup-doctor-" + process.pid + ".json");
+  const parentRequests = [];
+  const observer =
+    isMainThread && role === "doctor"
+      ? observeRequiredSnapshotRequests({
+          source: fixture.source,
+          verifyFrame(site) {
+            const relative = path.relative(identity.root, site.file).split(path.sep).join("/");
+            assert(relative.startsWith("dist/"), "Capture caller escaped the admitted package");
+            assert.equal(hash(fs.readFileSync(site.file)), expected.files[relative]?.sha256);
+            site.file = relative;
+            site.sha256 = expected.files[relative].sha256;
+          },
+          onRequest(request) {
+            request.parentPid = process.pid;
+            request.parentStart = readJson(doctorFile).start;
+            request.at = monotonic();
+            if (request.binding) {
+              request.operationId =
+                process.pid + ":" + request.parentStart + ":" + request.binding.operation;
+            }
+            if (request.binding) {
+              request.binding.operationId = request.operationId;
+              parentRequests.push(request);
+              writeJson(nativeReceipt(artifacts, request.stagingRoot), request);
+            }
+          },
+          onClose(request) {
+            if (request.binding) {
+              request.closedAt = monotonic();
+              writeJson(nativeReceipt(artifacts, request.stagingRoot), request);
+            }
+          },
+        })
+      : undefined;
+  const nativeRequest = readNativeSnapshotRequest(process.argv.slice(1));
+  const native = nativeRequest
+    ? optionalJson(nativeReceipt(artifacts, nativeRequest.stagingRoot))
+    : undefined;
+  if (native?.binding) {
+    assert.equal(native.source, fixture.source);
+    assert.equal(native.stagingRoot, nativeRequest.stagingRoot);
+    assert.equal(native.parentPid, process.ppid);
+    assert.equal(native.parentPid, admittedDoctor?.pid);
+    assert.equal(native.parentStart, admittedDoctor?.start);
+    assert.deepEqual(
+      native.binding.sourceIdentity,
+      ((stat) => ({ dev: String(stat.dev), ino: String(stat.ino) }))(
+        fs.statSync(fixture.source, { bigint: true }),
+      ),
+    );
+  }
+  const writeFile = fs.promises.writeFile;
+  if (isMainThread && role === "doctor") {
+    fs.promises.writeFile = async function (file, data, ...rest) {
+      const result = await writeFile.call(this, file, data, ...rest);
+      if (String(file) === process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH) {
+        const value = JSON.parse(String(data));
+        const doctor = readJson(doctorFile);
+        doctor.result = {
+          status: value.status,
+          failureFacts: value.failureFacts,
+          sha256: hash(String(data)),
+        };
+        writeJson(doctorFile, doctor);
+      }
+      return result;
+    };
   }
   // The owned service keeps only heap options; retain the probe stack budget here.
   Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 32);
@@ -232,22 +320,12 @@ function installFault() {
   const read = fs.readSync.bind(fs);
   const remove = fs.rmSync.bind(fs);
   const removeAsync = fs.promises.rm.bind(fs.promises);
-  const allocate = fs.mkdtempSync.bind(fs);
-  let lastAllocation;
-  const attempts = new Set();
-  const attemptsReceipt = path.join(
-    artifacts,
-    "snapshot-cleanup-attempts-" + process.pid + "-" + threadId + ".json",
-  );
-  const recordAcquisition = (directory) => {
-    attempts.add(directory);
-    writeJson(attemptsReceipt, {
-      pid: process.pid,
-      threadId,
-      identity,
-      directories: [...attempts],
-    });
-  };
+  const recordAcquisition = createSnapshotAcquisitionRecorder(artifacts, {
+    identity,
+    pid: process.pid,
+    threadId,
+    operationId: () => native?.operationId ?? observer?.currentBinding()?.operationId,
+  });
   observeSnapshotNativeBackups(fixture.source, recordAcquisition);
   let observed;
   let injecting = false;
@@ -265,8 +343,7 @@ function installFault() {
     if (observed || injecting) {
       return;
     }
-    const stack = new Error().stack ?? "";
-    if (!stack.includes("prepareArtifactPreservingCopy")) {
+    if (!native?.binding || nativeRequest.source !== fixture.source) {
       return;
     }
     injecting = true;
@@ -290,7 +367,11 @@ function installFault() {
           fs.existsSync(file) &&
           fs.statSync(file).size > 0,
       );
-      if (!target || ![...descriptors.values()].includes(fixture.source)) {
+      if (
+        !target ||
+        !path.resolve(target).startsWith(native.stagingRoot + path.sep) ||
+        ![...descriptors.values()].includes(fixture.source)
+      ) {
         return;
       }
       try {
@@ -326,6 +407,8 @@ function installFault() {
         parentPid: process.ppid,
         identity,
         doctor,
+        native,
+        injectedAt: monotonic(),
         writer: { pid: writer.pid, signal: writer.signal },
         staging: path.dirname(target),
         afterWriter: family(fixture.source),
@@ -344,16 +427,6 @@ function installFault() {
     const fd = open(file, flags, mode);
     const pathname = path.resolve(String(file));
     descriptors.set(fd, pathname);
-    // Both copy adapters synchronously reacquire the source header just after
-    // allocation, before yielding to byte-copy or native CoW. Observe that
-    // boundary in every isolate, even after failure serialization or handoff.
-    if (
-      pathname === fixture.source &&
-      (new Error().stack ?? "").includes("createStableReadOnlyCopyInTempDirectory")
-    ) {
-      assert(lastAllocation, "Capture source was opened without observed allocation");
-      recordAcquisition(lastAllocation);
-    }
     return fd;
   };
   fs.closeSync = (fd) => {
@@ -373,14 +446,23 @@ function installFault() {
     inject();
     return result;
   };
-  fs.mkdtempSync = (...args) => {
-    const directory = allocate(...args);
-    if (path.basename(directory).startsWith("openclaw-sqlite-readonly-")) {
-      lastAllocation = directory;
-    }
-    return directory;
-  };
+  observeSnapshotAllocations(fixture.source, nativeRequest, recordAcquisition);
+  const parentRemoval = (file) =>
+    parentRequests.find((request) => path.resolve(String(file)) === request.stagingRoot);
   const beforeRemove = (file) => {
+    const request = parentRemoval(file);
+    if (request) {
+      const fault = optionalJson(
+        path.join(artifacts, "snapshot-cleanup-copy-" + request.pid + "-0.json"),
+      );
+      request.retirement = {
+        afterNativeClose: Boolean(request.close && request.closedAt),
+        producerRefused: fault?.terminalRefusal === true,
+        startedAt: monotonic(),
+        removed: false,
+      };
+      writeJson(nativeReceipt(artifacts, request.stagingRoot), request);
+    }
     if (!owns(file)) {
       return;
     }
@@ -394,6 +476,12 @@ function installFault() {
     );
   };
   const afterRemove = (file) => {
+    const request = parentRemoval(file);
+    if (request) {
+      request.retirement.removed = !fs.existsSync(request.stagingRoot);
+      request.retirement.finishedAt = monotonic();
+      writeJson(nativeReceipt(artifacts, request.stagingRoot), request);
+    }
     if (owns(file)) {
       observed.removed = !fs.existsSync(observed.staging);
       save();
@@ -407,19 +495,40 @@ function installFault() {
   };
   fs.promises.rm = async (file, options) => {
     beforeRemove(file);
-    await removeAsync(file, options);
-    afterRemove(file);
+    try {
+      await removeAsync(file, options);
+      afterRemove(file);
+    } catch (error) {
+      const request = parentRemoval(file);
+      if (request) {
+        request.retirement.error = {
+          code: error.code,
+          message: String(error.message).slice(0, 512),
+        };
+        writeJson(nativeReceipt(artifacts, request.stagingRoot), request);
+      }
+      throw error;
+    }
   };
   const observeTerminal = (data) => {
     if (observed && !observed.terminalRefusal) {
       transcript = (transcript + data).slice(-32768);
       if (
         transcript.includes(refusal) &&
+        transcript.includes(denial) &&
         /SQLite (?:journal state|journal mode|WAL generation|WAL|main database).*changed/u.test(
           transcript,
         )
       ) {
         observed.terminalRefusal = true;
+        observed.retainedAtRefusal = fs.existsSync(observed.staging);
+        observed.failure = {
+          message: transcript.slice(-2500),
+          sha256: hash(transcript),
+          truncated: transcript.length > 2500,
+        };
+        observed.groupIncompleteAtRefusal =
+          fs.existsSync(native.binding.marker) && !fs.existsSync(native.binding.target);
         observed.unpublishedAtRefusal = !fs.existsSync(
           path.join(observed.staging, "database.sqlite"),
         );
@@ -467,26 +576,36 @@ function installFault() {
 }
 
 export function writeSnapshotCleanupEvidence(artifacts) {
-  // Capture even when the candidate fault never ran; missing observations are
-  // diagnostic evidence, not a passed proof. The host redacts the projection.
-  const names = fs
-    .readdirSync(artifacts)
-    .filter((name) =>
-      /^snapshot-cleanup-(?:fixture|candidate|driver|doctor-\d+|attempts-\d+-\d+|copy-\d+-\d+)\.json$/u.test(
-        name,
-      ),
-    );
-  assert(names.length <= 128, "Snapshot evidence exceeds the diagnostic collection bound");
-  writeJson(
-    path.join(artifacts, "snapshot-cleanup-evidence.json"),
-    Object.fromEntries(names.map((name) => [name, readJson(path.join(artifacts, name))])),
-  );
+  let summary;
+  try {
+    summary = summarizeSnapshotCleanupEvidence(artifacts);
+  } catch (error) {
+    summary = {
+      version: 2,
+      unknown: ["evidence-collection"],
+      overflow: false,
+      error: String(error.message).slice(0, 256),
+    };
+  }
+  writeJson(path.join(artifacts, "snapshot-cleanup-evidence.json"), summary);
 }
 
 export function assertSnapshotCleanupRefusal(artifacts, updateResult, updateFailure) {
   if (!updateResult) {
     throw updateFailure ?? new Error("Published update did not settle before the fault proof");
   }
+  const stdout = fs.readFileSync(path.join(artifacts, "update.stdout"), "utf8");
+  const result = JSON.parse(stdout.slice(stdout.indexOf("{")));
+  writeJson(path.join(artifacts, "snapshot-cleanup-result.json"), {
+    exitCode: updateResult.exitCode,
+    signal: updateResult.signal,
+    status: result.status,
+    failedDoctorStep:
+      result.steps?.some(
+        (step) =>
+          step.name === "openclaw doctor" && Number.isInteger(step.exitCode) && step.exitCode > 0,
+      ) === true,
+  });
   const fixture = readJson(path.join(artifacts, fixtureName));
   const driver = readJson(path.join(artifacts, "snapshot-cleanup-driver.json"));
   assert.equal(driver.identity.commit, fixture.baseline.commit);
@@ -510,19 +629,36 @@ export function assertSnapshotCleanupRefusal(artifacts, updateResult, updateFail
   assert.equal(observed.identity.payloadSha256, expectedPayload);
   assert.equal(observed.doctor.identity.payloadSha256, expectedPayload);
   assert(observed.cleanupDenials > 0, "No real copy cleanup was refused");
-  const acquisitions = fs
-    .readdirSync(artifacts)
-    .filter((file) => /^snapshot-cleanup-attempts-\d+-\d+\.json$/u.test(file))
-    .flatMap((file) => {
-      const attempts = readJson(path.join(artifacts, file));
-      assert.equal(attempts.identity.commit, fixture.candidateCommit);
-      assert.equal(attempts.identity.payloadSha256, expectedPayload);
-      return attempts.directories;
-    });
+  const records = snapshotEvidenceRecords(artifacts);
+  const { native: selected, counts: acquisitions } = assertSelectedSnapshotAcquisitions(
+    records,
+    observed,
+    expectedPayload,
+  );
+  assert.equal(
+    observed.groupIncompleteAtRefusal,
+    true,
+    "Failed required backup group was not incomplete",
+  );
+  assert.equal(
+    fs.existsSync(selected.binding.target),
+    false,
+    "Failed source was published as a verified backup",
+  );
+  assert.equal(selected.source, fixture.source);
+  assert.equal(selected.parentPid, observed.doctor.pid);
+  assert.equal(selected.operationId, observed.native.operationId);
+  const marker = fs.lstatSync(selected.binding.marker, { bigint: true });
+  assert(marker.isFile() && marker.size === 0n, "Failed required group lost its incomplete marker");
   assert.deepEqual(
-    [...new Set(acquisitions)],
-    [observed.staging],
-    "Candidate reacquired the source before updater settlement, possibly in another process",
+    { dev: String(marker.dev), ino: String(marker.ino), mtimeNs: String(marker.mtimeNs) },
+    selected.binding.markerIdentity,
+  );
+  const doctor = records.doctors.find((row) => row.pid === observed.doctor.pid);
+  assert.equal(
+    doctor?.result?.status,
+    "error",
+    "Required capture did not produce Doctor status:error",
   );
   assert.equal(
     observed.terminalRefusal,
@@ -544,35 +680,59 @@ export function assertSnapshotCleanupRefusal(artifacts, updateResult, updateFail
     "Updater swallowed the copy refusal and returned success",
   );
   assert.equal(updateResult.signal, null, "Updater was terminated instead of reporting refusal");
-  const stdout = fs.readFileSync(path.join(artifacts, "update.stdout"), "utf8");
-  const result = JSON.parse(stdout.slice(stdout.indexOf("{")));
   assert.equal(result.status, "error", "Updater did not publish a failed result");
+  assert.equal(
+    readJson(path.join(artifacts, "snapshot-cleanup-result.json")).failedDoctorStep,
+    true,
+    "Required Doctor failure was not a failed public step",
+  );
   const publicOutput = stdout + fs.readFileSync(path.join(artifacts, "update.stderr"), "utf8");
   assert(publicOutput.includes(refusal), "Published updater omitted the candidate capture refusal");
-  const source = new DatabaseSync(fixture.source, { readOnly: true });
-  try {
-    assert.equal(
-      source.prepare("SELECT value FROM snapshot_cleanup_witness").get().value,
-      1,
-      "Updater lost the fixture writer commit after refusal",
-    );
-    assert.equal(source.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
-  } finally {
-    source.close();
-  }
-  assert.equal(observed.cleanupOwnerObserved, true, "Retained cleanup owner was not observed");
-  assert.equal(observed.removed, true, "Retained cleanup did not safely remove the failed attempt");
+  // Source-family hashes were compared at the producer refusal boundary,
+  // before the installed updater's independent rollback/restore policy runs.
+  assert.equal(
+    observed.retainedAtRefusal,
+    true,
+    "Unresolved private scratch was not retained at refusal",
+  );
+  assert(selected.close && selected.closedAt, "Selected native child close was not observed");
+  assert.equal(selected.close.code, 1, "Selected native worker did not exit with refusal code 1");
+  assert.equal(
+    selected.close.signal,
+    null,
+    "Native child was terminated instead of reporting refusal",
+  );
+  assert.equal(
+    selected.retirement?.afterNativeClose,
+    true,
+    "Parent retirement preceded native close or was unobserved",
+  );
+  assert.equal(
+    selected.retirement?.producerRefused,
+    true,
+    "Parent retirement lacks observed producer refusal",
+  );
+  assert.equal(
+    selected.retirement?.removed,
+    true,
+    "Parent staging retirement did not settle failed scratch",
+  );
+  assert.equal(fs.existsSync(selected.stagingRoot), false);
   assert(
     !fs.existsSync(observed.staging),
     "Unpublished staging still exists after updater settlement",
   );
+  const compact = summarizeSnapshotCleanupEvidence(artifacts);
+  assert.equal(compact.overflow, false, "Critical snapshot evidence overflow");
+  assert.deepEqual(compact.unknown, [], "Critical snapshot evidence remains unobserved");
   const proof = {
     status: "passed",
     baseline: fixture.baseline,
     candidateCommit: fixture.candidateCommit,
     updateExit: updateResult.exitCode,
     acquisitions,
-    fault: observed,
+    fault: { pid: observed.pid, operationId: selected.operationId },
+    custody: selected.retirement,
     platform: process.platform,
     arch: process.arch,
     node: process.version,

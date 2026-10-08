@@ -7,6 +7,11 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { publishDiagnostics } from "../../scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 import {
+  observeSnapshotAllocations,
+  readNativeSnapshotRequest,
+} from "../../scripts/e2e/lib/upgrade-survivor/snapshot-capture-binding.mjs";
+import { createSnapshotAcquisitionRecorder } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-evidence.mjs";
+import {
   assertSnapshotCleanupRefusal,
   bindSnapshotRuntimeIdentity,
   observeSnapshotNativeBackups,
@@ -587,12 +592,135 @@ describe("published upgrade survivor consent recovery", () => {
   });
 });
 
-// These are validator counterexamples, not substitutes for the native Docker cell.
+// Synthetic validator records only; real caller/native proof uses the maintenance owner.
+function refusalRecords(artifacts: string) {
+  const write = (name: string, value: unknown) =>
+    writeFileSync(join(artifacts, name), JSON.stringify(value));
+  const candidateCommit = "a".repeat(40);
+  const baseline = { commit: "b".repeat(40) };
+  const identity = {
+    commit: candidateCommit,
+    payloadSha256: createHash("sha256").update("{}").digest("hex"),
+  };
+  const source = join(artifacts, "source.sqlite");
+  const stagingRoot = join(artifacts, "outer");
+  const staging = join(stagingRoot, "inner");
+  const marker = source + ".bak.capturing";
+  writeFileSync(marker, "");
+  const stat = fs.statSync(marker, { bigint: true });
+  const native = {
+    pid: 101,
+    request: 1,
+    operationId: "99:123:1",
+    parentPid: 99,
+    source,
+    stagingRoot,
+    binding: {
+      source,
+      target: source + ".bak",
+      marker,
+      markerIdentity: {
+        dev: String(stat.dev),
+        ino: String(stat.ino),
+        mtimeNs: String(stat.mtimeNs),
+      },
+    },
+    close: { code: 1, signal: null },
+    closedAt: "120",
+    retirement: { afterNativeClose: true, producerRefused: true, removed: true },
+  };
+  const doctor = {
+    pid: 99,
+    identity,
+    updateInProgress: true,
+    fullPayloadVerified: true,
+    result: { status: "error" },
+  };
+  const fault = {
+    pid: 101,
+    threadId: 0,
+    identity,
+    doctor,
+    native,
+    injectedAt: "100",
+    staging,
+    cleanupDenials: 1,
+    terminalRefusal: true,
+    retainedAtRefusal: true,
+    sourcePreservedAtRefusal: true,
+    unpublishedAtRefusal: true,
+    groupIncompleteAtRefusal: true,
+    failure: {
+      message: "SQLite artifact-preserving copy and cleanup failed",
+      sha256: "c".repeat(64),
+    },
+    removed: false,
+  };
+  const save = () => {
+    write("snapshot-cleanup-fixture.json", { candidateCommit, baseline, source });
+    write("snapshot-cleanup-driver.json", { identity: baseline });
+    write("snapshot-cleanup-candidate-identity.json", {});
+    write("snapshot-cleanup-copy-101-0.json", fault);
+    write("snapshot-cleanup-native-" + "d".repeat(64) + ".json", native);
+    write("snapshot-cleanup-doctor-99.json", doctor);
+    write("snapshot-cleanup-attempts-101-0.json", {
+      pid: 101,
+      threadId: 0,
+      identity,
+      acquisitions: [{ directory: staging, at: "99", operationId: native.operationId }],
+    });
+    write("update.stdout", {
+      status: "error",
+      reason: fault.failure.message,
+      steps: [{ name: "openclaw doctor", exitCode: 1 }],
+    });
+    writeFileSync(join(artifacts, "update.stderr"), "");
+  };
+  save();
+  return { write, save, fault, native, doctor, identity };
+}
+
 describe("snapshot cleanup refusal evidence", () => {
+  it.each(["selected", "other-source", "other-mode"])(
+    "observes real allocation for %s native request",
+    (kind) => {
+      const root = tempDirs.make("snapshot-native-allocation-");
+      const source = join(root, "source.sqlite");
+      const sibling = join(root, "sibling");
+      mkdirSync(sibling);
+      const request = readNativeSnapshotRequest([
+        "/package/worker.mjs",
+        "--openclaw-sqlite-readonly-child",
+        kind === "other-mode" ? "async" : "sync",
+        kind === "other-source" ? source + ".other" : source,
+        root,
+      ]);
+      const observed: string[] = [];
+      const restore = observeSnapshotAllocations(source, request, (directory: string) =>
+        observed.push(directory),
+      );
+      try {
+        // openclaw-temp-dir: allow exercises the actual intercepted allocator boundary
+        const first = fs.mkdtempSync(join(root, "openclaw-sqlite-readonly-"));
+        // openclaw-temp-dir: allow another real allocation in the same selected request
+        const second = fs.mkdtempSync(join(root, "openclaw-sqlite-readonly-"));
+        // openclaw-temp-dir: allow same-prefix allocation outside this request's staging parent
+        fs.mkdtempSync(join(sibling, "openclaw-sqlite-readonly-"));
+        expect(observed).toEqual(kind === "selected" ? [first, second] : []);
+      } finally {
+        restore();
+      }
+    },
+  );
   it.each([
-    { fault: "other process retry", receipt: "102-0", error: "Candidate reacquired" },
-    { fault: "native backup retry", receipt: "103-0", native: true, error: "Candidate reacquired" },
-    { fault: "other thread retry", receipt: "101-1", error: "Candidate reacquired" },
+    { fault: "other process retry", receipt: "102-0", error: "Selected operation reacquired" },
+    {
+      fault: "native backup retry",
+      receipt: "103-0",
+      native: true,
+      error: "Selected operation reacquired",
+    },
+    { fault: "other thread retry", receipt: "101-1", error: "Selected operation reacquired" },
     { fault: "successful exit", exitCode: 0, error: "Updater swallowed" },
     { fault: "successful result", status: "ok", error: "failed result" },
     { fault: "unverified payload", payload: false, error: "false !== true" },
@@ -600,37 +728,14 @@ describe("snapshot cleanup refusal evidence", () => {
     "rejects $fault despite refusal text",
     async ({ receipt, native = false, exitCode = 1, status = "error", payload = true, error }) => {
       const artifacts = tempDirs.make("snapshot-refusal-evidence-");
-      const write = (name: string, value: unknown) =>
-        writeFileSync(join(artifacts, name), JSON.stringify(value));
-      const candidateCommit = "a".repeat(40);
-      const baseline = { commit: "b".repeat(40) };
-      const payloadSha256 = createHash("sha256").update("{}").digest("hex");
-      const identity = { commit: candidateCommit, payloadSha256 };
-      const staging = join(artifacts, "failed-copy");
-      write("snapshot-cleanup-fixture.json", {
-        candidateCommit,
-        baseline,
-        source: join(artifacts, "source.sqlite"),
-      });
-      write("snapshot-cleanup-driver.json", { identity: baseline });
-      write("snapshot-cleanup-candidate-identity.json", {});
-      write("snapshot-cleanup-copy-101-0.json", {
-        identity,
-        doctor: { identity, updateInProgress: true, fullPayloadVerified: payload },
-        staging,
-        cleanupDenials: 1,
-        terminalRefusal: true,
-        sourcePreservedAtRefusal: true,
-        unpublishedAtRefusal: true,
-        cleanupOwnerObserved: true,
-        removed: true,
-      });
-      write("snapshot-cleanup-attempts-101-0.json", { identity, directories: [staging] });
+      const f = refusalRecords(artifacts);
+      f.doctor.fullPayloadVerified = payload;
+      f.save();
       if (receipt) {
         const record = (directory: string) =>
-          write("snapshot-cleanup-attempts-" + receipt + ".json", {
-            identity,
-            directories: [directory],
+          f.write("snapshot-cleanup-attempts-" + receipt + ".json", {
+            identity: f.identity,
+            acquisitions: [{ directory, at: "101", operationId: f.native.operationId }],
           });
         const retried = join(artifacts, "retried-copy");
         if (native) {
@@ -639,19 +744,8 @@ describe("snapshot cleanup refusal evidence", () => {
           const source = new DatabaseSync(sourcePath);
           const restore = observeSnapshotNativeBackups(sourcePath, record);
           try {
-            source.exec(
-              "CREATE TABLE snapshot_cleanup_witness(value); INSERT INTO snapshot_cleanup_witness VALUES(1)",
-            );
-            const destination = join(retried, "copy.sqlite");
-            expect(await sqlite.backup(source, destination)).toBeGreaterThan(0);
-            const copy = new DatabaseSync(destination, { readOnly: true });
-            try {
-              expect(copy.prepare("SELECT value FROM snapshot_cleanup_witness").get()?.value).toBe(
-                1,
-              );
-            } finally {
-              copy.close();
-            }
+            source.exec("CREATE TABLE witness(value); INSERT INTO witness VALUES(1)");
+            expect(await sqlite.backup(source, join(retried, "copy.sqlite"))).toBeGreaterThan(0);
           } finally {
             restore();
             source.close();
@@ -660,17 +754,118 @@ describe("snapshot cleanup refusal evidence", () => {
           record(retried);
         }
       }
-      write("update.stdout", {
+      f.write("update.stdout", {
         status,
-        reason: "SQLite artifact-preserving copy and cleanup failed",
+        reason: f.fault.failure.message,
+        steps: [{ name: "openclaw doctor", exitCode: 1 }],
       });
-      writeFileSync(join(artifacts, "update.stderr"), "");
       expect(() => assertSnapshotCleanupRefusal(artifacts, { exitCode, signal: null })).toThrow(
         error,
       );
       expect(existsSync(join(artifacts, "snapshot-cleanup-proof.json"))).toBe(false);
     },
   );
+  it.each([
+    {
+      fault: "successful native worker",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.close.code = 0;
+      },
+      error: "refusal code 1",
+    },
+    {
+      fault: "unretained failed scratch",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.fault.retainedAtRefusal = false;
+      },
+      error: "not retained at refusal",
+    },
+    {
+      fault: "unjoined child",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.closedAt = "";
+      },
+      error: "native child close",
+    },
+    {
+      fault: "unobserved retirement",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.retirement.afterNativeClose = false;
+      },
+      error: "Parent retirement",
+    },
+    {
+      fault: "unsettled staging",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.retirement.removed = false;
+      },
+      error: "did not settle",
+    },
+    {
+      fault: "successful Doctor",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.doctor.result.status = "ok";
+      },
+      error: "Doctor status:error",
+    },
+    {
+      fault: "completed failed group",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.fault.groupIncompleteAtRefusal = false;
+      },
+      error: "not incomplete",
+    },
+  ])("rejects $fault", ({ change, error }) => {
+    const artifacts = tempDirs.make("snapshot-custody-evidence-");
+    const f = refusalRecords(artifacts);
+    change(f);
+    f.save();
+    expect(() => assertSnapshotCleanupRefusal(artifacts, { exitCode: 1, signal: null })).toThrow(
+      error,
+    );
+  });
+  it("counts repeated acquisition observations in the same directory", () => {
+    const artifacts = tempDirs.make("snapshot-same-directory-");
+    const f = refusalRecords(artifacts);
+    const record = createSnapshotAcquisitionRecorder(artifacts, {
+      identity: f.identity,
+      pid: 101,
+      threadId: 0,
+      operationId: () => f.native.operationId,
+    });
+    record(f.fault.staging);
+    record(f.fault.staging);
+    expect(() => assertSnapshotCleanupRefusal(artifacts, { exitCode: 1, signal: null })).toThrow(
+      "Selected operation reacquired",
+    );
+  });
+  it("does not count 80 unrelated acquisitions as selected retries or require failed scratch forever", () => {
+    const artifacts = tempDirs.make("snapshot-selected-count-");
+    const f = refusalRecords(artifacts);
+    for (let index = 0; index < 80; index++) {
+      f.write("snapshot-cleanup-attempts-" + (200 + index) + "-0.json", {
+        identity: f.identity,
+        acquisitions: [
+          { directory: join(artifacts, "unrelated-" + index), at: index < 40 ? "90" : "110" },
+        ],
+      });
+    }
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(() =>
+        assertSnapshotCleanupRefusal(artifacts, { exitCode: 1, signal: null }),
+      ).not.toThrow();
+    } finally {
+      log.mockRestore();
+    }
+    const proof = JSON.parse(readFileSync(join(artifacts, "snapshot-cleanup-proof.json"), "utf8"));
+    expect(proof.acquisitions).toMatchObject({
+      selected: 1,
+      unselectedBefore: 40,
+      unselectedAfter: 40,
+      unknown: 0,
+    });
+  });
 });
 
 // Exercise the existing private capture -> host-redaction publication boundary.
@@ -684,9 +879,31 @@ it.each(["failed", "timeout", "passed"] as const)(
     mkdirSync(state);
     const write = (name: string, value: unknown) =>
       writeFileSync(join(artifacts, name), JSON.stringify(value));
-    write("snapshot-cleanup-driver.json", { identity: { commit: "a".repeat(40) } });
+    const f = refusalRecords(artifacts);
+    f.fault.failure.message =
+      "SQLite artifact-preserving copy and cleanup failed; " + '\\"\n'.repeat(2000);
+    f.save();
     write("snapshot-cleanup-candidate.json", { sha256: "b".repeat(64) });
     write("snapshot-cleanup-candidate-identity.json", { privatePackageInventory: true });
+    write("snapshot-cleanup-result.json", {
+      exitCode: 1,
+      signal: null,
+      status: "error",
+      failedDoctorStep: true,
+    });
+    for (let index = 0; index < 120; index++) {
+      write("snapshot-cleanup-attempts-" + (200 + index) + "-0.json", {
+        pid: 200 + index,
+        threadId: 0,
+        identity: { ...f.identity, privatePackageInventory: "privatePackageInventory".repeat(30) },
+        acquisitions: [
+          {
+            directory: join(artifacts, "private-path-" + index + '\\"\n'.repeat(1000)),
+            at: index < 80 ? "90" : "110",
+          },
+        ],
+      });
+    }
     writeSnapshotCleanupEvidence(artifacts);
     write("update.stdout", { status: "error", reason: "fixture failure before fault" });
     const probePhases = [
@@ -751,10 +968,20 @@ it.each(["failed", "timeout", "passed"] as const)(
       expect(report.logs[phase + ".stderr"]).toBe("synthetic probe diagnostic");
       expect(JSON.parse(report.logs[phase + "-exit.json"]).processTreeState).toBe("terminated");
     }
-    expect(JSON.parse(report.logs["snapshot-cleanup-evidence.json"])).toEqual({
-      "snapshot-cleanup-candidate.json": { sha256: "b".repeat(64) },
-      "snapshot-cleanup-driver.json": { identity: { commit: "a".repeat(40) } },
+    const evidence = report.logs["snapshot-cleanup-evidence.json"];
+    expect(Buffer.byteLength(JSON.stringify(evidence))).toBeLessThanOrEqual(8 * 1024);
+    expect(JSON.parse(evidence)).toMatchObject({
+      version: 2,
+      overflow: false,
+      unknown: [],
+      inventoryOmitted: true,
+      fault: { pid: 101, terminalRefusal: true, groupIncompleteAtRefusal: true },
+      doctor: { pid: 99, result: { status: "error" } },
+      outer: { status: "error", exitCode: 1, failedDoctorStep: true },
+      acquisitions: { selected: 1, unselectedBefore: 80, unselectedAfter: 40, unknown: 0 },
+      candidate: { sha256: "b".repeat(64) },
     });
+    expect(report.omissions?.["snapshot-cleanup-evidence.json"]).toBeUndefined();
     expect(text).not.toContain("snapshot-fixture-token");
     expect(text).not.toContain("privatePackageInventory");
   },
