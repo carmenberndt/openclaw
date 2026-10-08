@@ -119,6 +119,11 @@ export async function captureSessionEntryCurrentCheck(params: {
       try {
         if (
           inputCandidates.some((candidate) => !isSessionStoreReadCandidateCurrent(candidate)) ||
+          alternatives.some((alternative) =>
+            alternative.conversations.some(
+              ({ locator }) => !isSessionStoreReadCandidateCurrent(locator),
+            ),
+          ) ||
           (selectedStore &&
             assertSessionStoreReadCandidate(selectedStore.path, inputCandidates) !==
               selectedStore.physicalPath)
@@ -188,13 +193,6 @@ export async function captureSessionEntryCurrentCheck(params: {
             assertActive();
             if (!sourceIsCurrent()) {
               refuse();
-            }
-            for (const alternative of alternatives) {
-              for (const { locator } of alternative.conversations) {
-                if (!isSessionStoreReadCandidateCurrent(locator)) {
-                  refuse();
-                }
-              }
             }
           },
           async prepareConversations(readConversations) {

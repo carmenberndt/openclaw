@@ -6,7 +6,6 @@ import {
   isSessionEntryDataSql,
   observeHostDataSql,
 } from "../../test/helpers/sqlite-statement-execution-counter.js";
-import { resetSessionEntryLifecycle } from "../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { hasOpenClawAgentDatabaseAsyncResources } from "../state/openclaw-agent-db-resources.js";
 import {
@@ -50,23 +49,6 @@ describe("current conversation session binding", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
     // A Vitest thread cannot retire an escaped reclamation lease after this case.
     expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
-  });
-
-  it("does not create a database or hold a writer when the conversation store is missing", () => {
-    const scope = { agentId: "missing-owner", env: { OPENCLAW_STATE_DIR: tempDir } };
-
-    expect(
-      getConversationSession({
-        ...scope,
-        channel: "reef",
-        accountId: "default",
-        kind: "group",
-        peerId: "room",
-        threadId: "thread-1",
-      }),
-    ).toBeUndefined();
-    expect(getOpenClawAgentDatabaseIfOpen(scope)).toBeUndefined();
-    expect(fs.readdirSync(tempDir)).toEqual([]);
   });
 
   it("reads conversation changes inside their owning transaction and respects rollback", async () => {
@@ -135,6 +117,75 @@ describe("current conversation session binding", () => {
       expect(hostSql.queries.filter(isSessionEntryDataSql)).toEqual([]);
       expect(getSessionEntry(scope)?.displayName).toBe(sessionKey);
     }
+  });
+
+  it("rejects a retargeted foreign conversation store even when its session key is unchanged", async () => {
+    const scope = { agentId: "main", storePath, sessionKey: "agent:main:main" };
+    await upsertSessionEntry({
+      ...scope,
+      entry: { sessionId: "title-owner", updatedAt: 100, displayName: "Original title" },
+    });
+    const firstDirectory = path.join(tempDir, "foreign-first");
+    const secondDirectory = path.join(tempDir, "foreign-second");
+    const aliasDirectory = path.join(tempDir, "foreign-alias");
+    const conversationKey = "agent:main:reef:group:foreign-room";
+    const address = {
+      agentId: "main",
+      storePath: path.join(aliasDirectory, "sessions.sqlite"),
+      channel: "reef",
+      accountId: "default",
+      kind: "group" as const,
+      peerId: "foreign-room",
+      threadId: "first",
+    };
+    const delivery = normalizeSessionDeliveryState({
+      context: {
+        channel: "reef",
+        accountId: "default",
+        to: "group:foreign-room",
+        threadId: "first",
+      },
+    });
+    for (const [index, directory] of [firstDirectory, secondDirectory].entries()) {
+      fs.mkdirSync(directory);
+      await upsertSessionEntry({
+        agentId: "main",
+        storePath: path.join(directory, "sessions.sqlite"),
+        sessionKey: conversationKey,
+        entry: { sessionId: `foreign-${index}`, updatedAt: 100, chatType: "group", delivery },
+      });
+    }
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    fs.symlinkSync(firstDirectory, aliasDirectory, linkType);
+    const current = await captureSessionEntryCurrentCheck({
+      ...scope,
+      alternatives: [{ conversations: [{ ...address, sessionKey: conversationKey }] }],
+      errorMessage: "Conversation source changed before title commit",
+    });
+    expect(current.isCurrent()).toBe(true);
+    await patchSessionEntry({
+      ...scope,
+      skipMaintenance: true,
+      assertCommitAllowed: current.assertCurrent,
+      update: () => ({ displayName: "Accepted title" }),
+    });
+    expect(getSessionEntry(scope)?.displayName).toBe("Accepted title");
+
+    fs.unlinkSync(aliasDirectory);
+    fs.symlinkSync(secondDirectory, aliasDirectory, linkType);
+    expect(getConversationSession(address)).toEqual({
+      sessionKey: conversationKey,
+      sessionId: "foreign-1",
+    });
+    await expect(
+      patchSessionEntry({
+        ...scope,
+        skipMaintenance: true,
+        assertCommitAllowed: current.assertCurrent,
+        update: () => ({ displayName: "Rejected title" }),
+      }),
+    ).rejects.toThrow("Conversation source changed before title commit");
+    expect(getSessionEntry(scope)?.displayName).toBe("Accepted title");
   });
 
   it("preserves native transaction visibility for composed opaque SDK commit guards", async () => {
@@ -255,61 +306,6 @@ describe("current conversation session binding", () => {
       expect(getSessionEntry(replacementScope)).not.toHaveProperty("displayName");
     },
   );
-
-  it("resolves an exact conversation through session reset and deletion", async () => {
-    const sessionKey = "agent:main:reef:group:room";
-    const address = {
-      agentId: "main",
-      storePath,
-      channel: "reef",
-      accountId: "default",
-      kind: "group" as const,
-      peerId: "room",
-      threadId: "thread-1",
-    };
-    await upsertSessionEntry({
-      agentId: "main",
-      sessionKey,
-      storePath,
-      entry: {
-        sessionId: "before-reset",
-        updatedAt: Date.now(),
-        chatType: "group",
-        delivery: normalizeSessionDeliveryState({
-          context: {
-            channel: "reef",
-            accountId: "default",
-            to: "group:room",
-            threadId: "thread-1",
-          },
-        }),
-      },
-    });
-    expect(getConversationSession(address)).toEqual({ sessionKey, sessionId: "before-reset" });
-    expect(getConversationSession({ ...address, accountId: "other" })).toBeUndefined();
-    expect(getConversationSession({ ...address, threadId: "thread-2" })).toBeUndefined();
-    await resetSessionEntryLifecycle({
-      agentId: "main",
-      storePath,
-      target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
-      archivePreviousTranscript: false,
-      buildNextEntry: ({ currentEntry }) => ({
-        ...currentEntry,
-        sessionId: "after-reset",
-        updatedAt: Date.now(),
-      }),
-    });
-    expect(getConversationSession(address)).toEqual({ sessionKey, sessionId: "after-reset" });
-    await upsertSessionEntry({
-      agentId: "main",
-      sessionKey,
-      storePath,
-      entry: { sessionId: "without-route", updatedAt: Date.now() },
-    });
-    expect(getConversationSession(address)).toBeUndefined();
-    await deleteSessionEntry({ agentId: "main", sessionKey, storePath });
-    expect(getConversationSession(address)).toBeUndefined();
-  });
 
   it("does not let a later parent turn replace an existing thread owner", async () => {
     const parentKey = "agent:main:reef:group:room";

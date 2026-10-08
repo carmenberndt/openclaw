@@ -129,14 +129,18 @@ const requiredPlacementScope = resolveGlobalSingleton(
     new AsyncLocalStorage<{
       identity: Omit<LocalTurnPlacementClaim, "runId">;
       provider: SessionPlacementAdmissionProvider;
-      assertPlacementCurrent: () => void;
+      assertPlacementCurrent: SessionSourceAssertion;
     }>(),
 );
 
 /** Nested entry points consume this run's owner-held admission, never a cached permission. */
 export async function withRequiredSessionPlacement<T>(
   identity: Omit<LocalTurnPlacementClaim, "runId">,
-  options: { config?: OpenClawConfig; assertCurrent?: () => void; signal?: AbortSignal },
+  options: {
+    config?: OpenClawConfig;
+    assertCurrent?: SessionSourceAssertion;
+    signal?: AbortSignal;
+  },
   task: () => Promise<T>,
 ): Promise<T> {
   const inherited = requiredPlacementScope.getStore();
@@ -166,13 +170,13 @@ export async function withRequiredSessionPlacement<T>(
       "Required worker execution needs a real session and an available Gateway placement owner; sessionless model helpers are unsupported.",
     );
   }
-  const assertCurrent = () => {
+  const assertCurrent = composeSessionSourceAssertion([options.assertCurrent], (assertSource) => {
     options.signal?.throwIfAborted();
-    options.assertCurrent?.();
+    assertSource();
     if (state.provider !== provider) {
       throw createAbortError("session placement owner changed during required worker preparation");
     }
-  };
+  });
   assertCurrent();
   return await provider.withRequiredSession(
     identity,
