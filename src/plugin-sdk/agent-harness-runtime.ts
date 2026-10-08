@@ -47,7 +47,10 @@ import { resolveExecModePolicy } from "../infra/exec-approvals-core.js";
 import { maxAsk, minSecurity } from "../infra/exec-approvals-policy.js";
 import type { ImageContent } from "../llm/types.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
-import { captureReplyMessageInjectionTarget } from "../sessions/session-controller.message-injection.js";
+import {
+  canInjectReplyMessageTarget,
+  captureReplyMessageInjectionTarget,
+} from "../sessions/session-controller.message-injection.js";
 import {
   resolveActiveReplyOperationForSessionId,
   resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
@@ -365,7 +368,9 @@ export function queueAgentHarnessMessage(
   options?: EmbeddedAgentQueueMessageOptions,
 ): boolean {
   const operation = resolveActiveReplyOperationForSessionId(sessionId);
-  if (!captureReplyMessageInjectionTarget(operation)) {
+  const target = captureReplyMessageInjectionTarget(operation);
+  // Refuse a steer the active turn cannot take now, such as images for a text-only model.
+  if (!target || !canInjectReplyMessageTarget(target, options)) {
     return false;
   }
   void steerSessionControllerOperation({

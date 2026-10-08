@@ -380,11 +380,11 @@ function resolveReplyMessageInjectionFailure(
   return undefined;
 }
 
-export function beginReplyMessageInjectionTarget(
+// Projects caller options onto the backend queue shape and resolves them against the captured owner.
+function resolveReplyMessageInjectionTarget(
   target: ReplyMessageInjectionTarget,
-  text: string,
-  options?: ReplyMessageInjectionOptions,
-): ReplyMessageInjectionAttempt {
+  options: ReplyMessageInjectionOptions | undefined,
+) {
   const owner = target[replyMessageInjectionTargetOwner];
   const {
     toolAuthorityOverlay,
@@ -412,6 +412,34 @@ export function beginReplyMessageInjectionTarget(
     allowPendingUserInputAnswer,
     assertCurrent,
   });
+  return { owner, queueOptions, resolved };
+}
+
+/** Whether the captured owner would take this exact steer now; nothing is injected. */
+export function canInjectReplyMessageTarget(
+  target: ReplyMessageInjectionTarget,
+  options?: ReplyMessageInjectionOptions,
+): boolean {
+  try {
+    return "injection" in resolveReplyMessageInjectionTarget(target, options).resolved;
+  } catch {
+    // A failed authority projection or assertion is a refusal, not an injection.
+    return false;
+  }
+}
+
+export function beginReplyMessageInjectionTarget(
+  target: ReplyMessageInjectionTarget,
+  text: string,
+  options?: ReplyMessageInjectionOptions,
+): ReplyMessageInjectionAttempt {
+  const { owner, queueOptions, resolved } = resolveReplyMessageInjectionTarget(target, options);
+  const {
+    toolAuthorityOverlay,
+    personalToolParticipant,
+    assertCurrent,
+    allowPendingUserInputAnswer,
+  } = options ?? {};
   if (!("injection" in resolved)) {
     const immediateRejection = {
       status: "rejected" as const,
@@ -447,14 +475,13 @@ export function beginReplyMessageInjectionTarget(
         outcome = Promise.resolve(onCancellationError(error));
       }
     }
-    return {
-      targetRunId: target.runId,
-      acceptance: outcome.then(
-        (result) => result.status === "indeterminate",
-        () => false,
-      ),
-      outcome,
-    };
+    const acceptance = outcome.then(
+      (result) => result.status === "indeterminate",
+      () => false,
+    );
+    // The caller's acceptance settles on a refusal exactly as on a runtime rejection.
+    void acceptance.then((accepted) => queueOptions?.onQueueAccepted?.(accepted));
+    return { targetRunId: target.runId, acceptance, outcome };
   }
   const targetRunId = normalizeOptionalString(resolved.backend.runId);
   const userTurnTranscriptRecorder = queueOptions?.userTurnTranscriptRecorder;

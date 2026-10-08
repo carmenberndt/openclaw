@@ -146,15 +146,21 @@ describe("submitSessionControllerSteer", () => {
         injected = true;
       },
     });
+    const accepted: boolean[] = [];
 
     await expect(
       submitSessionControllerSteer({
         input,
         text: "steer",
-        options: { waitForTranscriptCommit: true },
+        options: {
+          waitForTranscriptCommit: true,
+          onQueueAccepted: (value) => accepted.push(value),
+        },
       }),
     ).resolves.toMatchObject({ status: "rejected", reason: "transcript_commit_wait_unsupported" });
     expect(injected).toBe(false);
+    // The caller's own fallback learns of the refusal through its acceptance callback.
+    expect(accepted).toEqual([false]);
     expectQueued(input);
   });
 

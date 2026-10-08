@@ -54,8 +54,10 @@ live host binding inherit its validated agent; an ambient caller alone does not
 supply ownership. Outside that binding, omitted ownership uses the qualified
 session key or the configured default agent for session activity.
 `queueAgentHarnessMessage` steers through the session controller: it returns
-`true` only when the session's active turn can take a steer now, and it never
-retries a later refusal. A detached attempt has no turn, so the call returns
+`true` only when the session's active turn can take that exact steer now (for
+example, it refuses images for a text-only model), and it never retries a later
+refusal. Once injection is attempted, `onQueueAccepted` reports the outcome,
+including `false` for a refusal. A detached attempt has no turn, so the call returns
 `false` for it. Backends that accept `waitForTranscriptCommit: true` must set
 `supportsTranscriptCommitWait`; otherwise core refuses that wait.
 Unscoped V1 injection retains its existing behavior. Source-bound controls
