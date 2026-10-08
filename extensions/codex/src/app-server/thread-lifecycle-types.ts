@@ -72,6 +72,8 @@ export type CodexStartOrResumeThreadParams = Omit<
   inferenceProviderRoutes?: CodexInferenceProviderRoutes;
   client: CodexAppServerClient;
   abandonClient?: () => Promise<void>;
+  /** Startup observes when a writer handoff is blocked on a retired predecessor's exit. */
+  onRetiredOwnerExitWait?: (waiting: boolean) => void;
   reserveResumeThread?: (threadId: string) => { release: () => void };
   bindingStore: CodexAppServerBindingStore;
   params: AgentHarnessSessionRuntimeParamsV1;

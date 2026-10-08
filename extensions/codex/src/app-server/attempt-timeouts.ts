@@ -19,10 +19,23 @@ export class CodexAppServerStartupError extends Error {
     message = reason === "timed_out"
       ? "codex app-server startup timed out"
       : "codex app-server startup aborted",
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "CodexAppServerStartupError";
   }
+}
+
+/** Names the retired predecessor that other sessions kept alive past this startup. */
+export function explainCodexRetiredOwnerExitStartupError(
+  error: CodexAppServerStartupError,
+): CodexAppServerStartupError {
+  return new CodexAppServerStartupError(
+    error.reason,
+    `${error.message}: this conversation's previous Codex app-server is still finishing ` +
+      "another session's work. Retry after that session's turn ends, or stop it.",
+    { cause: error },
+  );
 }
 
 export function isCodexAppServerStartupError(

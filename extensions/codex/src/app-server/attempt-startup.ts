@@ -18,7 +18,11 @@ import {
 } from "./attempt-client-cleanup.js";
 import { buildCodexPluginThreadConfigEligibilityLogData } from "./attempt-diagnostics.js";
 import { verifyStartupArtifact } from "./attempt-runtime-artifact.js";
-import { CodexAppServerStartupError, withCodexStartupTimeout } from "./attempt-timeouts.js";
+import {
+  CodexAppServerStartupError,
+  explainCodexRetiredOwnerExitStartupError,
+  withCodexStartupTimeout,
+} from "./attempt-timeouts.js";
 import { ensureCodexAppServerClientRuntime } from "./client-runtime.js";
 import { isCodexAppServerConnectionClosedError, type CodexAppServerClient } from "./client.js";
 import { startCodexComputerUseHealthMonitor } from "./computer-use-health.js";
@@ -154,19 +158,32 @@ export async function startCodexAttemptThread(params: {
   let startupClientForAbandonedRequestCleanup: CodexAppServerClient | undefined;
   let releaseStartupResourcesOnTimeout: (() => Promise<void>) | undefined;
   const startupAbandonController = new AbortController();
-  const abandonStartupAcquire = () => startupAbandonController.abort();
-  params.signal.addEventListener("abort", abandonStartupAcquire, { once: true });
+  // A startup blocked on a retired predecessor's exit holds no request on its
+  // own client, so abandoning it there must not retire that healthy client.
+  let waitingOnRetiredOwnerExit = false;
+  let abandonedOnRetiredOwnerExit = false;
+  const abandonStartup = () => {
+    abandonedOnRetiredOwnerExit ||=
+      !startupAbandonController.signal.aborted && waitingOnRetiredOwnerExit;
+    startupAbandonController.abort();
+  };
+  const shouldRetireStartupClient = (error: unknown) =>
+    !abandonedOnRetiredOwnerExit &&
+    shouldRetireCodexStartupClient(error, params.spawnedBy, startupAbandonController.signal);
+  params.signal.addEventListener("abort", abandonStartup, { once: true });
   try {
     const startupResult = await withCodexStartupTimeout({
       timeoutMs: params.startupTimeoutMs,
       signal: params.signal,
       onTimeout: async () => {
-        startupAbandonController.abort();
+        abandonStartup();
         await params.onStartupTimeout();
         await releaseStartupResourcesOnTimeout?.();
         releaseSharedClientLease?.();
         releaseSharedClientLease = undefined;
-        await closeCodexStartupClientBestEffort(startupClientForAbandonedRequestCleanup);
+        if (!abandonedOnRetiredOwnerExit) {
+          await closeCodexStartupClientBestEffort(startupClientForAbandonedRequestCleanup);
+        }
         startupClientForAbandonedRequestCleanup = undefined;
       },
       operation: async () => {
@@ -495,6 +512,9 @@ export async function startCodexAttemptThread(params: {
                 appServerRuntimeFingerprint,
                 contextEngineProjection: params.contextEngineProjection,
                 signal,
+                onRetiredOwnerExitWait: (waiting) => {
+                  waitingOnRetiredOwnerExit = waiting;
+                },
                 pluginThreadConfig: pluginThreadConfigRequired
                   ? createCodexPluginThreadConfigStartupProvider({
                       inputFingerprint: pluginThreadConfigInputFingerprint,
@@ -605,13 +625,7 @@ export async function startCodexAttemptThread(params: {
                 releaseSharedClientLease = undefined;
               }
               startupClientLease?.();
-              if (
-                shouldRetireCodexStartupClient(
-                  startupAttemptError,
-                  params.spawnedBy,
-                  startupAbandonController.signal,
-                )
-              ) {
+              if (shouldRetireStartupClient(startupAttemptError)) {
                 if (startupClientForAbandonedRequestCleanup === startupClient) {
                   startupClientForAbandonedRequestCleanup = undefined;
                 }
@@ -704,14 +718,17 @@ export async function startCodexAttemptThread(params: {
       releaseSharedClientLease,
     };
   } catch (error) {
-    if (shouldRetireCodexStartupClient(error, params.spawnedBy, startupAbandonController.signal)) {
+    if (shouldRetireStartupClient(error)) {
       releaseSharedClientLease?.();
       releaseSharedClientLease = undefined;
       await closeCodexStartupClientBestEffort(startupClientForAbandonedRequestCleanup);
       startupClientForAbandonedRequestCleanup = undefined;
     }
+    if (abandonedOnRetiredOwnerExit && error instanceof CodexAppServerStartupError) {
+      throw explainCodexRetiredOwnerExitStartupError(error);
+    }
     throw error;
   } finally {
-    params.signal.removeEventListener("abort", abandonStartupAcquire);
+    params.signal.removeEventListener("abort", abandonStartup);
   }
 }

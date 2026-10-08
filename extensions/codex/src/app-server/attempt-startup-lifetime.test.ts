@@ -9,6 +9,7 @@ import {
   createAttemptPaths,
   createAttemptClientHarness,
   createAttemptThreadStarter,
+  readHarnessMessages,
   readHarnessRequestMethods,
   waitForRequest,
   waitForThreadStart,
@@ -36,10 +37,12 @@ import {
   resetCodexTestBindingStore,
   testCodexAppServerBindingStore,
 } from "./session-binding.test-helpers.js";
+import * as sharedClient from "./shared-client.js";
 import {
   clearSharedCodexAppServerClientAndWait,
   getLeasedSharedCodexAppServerClient,
   releaseLeasedSharedCodexAppServerClient,
+  retireSharedCodexAppServerClientIfCurrent,
 } from "./shared-client.js";
 import { createInferenceReadyClientHarness } from "./test-support.js";
 
@@ -293,6 +296,163 @@ describe("Codex runtime startup resource lifetime", () => {
         releaseCapture.resolve();
         harness.close();
       }
+    },
+  );
+});
+
+describe("startup after the bound shared client was retired", () => {
+  beforeEach(async () => {
+    vi.stubEnv("CODEX_API_KEY", "");
+    vi.stubEnv("OPENAI_API_KEY", "");
+    await clearSharedCodexAppServerClientAndWait();
+    setManagedCodexPluginRoot(fileURLToPath(new URL("../../", import.meta.url)));
+    defaultCodexPluginMetadataCache.clear();
+    resetCodexTestBindingStore();
+  });
+
+  afterEach(async () => {
+    await clearSharedCodexAppServerClientAndWait();
+    setManagedCodexPluginRoot(undefined);
+    defaultCodexPluginMetadataCache.clear();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    for (const root of tempRoots) {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+    tempRoots.clear();
+  });
+
+  it.each(["timeout", "stop"] as const)(
+    "ends a predecessor-exit wait on %s without retiring its own client",
+    async (ending) => {
+      const retired = createAttemptClientHarness();
+      const replacement = createAttemptClientHarness();
+      vi.spyOn(CodexAppServerClient, "start")
+        .mockResolvedValueOnce(retired.client)
+        .mockResolvedValueOnce(replacement.client);
+      const appServer = resolveCodexAppServerRuntimeOptions({ pluginConfig });
+      const paths = createAttemptPaths(tempRoots);
+
+      // Another session's long-running turn leases the same shared client.
+      const siblingLease = getLeasedSharedCodexAppServerClient({
+        startOptions: appServer.start,
+        agentDir: paths.agentDir,
+      });
+      await answerInitialize(retired);
+      await expect(siblingLease).resolves.toBe(retired.client);
+
+      // This session's turn binds its thread to that client.
+      const first = startThreadWithHarness(5_000, new AbortController().signal, {
+        harness: retired,
+        paths,
+        skipStartSpy: true,
+      });
+      const threadStart = await waitForThreadStart(retired);
+      retired.send({ id: threadStart.id, result: threadStartResult() });
+      const started = await first.run;
+      // Cleanup that could not release the subscription retired the client and
+      // dropped this attempt's lease; only the sibling keeps it running.
+      started.thread.liveThreadOwnership?.forget();
+      retireSharedCodexAppServerClientIfCurrent(started.client);
+      started.releaseSharedClientLease();
+      expect(retired.process.stdin.destroyed).toBe(false);
+
+      // Writer handoff to the retired owner must wait for its exit.
+      const exitWaits = [createDeferred<void>(), createDeferred<void>()] as const;
+      let retains = 0;
+      const retain = sharedClient.retainSharedCodexAppServerClientByInstanceId;
+      vi.spyOn(sharedClient, "retainSharedCodexAppServerClientByInstanceId").mockImplementation(
+        async (clientId) => {
+          const owner = await retain(clientId);
+          const waitStarted = exitWaits[retains++];
+          assert(waitStarted, "only two startups hand off the retired owner's thread");
+          return (
+            owner && {
+              ...owner,
+              release: (waitForRetirement?: boolean) => {
+                const exit = owner.release(waitForRetirement);
+                if (exit) {
+                  waitStarted.resolve();
+                }
+                return exit;
+              },
+            }
+          );
+        },
+      );
+      const answerThreadRead = async () => {
+        const reads = readHarnessMessages(replacement.writes).length;
+        await vi.waitFor(
+          () =>
+            expect(
+              readHarnessMessages(replacement.writes.slice(reads)).some(
+                ({ method }) => method === "thread/read",
+              ),
+            ).toBe(true),
+          { interval: 1, timeout: 5_000 },
+        );
+        const read = readHarnessMessages(replacement.writes.slice(reads)).find(
+          ({ method }) => method === "thread/read",
+        );
+        // The retired owner unloaded the thread once this session stopped writing.
+        const thread = { ...threadStartResult().thread, status: { type: "notLoaded" } };
+        replacement.send({ id: read?.id, result: { thread } });
+      };
+
+      const stop = new AbortController();
+      const stopThird = new AbortController();
+      let third: ReturnType<typeof startThreadWithHarness> | undefined;
+      try {
+        if (ending === "timeout") {
+          vi.useFakeTimers();
+        }
+        const abandoned = startThreadWithHarness(30_000, stop.signal, {
+          harness: replacement,
+          paths,
+          skipStartSpy: true,
+        });
+        const failure = abandoned.run.then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        await answerInitialize(replacement);
+        await answerThreadRead();
+        await exitWaits[0].promise;
+        if (ending === "timeout") {
+          await vi.advanceTimersByTimeAsync(30_000);
+          vi.useRealTimers();
+        } else {
+          stop.abort("user stop");
+        }
+        const error = await failure;
+        expect(replacement.process.stdin.destroyed).toBe(false);
+        expect(error).toMatchObject({
+          name: "CodexAppServerStartupError",
+          reason: ending === "timeout" ? "timed_out" : "aborted",
+          message: expect.stringContaining("previous Codex app-server is still finishing"),
+        });
+        expect(readHarnessRequestMethods(replacement)).not.toContain("thread/resume");
+
+        // The abandoned startup released the thread queue and binding lease, so the
+        // next turn reaches the same exit wait on the same healthy client.
+        third = startThreadWithHarness(30_000, stopThird.signal, {
+          harness: replacement,
+          paths,
+          skipStartSpy: true,
+        });
+        await answerThreadRead();
+        await exitWaits[1].promise;
+        expect(retired.process.stdin.destroyed).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        expect(releaseLeasedSharedCodexAppServerClient(retired.client)).toBe(true);
+      }
+      // The predecessor exits once its last sibling lease drains; the handoff proceeds.
+      assert(third, "the next startup must have started");
+      await vi.waitFor(() => expect(retired.process.stdin.destroyed).toBe(true));
+      await waitForRequest(replacement, "thread/resume");
+      stopThird.abort("test complete");
+      await expect(third.run).rejects.toThrow("codex app-server startup aborted");
     },
   );
 });

@@ -133,6 +133,8 @@ export async function startOrResumeThread(
       threadId: string,
       ownerClientId = initialBoundClientId,
       assertCurrent?: () => void,
+      // A wait before this startup writes leaves its own client with no work in flight.
+      beforeStartupWrite = true,
     ) =>
       releaseCodexBoundLiveThread({
         client: params.client,
@@ -143,6 +145,8 @@ export async function startOrResumeThread(
         threadId,
         assertCurrent,
         withCurrent: authority.withCurrent,
+        signal: params.signal,
+        onRetiredOwnerExitWait: beforeStartupWrite ? params.onRetiredOwnerExitWait : undefined,
       });
     if (binding?.pendingSupervisionBranch) {
       const requestContext = await prepareRequestContext();
@@ -647,7 +651,12 @@ export async function startOrResumeThread(
     });
     if (replacementPredecessor && !preserveExistingBinding && configuredMcpOwnershipChanged) {
       // Configured MCP migration retains the prior subscription until its replacement commits.
-      await releaseRetainedThread(replacementPredecessor.threadId, replacementPredecessor.clientId);
+      await releaseRetainedThread(
+        replacementPredecessor.threadId,
+        replacementPredecessor.clientId,
+        undefined,
+        false,
+      );
     }
     return publishCodexThreadInferenceBinding(params, started);
   });
