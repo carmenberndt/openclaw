@@ -30,25 +30,87 @@ function family(source) {
   );
 }
 
-function processIdentity(entrypoint) {
-  if (!entrypoint || !fs.existsSync(entrypoint)) {
+function isRuntimeEntrypoint(relative) {
+  return relative === "openclaw.mjs" || relative.startsWith("dist/");
+}
+
+function readIdentityAtRoot(root, file, relative) {
+  const manifest = fs.readFileSync(path.join(root, "package.json"));
+  const build = fs.readFileSync(path.join(root, "dist/build-info.json"));
+  const info = JSON.parse(build.toString("utf8"));
+  return {
+    root,
+    version: info.version,
+    commit: info.commit,
+    entrypoint: relative,
+    entrypointSha256: hash(fs.readFileSync(file)),
+    manifestSha256: hash(manifest),
+    buildInfoSha256: hash(build),
+  };
+}
+
+export function readSnapshotProcessIdentity(entrypoint, expected, admittedRoot) {
+  if (!entrypoint) {
     return undefined;
   }
-  const file = fs.realpathSync(entrypoint);
+  const requested = path.resolve(entrypoint);
+  const relative = (file) => path.relative(admittedRoot, file).split(path.sep).join("/");
+  // Preserve selection from the already verified Doctor root, not mutable
+  // package metadata. Resolve parent aliases even when the entry was removed.
+  let selectedRelative =
+    admittedRoot && isRuntimeEntrypoint(relative(requested)) ? relative(requested) : undefined;
+  let resolved;
+  if (admittedRoot) {
+    let ancestor = requested;
+    const missing = [];
+    while (!fs.lstatSync(ancestor, { throwIfNoEntry: false })) {
+      const parent = path.dirname(ancestor);
+      assert(parent !== ancestor, "Runtime argument has no existing ancestor");
+      missing.unshift(path.basename(ancestor));
+      ancestor = parent;
+    }
+    const viaAncestor = path.join(fs.realpathSync(ancestor), ...missing);
+    if (isRuntimeEntrypoint(relative(viaAncestor))) {
+      selectedRelative ??= relative(viaAncestor);
+    }
+    if (!missing.length) {
+      resolved = viaAncestor;
+    }
+  }
+  if (!fs.lstatSync(requested, { throwIfNoEntry: false })) {
+    assert(selectedRelative === undefined, "Selected candidate runtime is missing");
+    return undefined;
+  }
+  const file = resolved ?? fs.realpathSync(requested);
+  const actualRelative = admittedRoot ? relative(file) : undefined;
+  if (selectedRelative !== undefined || (actualRelative && isRuntimeEntrypoint(actualRelative))) {
+    assert(
+      actualRelative && isRuntimeEntrypoint(actualRelative),
+      "Selected runtime escaped its admitted package",
+    );
+    assert(fs.statSync(file).isFile(), "Selected candidate runtime is not a regular file");
+    return bindSnapshotRuntimeIdentity(
+      readIdentityAtRoot(admittedRoot, file, actualRelative),
+      expected,
+    );
+  }
+  // Eval/print probes can pass directories as argv[1]. They are not selected
+  // application invocations; never try to hash them as executable files.
+  if (!fs.statSync(file).isFile()) {
+    return undefined;
+  }
   for (let root = path.dirname(file), depth = 0; depth < 5; root = path.dirname(root), depth++) {
     const manifest = path.join(root, "package.json");
     const build = path.join(root, "dist/build-info.json");
     if (fs.existsSync(manifest) && fs.existsSync(build) && readJson(manifest).name === "openclaw") {
-      const info = readJson(build);
-      return {
+      const identity = readIdentityAtRoot(
         root,
-        version: info.version,
-        commit: info.commit,
-        entrypoint: path.relative(root, file),
-        entrypointSha256: hash(fs.readFileSync(file)),
-        manifestSha256: hash(fs.readFileSync(manifest)),
-        buildInfoSha256: hash(fs.readFileSync(build)),
-      };
+        file,
+        path.relative(root, file).split(path.sep).join("/"),
+      );
+      return expected && identity.commit === expected.buildInfo.commit
+        ? bindSnapshotRuntimeIdentity(identity, expected)
+        : identity;
     }
   }
   return undefined;
@@ -113,7 +175,7 @@ export function observeSnapshotNativeBackups(sourcePath, onAcquisition) {
 export function bindSnapshotRuntimeIdentity(identity, expected) {
   // NODE_OPTIONS reaches npm lifecycle scripts too. Only packaged application
   // entrypoints belong to this observer; unknown dist workers still fail closed.
-  if (identity.entrypoint !== "openclaw.mjs" && !identity.entrypoint.startsWith("dist/")) {
+  if (!isRuntimeEntrypoint(identity.entrypoint)) {
     return undefined;
   }
   assert.equal(identity.entrypointSha256, expected.files[identity.entrypoint]?.sha256);
@@ -130,7 +192,15 @@ function installFault() {
   assert.equal(process.platform, "linux");
   assert(fs.existsSync("/.dockerenv"), "Snapshot fault injection requires disposable Docker state");
   const fixture = readJson(path.join(artifacts, fixtureName));
-  let identity = processIdentity(process.argv[1]);
+  const expected = readJson(path.join(artifacts, "snapshot-cleanup-candidate-identity.json"));
+  const admittedDoctor = doctorAncestor(artifacts);
+  if (admittedDoctor) {
+    assert.equal(admittedDoctor.fullPayloadVerified, true);
+    assert.equal(admittedDoctor.identity.commit, fixture.candidateCommit);
+    assert.equal(admittedDoctor.identity.payloadSha256, hash(JSON.stringify(expected)));
+  }
+  const admittedRoot = admittedDoctor?.identity.root;
+  const identity = readSnapshotProcessIdentity(process.argv[1], expected, admittedRoot);
   if (!identity) {
     return;
   }
@@ -143,11 +213,6 @@ function installFault() {
   if (identity.commit !== fixture.candidateCommit) {
     return;
   }
-  const expected = readJson(path.join(artifacts, "snapshot-cleanup-candidate-identity.json"));
-  identity = bindSnapshotRuntimeIdentity(identity, expected);
-  if (!identity) {
-    return;
-  }
   if (isMainThread && role === "doctor") {
     assertWorkerCellPackageIdentity(readWorkerCellPackageIdentity(identity.root), expected);
     writeJson(path.join(artifacts, "snapshot-cleanup-doctor-" + process.pid + ".json"), {
@@ -158,6 +223,8 @@ function installFault() {
       fullPayloadVerified: true,
     });
   }
+  // The owned service keeps only heap options; retain the probe stack budget here.
+  Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 32);
   const descriptors = new Map();
   const open = fs.openSync.bind(fs);
   const close = fs.closeSync.bind(fs);

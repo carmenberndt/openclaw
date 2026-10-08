@@ -24,6 +24,7 @@ import {
   seedPublishedDriverLegacySqlite,
   seedPublishedDriverSessionSources,
 } from "./published-driver-sqlite.mjs";
+import { createServiceProbe } from "./service-probe.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const [candidateArg, artifactsArg, driverTag = "latest", scenario = "base"] = process.argv.slice(2);
@@ -93,7 +94,10 @@ function writeJson(name, value) {
 async function run(name, command, args, allowFailure = false) {
   const started = Date.now();
   const diagnostic =
-    name === "recorded-run" || name === "stop-service" || name === "capture-diagnostics";
+    name === "recorded-run" ||
+    name === "stop-service" ||
+    name === "capture-diagnostics" ||
+    name.startsWith("service-probe-restore");
   const deadline = diagnostic ? cellDeadline - 5_000 : workDeadline;
   const cap = name === "stop-service" ? 5_000 : diagnostic ? 20_000 : Infinity;
   // Each managed command can spend another 5s terminating and 5s draining.
@@ -213,6 +217,7 @@ async function ready(name, port) {
 process.exitCode = await runCancelableCommand(async (signal) => {
   commandSignal = signal;
   let fixtureInstalled = false;
+  let snapshotProbe;
   const failures = [];
   try {
     let driverVersion = driverTag;
@@ -492,22 +497,24 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         baseline: snapshotBaseline,
         gatewayPid: Number(beforePid.trim()),
       });
-      env.OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT = artifacts;
-      env.NODE_OPTIONS =
-        "--stack-trace-limit=32 --import=" +
-        fileURLToPath(new URL("./snapshot-cleanup-refusal.mjs", import.meta.url));
+      snapshotProbe = createServiceProbe({
+        run,
+        bin,
+        artifacts,
+        env,
+        preload: fileURLToPath(new URL("./snapshot-cleanup-refusal.mjs", import.meta.url)),
+        selectors: { OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT: artifacts },
+      });
+      await snapshotProbe.install();
       writeJson("snapshot-cleanup-candidate", {
         build,
         sha256: createHash("sha256").update(fs.readFileSync(candidate)).digest("hex"),
       });
     }
     try {
-      update = await run(
-        "update",
-        "openclaw",
-        ["update", "--tag", candidatePackage, "--yes", "--json"],
-        true,
-      );
+      const execute = () =>
+        run("update", "openclaw", ["update", "--tag", candidatePackage, "--yes", "--json"], true);
+      update = snapshotProbe ? await snapshotProbe.withCaller(execute) : await execute();
       if (update.exitCode !== 0) {
         updateFailure = Object.assign(new Error("Published updater failed"), {
           command: "update",
@@ -517,7 +524,6 @@ process.exitCode = await runCancelableCommand(async (signal) => {
     } catch (error) {
       updateFailure = toErrorObject(error, "Published updater failed");
     }
-    delete env.NODE_OPTIONS;
     if (snapshotCleanupRefusal) {
       if (updateFailure && hasUnjoinedWork(updateFailure)) {
         throw updateFailure;
@@ -653,6 +659,7 @@ process.exitCode = await runCancelableCommand(async (signal) => {
       failures.push(error);
     }
   }
+  let serviceStopped = false;
   if (!failures.some(hasUnjoinedWork) && fixtureInstalled) {
     try {
       await run("stop-service", path.join(bin, "systemctl"), [
@@ -660,10 +667,13 @@ process.exitCode = await runCancelableCommand(async (signal) => {
         "stop",
         "openclaw-gateway.service",
       ]);
+      serviceStopped = true;
     } catch (error) {
       failures.push(error);
     }
   }
+  const probeRetained =
+    (await snapshotProbe?.finish({ failures, serviceStopped }))?.retained ?? false;
   if (snapshotCleanupRefusal && !failures.some(hasUnjoinedWork)) {
     try {
       const { writeSnapshotCleanupEvidence } = await import("./snapshot-cleanup-refusal.mjs");
@@ -679,7 +689,10 @@ process.exitCode = await runCancelableCommand(async (signal) => {
       failures.push(error);
     }
   }
-  if (failures.some((error) => hasUnjoinedWork(error) || error.command === "stop-service")) {
+  if (
+    probeRetained ||
+    failures.some((error) => hasUnjoinedWork(error) || error.command === "stop-service")
+  ) {
     writeJson("retained-runtime", {
       runtime,
       reason: "Owned work or service cleanup did not settle",

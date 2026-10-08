@@ -1,17 +1,19 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import sqlite, { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { publishDiagnostics } from "../../scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 import {
   assertSnapshotCleanupRefusal,
   bindSnapshotRuntimeIdentity,
   observeSnapshotNativeBackups,
+  readSnapshotProcessIdentity,
   writeSnapshotCleanupEvidence,
 } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-refusal.mjs";
+import { readWorkerCellPackageIdentity } from "../../scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs";
 import { redactSensitiveText } from "../../src/logging/redact.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -687,6 +689,19 @@ it.each(["failed", "timeout", "passed"] as const)(
     write("snapshot-cleanup-candidate-identity.json", { privatePackageInventory: true });
     writeSnapshotCleanupEvidence(artifacts);
     write("update.stdout", { status: "error", reason: "fixture failure before fault" });
+    const probePhases = [
+      "service-probe-install",
+      "service-probe-reload",
+      "service-probe-verify",
+      "service-probe-restore",
+      "service-probe-restore-reload",
+      "service-probe-restore-verify",
+    ];
+    for (const phase of probePhases) {
+      write(phase + ".stdout", { unitSha256: "c".repeat(64) });
+      writeFileSync(join(artifacts, phase + ".stderr"), "synthetic probe diagnostic");
+      write(phase + "-exit.json", { exitCode: 0, processTreeState: "terminated" });
+    }
     writeFileSync(join(artifacts, "update.stderr"), "Authorization: Bearer snapshot-fixture-token");
     write("summary.json", {
       status: "passed",
@@ -731,6 +746,11 @@ it.each(["failed", "timeout", "passed"] as const)(
       expect(report.exitStatus).toBe(outcome === "timeout" ? 124 : 1);
     }
     expect(JSON.parse(report.logs["update.stdout"]).reason).toBe("fixture failure before fault");
+    for (const phase of probePhases) {
+      expect(JSON.parse(report.logs[phase + ".stdout"]).unitSha256).toBe("c".repeat(64));
+      expect(report.logs[phase + ".stderr"]).toBe("synthetic probe diagnostic");
+      expect(JSON.parse(report.logs[phase + "-exit.json"]).processTreeState).toBe("terminated");
+    }
     expect(JSON.parse(report.logs["snapshot-cleanup-evidence.json"])).toEqual({
       "snapshot-cleanup-candidate.json": { sha256: "b".repeat(64) },
       "snapshot-cleanup-driver.json": { identity: { commit: "a".repeat(40) } },
@@ -781,4 +801,110 @@ it("retains a settled updater timeout before reading snapshot proof", () => {
   }
   expect(actual).toBe(failure);
   expect(actual).toMatchObject({ exitCode: 124, command: "update" });
+});
+
+function admittedRuntimeFixture(version = "2026.9.8", commit = "a".repeat(40)) {
+  const root = fs.realpathSync(tempDirs.make("snapshot-admitted-runtime-"));
+  mkdirSync(join(root, "dist"));
+  const entry = join(root, "openclaw.mjs");
+  writeFileSync(entry, "export const fixture = true;");
+  writeFileSync(join(root, "package.json"), JSON.stringify({ name: "openclaw", version }));
+  writeFileSync(join(root, "dist", "build-info.json"), JSON.stringify({ version, commit }));
+  mkdirSync(join(root, "dist", "native"));
+  writeFileSync(join(root, "dist", "native", "worker.mjs"), "export const worker = true;");
+  return { root, entry, expected: readWorkerCellPackageIdentity(root) };
+}
+
+it("classifies admitted runtime aliases separately from lifecycle and eval probe arguments", () => {
+  const f = admittedRuntimeFixture();
+  const alias = join(tempDirs.make("snapshot-cli-link-"), "package");
+  fs.symlinkSync(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  const dependency = join(f.root, "node_modules", "koffi");
+  mkdirSync(dependency, { recursive: true });
+  const lifecycle = join(f.root, "scripts", "preinstall.mjs");
+  mkdirSync(join(f.root, "scripts"));
+  writeFileSync(lifecycle, "export const lifecycle = true;");
+  // The native dependency probe occurs before Doctor admission; the same data
+  // argument remains unrelated if inherited below an already admitted Doctor.
+  expect(readSnapshotProcessIdentity(dependency, f.expected)).toBeUndefined();
+  expect(readSnapshotProcessIdentity(dependency, f.expected, f.root)).toBeUndefined();
+  expect(readSnapshotProcessIdentity(lifecycle, f.expected, f.root)).toBeUndefined();
+  for (const entry of [f.entry, join(alias, "openclaw.mjs")]) {
+    expect(readSnapshotProcessIdentity(entry, f.expected, f.root)).toMatchObject({
+      root: f.root,
+      commit: f.expected.buildInfo.commit,
+      entrypoint: "openclaw.mjs",
+      payloadSha256: expect.any(String),
+    });
+  }
+  for (const [version, commit] of [
+    ["2026.9.7", "b".repeat(40)],
+    ["2026.9.9", "c".repeat(40)],
+  ]) {
+    const other = admittedRuntimeFixture(version, commit);
+    const identity = readSnapshotProcessIdentity(other.entry, f.expected, f.root);
+    expect(identity).toMatchObject({ version, commit });
+    expect(identity).not.toHaveProperty("payloadSha256");
+  }
+});
+
+it.each(["missing", "directory", "bytes", "manifest", "build", "missing-build"])(
+  "refuses an admitted selected runtime after %s changes",
+  (change) => {
+    const f = admittedRuntimeFixture();
+    if (change === "missing" || change === "directory") {
+      fs.unlinkSync(f.entry);
+      if (change === "directory") {
+        mkdirSync(f.entry);
+      }
+    } else if (change === "bytes") {
+      writeFileSync(f.entry, "export const replaced = true;");
+    } else if (change === "manifest") {
+      writeFileSync(join(f.root, "package.json"), JSON.stringify({ name: "other-package" }));
+    } else if (change === "missing-build") {
+      fs.unlinkSync(join(f.root, "dist", "build-info.json"));
+    } else {
+      writeFileSync(
+        join(f.root, "dist", "build-info.json"),
+        JSON.stringify({ version: "2026.9.7", commit: "b".repeat(40) }),
+      );
+    }
+    expect(() => readSnapshotProcessIdentity(f.entry, f.expected, f.root)).toThrow();
+  },
+);
+
+it("propagates an admitted runtime read denial instead of declining the observation", () => {
+  const f = admittedRuntimeFixture();
+  const failure = Object.assign(new Error("fixture read denied"), { code: "EACCES" });
+  const read = vi.spyOn(fs, "readFileSync").mockImplementation(() => {
+    throw failure;
+  });
+  try {
+    expect(() => readSnapshotProcessIdentity(f.entry, f.expected, f.root)).toThrow(failure);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+it("rejects a selected alias retargeted to an unlisted runtime with identical bytes", () => {
+  const f = admittedRuntimeFixture();
+  const selected = join(f.root, "dist", "native");
+  const replacement = join(f.root, "dist", "alternate");
+  mkdirSync(replacement);
+  writeFileSync(join(replacement, "worker.mjs"), readFileSync(join(selected, "worker.mjs")));
+  fs.rmSync(selected, { recursive: true });
+  fs.symlinkSync(replacement, selected, process.platform === "win32" ? "junction" : "dir");
+  expect(() =>
+    readSnapshotProcessIdentity(join(selected, "worker.mjs"), f.expected, f.root),
+  ).toThrow();
+});
+
+it("retains admitted selection through an alias after runtime parents disappear", () => {
+  const f = admittedRuntimeFixture();
+  const alias = join(tempDirs.make("snapshot-missing-parent-alias-"), "package");
+  fs.symlinkSync(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  fs.rmSync(join(f.root, "dist"), { recursive: true });
+  expect(() =>
+    readSnapshotProcessIdentity(join(alias, "dist", "native", "worker.mjs"), f.expected, f.root),
+  ).toThrow();
 });

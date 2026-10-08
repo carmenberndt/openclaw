@@ -75,6 +75,14 @@ const snapshotCleanupLogs = [
   "snapshot-cleanup-candidate.json",
   "snapshot-cleanup-evidence.json",
   "snapshot-cleanup-proof.json",
+  ...[
+    "service-probe-install",
+    "service-probe-reload",
+    "service-probe-verify",
+    "service-probe-restore",
+    "service-probe-restore-reload",
+    "service-probe-restore-verify",
+  ].flatMap((phase) => [`${phase}.stdout`, `${phase}.stderr`, `${phase}-exit.json`]),
 ];
 const logNames = [
   ...snapshotCleanupLogs,
