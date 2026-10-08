@@ -1318,12 +1318,7 @@ describe("talk.config handler", () => {
   });
 
   defineRealtimeConfigProjectionTests(async (runtimeConfig, includeSecrets) => {
-    mocks.readConfigFileSnapshot.mockResolvedValue({
-      path: "/tmp/openclaw.json",
-      hash: "test-hash",
-      valid: true,
-      config: runtimeConfig,
-    });
+    setSourceConfig(runtimeConfig);
     mocks.listRealtimeVoiceProviders.mockReturnValue([]);
     const respond = vi.fn();
     await callTalkHandler("talk.config", {

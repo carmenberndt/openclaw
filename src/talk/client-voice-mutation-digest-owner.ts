@@ -477,7 +477,10 @@ export function createClientVoiceMutationDigestDeliveryOptions(
 ): MutationDigestOptions<MutationDigestContext> {
   return {
     captureAttempt: (context) => captureAttempt(context.source.settlementContext),
-    matchesRetryContext: sameMutationDigestSource,
+    // The same file can reopen under a different shared-state admission.
+    matchesRetryContext: (previous, next) =>
+      sameMutationDigestSource(previous, next) &&
+      previous.source.settlementContext.admission === next.source.settlementContext.admission,
     deliveryState: ({ delivery }) =>
       delivery?.confirmed !== undefined
         ? "confirmed"

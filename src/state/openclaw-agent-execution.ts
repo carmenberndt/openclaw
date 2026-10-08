@@ -19,10 +19,6 @@ import * as creationClaims from "./agent-creation-claim.js";
 import { AgentDatabaseExecutionAdmissionClosedError } from "./agent-database-admission-error.js";
 import { captureAgentDatabaseAdmission } from "./agent-database-admission.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import {
-  isOpenClawAgentDatabasePathCurrent,
-  readOpenClawAgentDatabaseIdentity,
-} from "./openclaw-agent-db-identity.js";
 import { agentDatabaseLifecycle } from "./openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
@@ -44,6 +40,7 @@ import {
   assertAgentDatabaseExecutionSharedState,
   assertBorrowedAgentDatabaseFileIdentity,
   captureBorrowedAgentDatabaseGenerationClaim,
+  captureNativeAgentDatabaseExecutionIdentity,
   supportsAgentDatabaseExecutionScope,
   supportsOpenClawAgentDatabaseExecution,
 } from "./openclaw-agent-execution-scope.js";
@@ -469,37 +466,19 @@ function createAgentDatabaseExecution(
         },
         async adoptNativeDatabase(database) {
           const adoption = (async () => {
-            assertBorrowed();
-            const native = readOpenClawAgentDatabaseIdentity(database);
-            const assertNativeCurrent = () => {
-              assertBorrowed();
-              if (
-                database.agentId !== agentId ||
-                agentDatabaseLifecycle.databases.get(database.path) !== database ||
-                readOpenClawAgentDatabaseIdentity(database) !== native ||
-                native.canonicalPath !== identity.canonicalPath ||
-                !isOpenClawAgentDatabasePathCurrent(database)
-              ) {
-                throw new Error("Agent execution cannot adopt a different native database owner");
-              }
-            };
-            assertNativeCurrent();
-            if (typeof native.identity !== "string") {
-              throw new Error("Agent execution requires an admitted native file");
-            }
+            const native = captureNativeAgentDatabaseExecutionIdentity(
+              database,
+              agentId,
+              identity.canonicalPath,
+              assertBorrowed,
+            );
             // A refused prepare can retain an unopened generation with the old absence witness.
             if (generation && !fileIdentity) {
               await closeNative(generation);
-              assertNativeCurrent();
+              native.assertCurrent();
             }
-            const received: AgentDatabaseExecutionFileIdentity = {
-              kind: "file",
-              physicalIdentity: native.identity,
-              birthtime: native.birthtime,
-              nativeLocation: native.canonicalPath,
-            };
-            assertReferenceCurrent(received);
-            acceptFileIdentity(received);
+            assertReferenceCurrent(native.fileIdentity);
+            acceptFileIdentity(native.fileIdentity);
           })();
           pending.add(adoption);
           try {

@@ -920,6 +920,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/talk/client-voice-confirmation-lifecycle.test.ts",
   "src/talk/client-voice-confirmation-transcript.test.ts",
   "src/talk/client-voice-session.digest-retry.test.ts",
+  "src/talk/client-voice-session.digest-source.test.ts",
   "src/talk/client-voice-session.test.ts",
   "src/talk/client-voice-session.worker.test.ts",
   "src/talk/voice-consult-transcript-race.test.ts",
