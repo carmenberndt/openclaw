@@ -37,7 +37,12 @@ export type CurrentTranscriptProjection = {
   database: TranscriptReadDatabase;
   generation: string | undefined;
   hasUnindexedPrefix: boolean;
-  latestIndexedReset?: { active_position: number; event_type: "reset"; seq: number } | null;
+  latestIndexedReset?: {
+    active_position: number;
+    event_id: string;
+    event_type: "reset";
+    seq: number;
+  } | null;
   unindexedHistoryControls?: {
     coveredThrough: number;
     rows: readonly UnindexedHistoryControl[];
@@ -307,6 +312,11 @@ function buildProjectionSnapshotQuery(
             .limit(1),
         ),
     )
+    .leftJoin("transcript_event_identities as latest_reset_identity", (join) =>
+      join
+        .onRef("latest_reset_identity.session_id", "=", "target.session_id")
+        .onRef("latest_reset_identity.seq", "=", "latest_reset.event_seq"),
+    )
     .select([
       "watermark.generation",
       "state.active_event_count",
@@ -316,6 +326,7 @@ function buildProjectionSnapshotQuery(
       "state.needs_rebuild",
       "latest_reset.active_position as reset_active_position",
       "latest_reset.event_seq as reset_seq",
+      "latest_reset_identity.event_id as reset_event_id",
     ])
     .select((eb) => [
       eb
@@ -383,9 +394,12 @@ function readProjectionSnapshot(database: TranscriptReadDatabase, sessionId: str
     generation: row.generation ?? undefined,
     hasUnclassified: Boolean(row.has_unclassified),
     latestIndexedReset:
-      typeof row.reset_seq === "number" && typeof row.reset_active_position === "number"
+      typeof row.reset_seq === "number" &&
+      typeof row.reset_active_position === "number" &&
+      typeof row.reset_event_id === "string"
         ? {
             active_position: row.reset_active_position,
+            event_id: row.reset_event_id,
             event_type: "reset" as const,
             seq: row.reset_seq,
           }
