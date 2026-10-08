@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { withSessionTurn } from "./session-controller.admission.js";
-import { captureSessionTarget } from "./session-controller.lifecycle.js";
+import { captureSessionTarget, runSessionMutation } from "./session-controller.lifecycle.js";
 import {
+  claimSessionControllerTask,
   releaseSessionControllerClaim,
   reserveSessionControllerSource,
   retireSessionControllerInput,
@@ -17,6 +18,62 @@ import {
 
 afterEach(() => {
   sessionControllers.clear();
+});
+
+it("runs a turn its own mutation requests ahead of the inputs that mutation keeps waiting", async () => {
+  // sessions.compact owns no turn: it fences an idle session with a compaction
+  // mutation, then manual compaction requests its controller turn from inside it.
+  const target = captureSessionTarget({
+    storeScope: "/synthetic/mutation-owned-turn/sessions.json",
+    sessionKey: "agent:main:mutation-owned-turn",
+    incarnation: "mutation-owned-turn-session",
+  });
+  const order: string[] = [];
+  const cancel = new AbortController();
+  const kept = reserveSessionControllerSource(target.sessionKey, {
+    target,
+    policy: { mode: "followup" },
+  });
+  const compaction = runSessionMutation({
+    target,
+    kind: "compaction",
+    policy: "preempt",
+    preempt: { activeRun: "abort-if-abortable", waitingInputs: "keep" },
+    run: async () => {
+      const turn = withSessionTurn(
+        {
+          sessionKey: target.sessionKey,
+          sessionId: target.incarnation,
+          target,
+          abortSignal: cancel.signal,
+        },
+        async (operation) => {
+          order.push("mutation turn");
+          return operation?.key;
+        },
+      );
+      void turn.catch(() => {});
+      // The selector claims synchronously, so a refused turn is visible here instead of hanging.
+      const selected = getSessionControllerEntry(target.sessionKey, target).mailbox?.claim;
+      expect(selected?.inputs.includes(kept)).toBe(false);
+      return await turn;
+    },
+  });
+  const keptClaim = claimSessionControllerTask(kept, () => order.push("kept input"));
+  try {
+    await expect(compaction).resolves.toBe(target.sessionKey);
+    await keptClaim;
+    expect(order).toEqual(["mutation turn", "kept input"]);
+  } finally {
+    cancel.abort(new Error("test cleanup"));
+    await compaction.catch(() => {});
+    retireSessionControllerInput(kept);
+    const claim = await keptClaim.catch(() => undefined);
+    if (claim) {
+      releaseSessionControllerClaim(claim);
+    }
+    await kept.settlement.promise;
+  }
 });
 
 it("relays caller cancellation through a borrowed ambient turn", async () => {

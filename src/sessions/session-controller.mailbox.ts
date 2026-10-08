@@ -11,7 +11,8 @@ import {
   getPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
+import { evaluateTurnAdmission, isMutationOwnedTurn } from "./session-controller.admission-rule.js";
+import { ownerContext } from "./session-controller.context.js";
 import { logSessionControllerSourceClaim } from "./session-controller.diagnostics.js";
 import { captureSessionTarget, type SessionTarget } from "./session-controller.lifecycle.js";
 import { captureSessionControllerMailboxSummarySources as summaryCandidates } from "./session-controller.mailbox-cleanup.js";
@@ -202,7 +203,9 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
   const { owner, priority } = mailbox;
   const summaries = summaryCandidates(mailbox);
   const eligible = mailbox.entries.filter((input) => input.phase !== "consumed");
-  const first = priority ?? eligible[0];
+  // A mutation awaits its own turn, so that turn precedes inputs its fence keeps waiting.
+  const first =
+    eligible.find((input) => isMutationOwnedTurn(owner, input)) ?? priority ?? eligible[0];
   if (!first) {
     disposeSessionControllerMailbox(mailbox);
     return;
@@ -326,6 +329,10 @@ export function submitSessionControllerTask(
     target: params.target,
     adapter: { signal: params.signal },
   });
+  // A task submitted by a mutation body for its own session is that mutation's turn.
+  input.mutation = [...(ownerContext.getStore()?.mutations ?? [])].find(
+    (mutation) => mutation.phase === "active" && mutation.entries.includes(input.mailbox.owner),
+  );
   return claimSessionControllerTask(input, (claim) => params.start(claim));
 }
 

@@ -2,6 +2,7 @@ import type { FollowupRun, QueueSettings } from "../auto-reply/reply/queue/types
 import type { createDeferredCore } from "../shared/deferred.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { ReplyOperation, ReplyTurnKind } from "./session-controller.contracts.js";
+import type { Mutation } from "./session-controller.lifecycle.types.js";
 import type { inputCancellation } from "./session-controller.mailbox-source.js";
 import type { SessionControllerEntry } from "./session-controller.state.js";
 import type { SessionTarget } from "./session-controller.target.js";
@@ -63,6 +64,8 @@ export type SessionControllerInput = {
   reject?: (error: unknown) => void;
   task?: (claim: SessionControllerMailboxClaim) => void;
   taskTurnKind?: ReplyTurnKind;
+  /** The active mutation whose own body submitted this direct task. */
+  mutation?: Mutation;
   withdrawalHolds: number;
   retirementRequested?: boolean;
   cancelling?: boolean;

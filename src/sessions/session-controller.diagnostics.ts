@@ -1,4 +1,5 @@
 import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
+import { isMutationOwnedTurn } from "./session-controller.admission-rule.js";
 import type { SessionControllerInput } from "./session-controller.mailbox.types.js";
 
 type ControllerPhase =
@@ -77,7 +78,10 @@ export function logSessionControllerSourceClaim(
           ? "claim-owned"
           : mailbox.owner.active
             ? "operation-owned"
-            : "mailbox-selection",
+            : mailbox.owner.lifecycle?.blocksTurnAdmission &&
+                !isMutationOwnedTurn(mailbox.owner, input)
+              ? "lifecycle-blocked"
+              : "mailbox-selection",
     pendingInputs: mailbox.entries.length,
     injectingInputs: mailbox.entries.filter((entry) => entry.injection).length,
     withdrawalHolds: input.withdrawalHolds,

@@ -104,7 +104,10 @@ export function evaluateTurnAdmission(
   if (entry.successorBarrier) {
     return { admitted: false, reason: "successor-barrier" };
   }
-  if (entry.lifecycle?.blocksTurnAdmission) {
+  if (
+    entry.lifecycle?.blocksTurnAdmission &&
+    !isMutationOwnedTurn(entry, options.selectedInput ?? options.claim?.inputs[0])
+  ) {
     return { admitted: false, reason: "lifecycle-blocked" };
   }
   if (!options.claim && options.selectedInput === undefined && mailbox?.claim) {
@@ -118,6 +121,26 @@ export function evaluateTurnAdmission(
     return { admitted: false, reason: "waiting-inputs" };
   }
   return { admitted: true };
+}
+
+/**
+ * A mutation body's own turn request runs under that mutation's fence instead of
+ * waiting for it to release. Queued mutations behind it do not block that turn;
+ * admission closures and retained foreign operations still do.
+ */
+export function isMutationOwnedTurn(
+  entry: SessionControllerEntry,
+  input: SessionControllerInput | null | undefined,
+): boolean {
+  const lifecycle = entry.lifecycle;
+  const mutation = input?.mutation;
+  return Boolean(
+    lifecycle &&
+    mutation?.phase === "active" &&
+    lifecycle.mutations[0] === mutation &&
+    lifecycle.closures.size === 0 &&
+    [...lifecycle.operations].every((operation) => operation === entry.active),
+  );
 }
 
 /** Throws the caller-facing admission error when the turn is refused. */
