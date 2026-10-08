@@ -135,7 +135,8 @@ export async function commitMainSessionRecovery(params: {
           recoveryAdmission ||
           exactOwnerClaim ||
           ownerClaim ||
-          params.command.kind === "inspect")
+          params.command.kind === "inspect" ||
+          params.command.kind === "interrupt_owed")
       ) {
         // Discover moved identities only after the exact key misses.
         return { result: undefined };

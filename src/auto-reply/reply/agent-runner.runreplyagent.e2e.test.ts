@@ -3223,7 +3223,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     expect(stored.restartRecoveryTerminalRunIds).toEqual(["control-ui-run"]);
   });
 
-  it("rejects a transcript-only claim already aborted for restart", async () => {
+  it("rejects a queued transcript-only claim already aborted for restart", async () => {
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
       abortedLastRun: true,
       restartRecoveryDeliveryRequestFingerprint: "request-fingerprint",
@@ -3234,6 +3234,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     const onAdopted = vi.fn();
     const { run } = createMinimalRun({
       opts: { turnAdoptionLifecycle: { onAdopted } },
+      resolvedQueueMode: "followup",
       sessionCtx: {
         Provider: "webchat",
         OriginatingChannel: "webchat",
@@ -3261,6 +3262,37 @@ describe("runReplyAgent pending final delivery capture", () => {
       // The rejected turn releases its durable recovery owner after run() settles.
       await waitForReplyRunSuccessorAdmission("main", null);
     }
+  });
+
+  it("lets an interrupt retire a transcript-only claim already aborted for restart", async () => {
+    const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
+      abortedLastRun: true,
+      restartRecoveryDeliveryRequestFingerprint: "request-fingerprint",
+      restartRecoveryDeliveryRunId: "msg",
+      restartRecoveryDeliverySourceRunId: "control-ui-run",
+      status: "running",
+    });
+    const { run } = createMinimalRun({
+      sessionCtx: {
+        Provider: "webchat",
+        OriginatingChannel: "webchat",
+      },
+      runOverrides: { messageProvider: "webchat" },
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      storePath,
+    });
+
+    // The owed resend is retired as interrupted and never replayed; only the interrupt runs.
+    await expect(run()).resolves.toEqual(expect.objectContaining({ text: "final" }));
+    expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
+    const stored = await readStoredMainSession(storePath);
+    expect(stored).toMatchObject({
+      abortedLastRun: false,
+      restartRecoveryTerminalRunIds: ["control-ui-run"],
+    });
+    expect(stored.restartRecoveryDeliverySourceRunId).toBeUndefined();
   });
 
   it("clears an adopted transcript-only claim after user cancellation", async () => {

@@ -102,7 +102,8 @@ export function resolveReservedRestartResendId(entry: InternalSessionEntry): str
  * An explicit interrupt wins over a resend that has not started. Returns true when
  * admission must reload: a waiting resend input was cancelled as a Stop and records
  * its own outcome, a dispatched resend is still settling, or an undispatched one was
- * retired durably as stopped.
+ * retired durably as stopped. Returns false, still holding admission, when the durable
+ * row refuses retirement, so ordinary recovery ownership decides instead of a reload.
  */
 export async function yieldToInterruptedRestartResend(params: {
   claim: SessionControllerMailboxClaim | undefined;
@@ -151,12 +152,17 @@ export async function yieldToInterruptedRestartResend(params: {
   if (entry.abortedLastRun !== true) {
     return false;
   }
-  await commitMainSessionRecovery({
+  const owed = await commitMainSessionRecovery({
     command: { kind: "interrupt_owed", now: Date.now() },
     expectedSessionId: entry.sessionId,
     requireWriteSuccess: true,
     target: params.target,
   });
+  if (owed.transition.kind !== "applied") {
+    // Nothing was retired, so a reload can select this same path again. Keep the
+    // admission and let ordinary recovery ownership resolve the durable row instead.
+    return false;
+  }
   params.releaseAdmission();
   return true;
 }

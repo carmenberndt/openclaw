@@ -19,6 +19,11 @@ import {
   beginSessionEffect,
   captureSessionControllerSettlement,
 } from "../../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+  reserveSessionControllerSource,
+} from "../../sessions/session-controller.mailbox.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitTestReplyTurn, createSessionStore } from "./reply-turn-admission.test-support.js";
 
@@ -327,4 +332,51 @@ it("preserves recovery authority when monitoring encounters delivery residue", a
   expect(result.status).toBe("owned");
   expect(f.read()).toMatchObject(f.entry);
   expect(f.read()?.mainRestartRecovery).toBeUndefined();
+});
+
+it("hands an interrupt to ordinary recovery ownership when the owed resend cannot be retired", async () => {
+  // A deferred owner release can leave a foreground claim on an idle interrupted row.
+  const f = recoveryFixture({
+    restartRecoveryDeliveryRunId: "interrupted-claim",
+    restartRecoveryDeliverySourceRunId: "interrupted-source",
+    mainRestartRecovery: {
+      cycleId: "cycle-1",
+      revision: 1,
+      chargedAttempts: 1,
+      foregroundClaims: {
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        tokens: ["deferred-release"],
+      },
+    },
+  });
+  const interrupt = reserveSessionControllerSource(sessionKey, { policy: { mode: "interrupt" } });
+  const mailboxClaim = await claimSessionControllerTask(interrupt, () => {});
+  f.cleanup.push(() => {
+    if (!mailboxClaim.released) {
+      releaseSessionControllerClaim(mailboxClaim);
+    }
+  });
+  const commit = recoveryStore.commitMainSessionRecovery;
+  let retirements = 0;
+  vi.spyOn(recoveryStore, "commitMainSessionRecovery").mockImplementation(async (params) => {
+    if (params.command.kind === "interrupt_owed" && ++retirements > 1) {
+      // A second attempt means admission reloaded into the same refusal; stop the loop.
+      f.abort.abort();
+    }
+    return await commit(params);
+  });
+
+  const admission = owned(await f.admit({ mailboxClaim, upstreamAbortSignal: f.abort.signal }));
+
+  expect(retirements).toBe(1);
+  expect(f.read()).toMatchObject({
+    abortedLastRun: true,
+    status: "running",
+    mainRestartRecovery: {
+      chargedAttempts: 1,
+      foregroundClaims: { tokens: expect.arrayContaining(["deferred-release"]) },
+    },
+  });
+  expect(f.read()?.mainRestartRecovery?.foregroundClaims?.tokens).toHaveLength(2);
+  complete(admission);
 });
