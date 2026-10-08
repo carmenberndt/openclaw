@@ -274,7 +274,7 @@ suite.define(() => {
       await page.waitForURL(
         (url) => url.pathname === controlUiSessionPath("agent:main:retired-draft"),
       );
-      // The committed chat URL no longer carries the submitted writer draft's scope.
+      // Navigation no longer waits for this route's durable retirement.
       await waitForCommittedComposerDraft(page, JSON.stringify(["writer", "", ""]), null, 0);
       await page.close();
       const restoredPage = await context.newPage();
