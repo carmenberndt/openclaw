@@ -4078,9 +4078,8 @@ describe("runCodexAppServerAttempt", () => {
     const settled = vi.fn();
     const settledRun = run.then(settled, settled);
     try {
-      await vi.waitFor(() => {
-        expect(resolveActiveEmbeddedRunSessionId(params.sessionKey!)).toBe(params.sessionId);
-      }, fastWait);
+      // The controller reports the session active from admission; native events need the turn.
+      await run.waitForTurnAccepted();
       await harness.notify(
         itemNotification("item/started", {
           id: "msg-1",

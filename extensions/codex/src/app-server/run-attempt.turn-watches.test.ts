@@ -624,9 +624,8 @@ describe("runCodexAppServerAttempt native lifecycle", () => {
     const run = runCodexAppServerAttempt(params);
     void run.then(settled);
     try {
-      await vi.waitFor(() => {
-        expect(resolveActiveEmbeddedRunSessionId(params.sessionKey!)).toBe(params.sessionId);
-      }, fastWait);
+      // The controller reports the session active from admission; native events need the turn.
+      await run.waitForTurnAccepted();
       const blockedProjection = harness.notify({
         method: "item/reasoning/textDelta",
         params: {
