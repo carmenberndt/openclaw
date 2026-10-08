@@ -1,11 +1,7 @@
 /** Demo wiring only. Reuses the existing PR row with simulated merge facts. */
 import { noChange, nothing, render } from "lit";
 import { defineControlUiPlugin } from "openclaw/plugin-sdk/control-ui";
-import {
-  createGitHubPullRequestRenderer,
-  chatPullRequestId,
-  type GitHubMergeStatus,
-} from "../extensions/github/control-ui-api.js";
+import { createGitHubPullRequestRenderer } from "../extensions/github/control-ui-api.js";
 import type { ControlUiSessionPullRequest } from "../extensions/github/control-ui-contract.js";
 import { syncAnchoredOverlay } from "../ui/src/components/anchored-overlay.js";
 import { icons } from "../ui/src/components/icons.js";
@@ -55,17 +51,17 @@ export default defineControlUiPlugin({
           deletions: 6,
           checks: { state: "passing", passed: 12, failed: 0, skipped: 0, running: 0 },
         };
-        const statuses: Record<string, GitHubMergeStatus> = {
-          pending: { phase: "pending", message: "Waiting for GitHub to finish the merge." },
-          verifying: { phase: "verifying", message: "Confirming the merge completed." },
-          queued: { phase: "enqueued", message: "Added to the merge queue. Not merged yet." },
+        const statuses: Record<string, NonNullable<ControlUiSessionPullRequest["merge"]>> = {
+          pending: { status: "pending", message: "Waiting for GitHub to finish the merge." },
+          verifying: { status: "merged", message: "Confirming the merge completed." },
+          queued: { status: "enqueued", message: "Added to the merge queue. Not merged yet." },
           failed: {
-            phase: "failed",
+            status: "failed",
             message: "Required reviews are missing. Open the PR to resolve.",
           },
-          expired: {
-            phase: "expired",
-            message: "Request expired. Check the PR before trying again.",
+          unavailable: {
+            status: "unavailable",
+            message: "Merge status could not be read. Check the PR on GitHub.",
           },
         };
         function paint() {
@@ -75,10 +71,7 @@ export default defineControlUiPlugin({
             dismissed
               ? nothing
               : renderPullRequests({
-                  pullRequests: [{ ...pr, state: merged ? "merged" : "open" }],
-                  mergeStatus: mergeStatus
-                    ? new Map([[chatPullRequestId(pr), mergeStatus]])
-                    : undefined,
+                  pullRequests: [{ ...pr, state: merged ? "merged" : "open", merge: mergeStatus }],
                   status: "ready",
                   context: null,
                   onDismiss() {

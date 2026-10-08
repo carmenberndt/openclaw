@@ -10,6 +10,7 @@ import type {
 import {
   GITHUB_MERGE_LABEL_KEYS,
   renderGitHubMergeStatus,
+  resolveGitHubMergeStatus,
   type GitHubMergeStatus,
 } from "./merge-status.js";
 import type { GitHubPresentationHost } from "./presentation-host.js";
@@ -27,7 +28,6 @@ export type GitHubPullRequestsProps<Context> = {
   onDismiss: (pullRequest: ControlUiSessionPullRequest) => void;
   onOpenSessionDiff?: () => void;
   publication?: GitHubPublicationView;
-  mergeStatus?: ReadonlyMap<string, GitHubMergeStatus>;
 };
 
 export function createGitHubPullRequestRenderer<Context>(
@@ -78,7 +78,6 @@ export function createGitHubPullRequestRenderer<Context>(
     const label = merge
       ? `${checksLabel}. ${t(GITHUB_MERGE_LABEL_KEYS[merge.phase])} ${merge.message}`
       : checksLabel;
-    const merging = merge?.phase === "pending" || merge?.phase === "verifying";
     let details: HTMLDetailsElement | undefined;
     const syncChecksOverlay = (element: EventTarget | null | undefined) => {
       if (element instanceof HTMLDetailsElement) {
@@ -96,7 +95,7 @@ export function createGitHubPullRequestRenderer<Context>(
       >
         <summary class="chat-pr__checks-pill" aria-label=${label} title=${label}>
           <span class="chat-pr__checks-dot" aria-hidden="true"></span>
-          ${merge && !merging ? t(GITHUB_MERGE_LABEL_KEYS[merge.phase]) : t("chat.pullRequests.checks")}
+          ${t("chat.pullRequests.checks")}
           <span class="chat-pr__checks-chevron" aria-hidden="true">${icons.chevronDown}</span>
         </summary>
         <wa-popup data-anchored-overlay .active=${host.checksPopupActive(() => details, context)}>
@@ -309,7 +308,7 @@ export function createGitHubPullRequestRenderer<Context>(
               </a>
               <span class="chat-pr__meta">
                 ${renderDiffStats(pullRequest)}
-                ${renderChecks(pullRequest, props.context, merged ? undefined : props.mergeStatus?.get(chatPullRequestId(pullRequest)))}
+                ${renderChecks(pullRequest, props.context, resolveGitHubMergeStatus(pullRequest, props.status, t))}
                 ${
                   pullRequest.state === "open"
                     ? nothing

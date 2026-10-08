@@ -63,6 +63,13 @@ export type ControlUiSessionPullRequest = {
   checksUrl?: string;
   /** Head binding for on-demand CI details; not a client-selected repository revision. */
   headSha?: string;
+  /** Observed result of a recorded async merge request for this exact PR head. */
+  merge?: {
+    status: "pending" | "merged" | "enqueued" | "failed" | "unavailable";
+    message: string;
+    sha?: string;
+    retryAfterMs?: number;
+  };
 };
 
 /** Local Git facts stay available while GitHub quota is exhausted. */

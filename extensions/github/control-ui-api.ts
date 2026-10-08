@@ -13,4 +13,3 @@ export {
 export type { GitHubPublicationOptions, GitHubPublicationView } from "./control-ui-contract.js";
 export type { GitHubPresentationHost } from "./browser/presentation-host.js";
 export { createGitHubCiDetailsRenderer, GITHUB_CHECK_ORDER } from "./browser/ci-details.js";
-export type { GitHubMergePhase, GitHubMergeStatus } from "./browser/merge-status.js";

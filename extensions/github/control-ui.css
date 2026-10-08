@@ -151,7 +151,7 @@ button.chat-pr__diff {
 }
 
 .chat-pr__checks[data-merge="enqueued"],
-.chat-pr__checks[data-merge="expired"] {
+.chat-pr__checks[data-merge="unavailable"] {
   color: var(--warn);
 }
 
@@ -615,8 +615,7 @@ openclaw-chat-ci-details {
   color: var(--text);
 }
 
-.chat-pr__checks[data-merge="pending"] .chat-pr__checks-dot,
-.chat-pr__checks[data-merge="verifying"] .chat-pr__checks-dot {
+.chat-pr__checks[data-merge="pending"] .chat-pr__checks-dot {
   animation: github-merge-pulse 1.6s ease-in-out infinite;
 }
 
