@@ -214,7 +214,7 @@ if [ -n "$LIVE_MODEL_ROWS" ]; then
   done <<<"$LIVE_MODEL_ROWS"
 fi
 
-if { [ "$SCENARIO" = "sqlite-volume" ] || [ "$SCENARIO" = "recovery-cleanup" ] || [ "$SCENARIO" = "legacy-operator-state" ]; } && [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" != "1" ]; then
+if { [ "$SCENARIO" = "sqlite-volume" ] || [ "$SCENARIO" = "recovery-cleanup" ] || [ "$SCENARIO" = "legacy-operator-state" ] || [ "$SCENARIO" = "repair-readiness" ]; } && [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" != "1" ]; then
   echo "$SCENARIO requires OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE=1" >&2
   exit 1
 fi
@@ -455,6 +455,15 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     )
     # The container user creates/owns the private child, not the host mount point.
     SURVIVOR_RUNTIME_ROOT="$SURVIVOR_RUNTIME_ROOT/runtime"
+  fi
+
+  if [ "$SCENARIO" = "repair-readiness" ]; then
+    if { [ "$BASELINE_SPEC" != "openclaw@2026.9.7" ] && [ "$BASELINE_SPEC" != "openclaw@2026.9.8" ]; } || [ "$CANDIDATE_KIND" != "tarball" ] ||
+      [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_ENABLED" != "0" ]; then
+      echo "repair-readiness requires published 2026.9.7 or 2026.9.8, a frozen candidate, manual restart, and no live provider" >&2
+      exit 2
+    fi
+    UPGRADE_RUNNER="$HARNESS_ROOT_DIR/scripts/e2e/lib/upgrade-survivor/repair-readiness.sh"
   fi
 
   docker_e2e_build_or_reuse "$IMAGE_NAME" upgrade-survivor "$ROOT_DIR/scripts/e2e/Dockerfile" "$ROOT_DIR" "bare" "$SKIP_BUILD"

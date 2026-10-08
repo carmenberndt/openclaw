@@ -683,6 +683,8 @@ describe("scripts/lib/docker-e2e-plan", () => {
     { baseline: "2026.9.4", scenario: "abandoned-update" },
     { baseline: "2026.7.1-2", scenario: "prerelease-plugin-registry" },
     { baseline: "2026.7.1-2", scenario: "recovery-cleanup" },
+    { baseline: "2026.9.7", scenario: "repair-readiness" },
+    { baseline: "2026.9.8", scenario: "repair-readiness" },
   ])("plans $scenario only when explicitly requested", ({ baseline, scenario }) => {
     const laneName = `published-upgrade-survivor-${baseline}-${scenario}`;
     const explicitPlan = planFor({
