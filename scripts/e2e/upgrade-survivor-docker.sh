@@ -472,6 +472,26 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     docker_e2e_docker_cmd run --rm --network none --entrypoint true "$IMAGE_NAME"
   fi
 
+  if [ "$SCENARIO" = "repair-progress" ]; then
+    # This cell performs TWO updates and TWO repairs: run 37762967525 measured
+    # 638s for the first update and 82s/80s for repair. Use the lane's allocated
+    # Docker budget, retaining the original 75s outer settlement margin and the
+    # published-driver owner's separate 60s termination/diagnostic reserve.
+    cell_deadline="$(node --input-type=module - "$HARNESS_ROOT_DIR" "$DOCKER_RUN_TIMEOUT" "${CELL_DEADLINE_EPOCH_SECONDS:-}" "$(date +%s)" <<'NODE'
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const [root, timeout, inherited, now] = process.argv.slice(2);
+const { parseTimeoutMs } = await import(pathToFileURL(root + "/scripts/lib/docker-e2e-watchdog.mjs").href);
+const allocatedSeconds = Math.floor(parseTimeoutMs(timeout) / 1000);
+assert(Number.isSafeInteger(allocatedSeconds) && allocatedSeconds > 135, "Docker budget must leave 75s outer settlement and 60s cell cleanup reserves");
+const deadline = Number(now) + allocatedSeconds - 75;
+assert(!inherited || (Number.isSafeInteger(Number(inherited)) && Number(inherited) > 0), "Invalid inherited cell deadline");
+process.stdout.write(String(inherited ? Math.min(Number(inherited), deadline) : deadline));
+NODE
+)"
+    UPGRADE_SCENARIO_ARGS+=(-e CELL_DEADLINE_EPOCH_SECONDS="$cell_deadline")
+  fi
+
   echo "Running published upgrade survivor Docker E2E..."
   # Keep candidate images from selecting an older copy of the trusted release runner.
   docker_e2e_run_with_harness \
