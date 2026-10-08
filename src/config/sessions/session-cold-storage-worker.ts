@@ -35,10 +35,7 @@ import {
   type SessionColdRecord,
 } from "./session-cold-storage-codec.js";
 import { readSessionColdStorageProtection } from "./session-cold-storage-eligibility.js";
-import type {
-  SessionColdMutationResult,
-  SessionColdRestorationGuard,
-} from "./session-cold-storage-guard.types.js";
+import type { SessionColdRestorationGuard } from "./session-cold-storage-guard.types.js";
 import { readSessionColdStorageInventory } from "./session-cold-storage-inventory.js";
 import {
   readSessionAdmissionProtectionKeys,
@@ -53,6 +50,7 @@ import {
   readSessionColdTranscript,
   type SessionColdArchive,
 } from "./session-cold-storage-state.js";
+import type { SessionColdMutationResult } from "./session-cold-storage.types.js";
 import type { SessionSourceValidation } from "./session-source-authority.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
 import {
@@ -66,7 +64,6 @@ import {
 } from "./session-turn.kernel.js";
 import { resolveSessionWorkStartError } from "./session-work-start.js";
 import { prepareTranscriptPayload, transcriptEventJsonSql } from "./transcript-payload.js";
-export type { SessionColdRestorationGuard } from "./session-cold-storage-guard.types.js";
 
 const MAX_COLD_ARCHIVE_BYTES = 64 * 1024 * 1024;
 

@@ -3,9 +3,9 @@ import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db.js";
 import { SqliteReclamationRequestRefusedError } from "./session-accessor.sqlite-reclamation-commit.js";
-import type { SessionColdMutationResult } from "./session-cold-storage-guard.types.js";
 import type { SessionColdReadPreparation } from "./session-cold-storage-read.js";
 import { restoreSessionColdTranscript } from "./session-cold-storage.js";
+import type { SessionColdMutationResult } from "./session-cold-storage.types.js";
 
 type Receipt = { result: SessionColdMutationResult; cleanupIncomplete?: boolean };
 const observed = vi.hoisted(() => ({
