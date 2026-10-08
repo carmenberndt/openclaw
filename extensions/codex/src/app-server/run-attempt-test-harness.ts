@@ -22,6 +22,7 @@ import {
   createEmptyPluginRegistry,
   disposePluginRegistryInstances,
   getActivePluginRegistry,
+  runInAdmittedSessionTurnForTest,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { drainSessionDiskBudgetWorkers } from "openclaw/plugin-sdk/sqlite-runtime-testing";
@@ -227,12 +228,15 @@ export function runCodexAppServerAttempt(
     }
   };
   trackedParams.onExecutionPhase = observeExecutionPhase;
-  const promise = runCodexAppServerAttemptImpl(trackedParams, {
-    ...options,
-    startupTimeoutFloorMs: options.startupTimeoutFloorMs ?? 30_000,
-    bindingStore: options.bindingStore ?? testCodexAppServerBindingStore,
-    ...(clientFactory ? { clientFactory } : {}),
-  }).finally(() => {
+  // Gateway runs reach the harness inside an admitted session turn.
+  const promise = runInAdmittedSessionTurnForTest(trackedParams, (admitted) =>
+    runCodexAppServerAttemptImpl(admitted, {
+      ...options,
+      startupTimeoutFloorMs: options.startupTimeoutFloorMs ?? 30_000,
+      bindingStore: options.bindingStore ?? testCodexAppServerBindingStore,
+      ...(clientFactory ? { clientFactory } : {}),
+    }),
+  ).finally(() => {
     if (trackedParams.onExecutionPhase === observeExecutionPhase) {
       trackedParams.onExecutionPhase = onExecutionPhase;
     }

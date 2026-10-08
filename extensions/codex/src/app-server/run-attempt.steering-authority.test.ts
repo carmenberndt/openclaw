@@ -55,6 +55,7 @@ describe("Codex source-bound pending input", () => {
           "global",
           params.sessionFile,
           "ops",
+          expect.objectContaining({ key: "global", sessionId: params.sessionId }),
         );
       }, fastWait);
     } finally {

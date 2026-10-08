@@ -6,6 +6,7 @@ import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
   createAgentHarnessHostCapabilitiesForTest,
   createMockPluginRegistry,
+  runInAdmittedSessionTurnForTest,
   useProviderToolSchemaRuntimeForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -250,7 +251,8 @@ describe("Codex native configuration", () => {
       }
       // Model policy owns this proof; cold preparation must not spend its logical clock.
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
-      const run = harness.runAttempt(params);
+      const runAttempt = harness.runAttempt.bind(harness);
+      const run = runInAdmittedSessionTurnForTest(params, runAttempt);
       const settled = run.then(
         () => false,
         () => false,

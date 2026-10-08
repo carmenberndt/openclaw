@@ -1,6 +1,7 @@
 // Focused public test helpers for plugin runtime, registry, and setup fixtures.
 
 import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import type { ReplyOperation } from "../sessions/session-controller.contracts.js";
 
 type AgentHarnessHostTestAttempt = Omit<
   Parameters<
@@ -51,6 +52,58 @@ export async function createAgentHarnessHostCapabilitiesForTest(params: {
       admission.close();
     },
   };
+}
+
+/**
+ * Admits one session turn through the production session-controller mailbox,
+ * so a native harness attempt registers under the same turn owner it has in a Gateway run.
+ */
+export async function withAdmittedSessionTurnForTest<T>(
+  params: { sessionKey: string; sessionId: string; agentId?: string },
+  run: (operation: ReplyOperation) => Promise<T>,
+): Promise<T> {
+  const { withSessionTurn } = await import("../sessions/session-controller.admission.js");
+  return await withSessionTurn(params, async (operation) => {
+    if (!operation) {
+      throw new Error(`Session turn admission did not materialize ${params.sessionKey}`);
+    }
+    return await run(operation);
+  });
+}
+
+/**
+ * Runs a harness attempt the way core invokes it: inside the session's admitted
+ * controller turn, with that operation as `replyOperation`. Attempts without a
+ * session key, or that already carry an operation, run unchanged. The operation is
+ * set on the caller's attempt object for the run, so fixtures that adjust params
+ * mid-run keep their identity, and is removed once the turn settles.
+ */
+export async function runInAdmittedSessionTurnForTest<
+  T,
+  Attempt extends {
+    sessionKey?: string;
+    sessionId: string;
+    agentId?: string;
+    replyOperation?: ReplyOperation;
+  },
+>(attempt: Attempt, run: (attempt: Attempt) => Promise<T>): Promise<T> {
+  const sessionKey = attempt.sessionKey?.trim();
+  if (!sessionKey || attempt.replyOperation) {
+    return await run(attempt);
+  }
+  return await withAdmittedSessionTurnForTest(
+    { sessionKey, sessionId: attempt.sessionId, agentId: attempt.agentId },
+    async (replyOperation) => {
+      attempt.replyOperation = replyOperation;
+      try {
+        return await run(attempt);
+      } finally {
+        if (attempt.replyOperation === replyOperation) {
+          delete attempt.replyOperation;
+        }
+      }
+    },
+  );
 }
 
 export { setDefaultChannelPluginRegistryForTests } from "../commands/channel-test-registry.js";

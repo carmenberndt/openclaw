@@ -207,6 +207,8 @@ describe("runCodexAppServerAttempt steering", () => {
       handle,
       params.sessionKey,
       params.sessionFile,
+      undefined,
+      expect.objectContaining({ handle }),
     );
     expect(requests).toContainEqual({
       method: "turn/interrupt",
@@ -558,7 +560,11 @@ describe("runCodexAppServerAttempt steering", () => {
       params.sessionKey,
       params.sessionFile,
       "main",
+      expect.objectContaining({ key: params.sessionKey, sessionId: params.sessionId }),
     );
+    const operation = activeRunRegistrationMocks.setActiveEmbeddedRun.mock.calls.findLast(
+      (call) => call[0] === params.sessionId,
+    )?.[5];
 
     await notify({
       method: "item/started",
@@ -612,6 +618,8 @@ describe("runCodexAppServerAttempt steering", () => {
       expect.anything(),
       params.sessionKey,
       params.sessionFile,
+      undefined,
+      expect.objectContaining({ operation }),
     );
   });
   it("accepts message-tool-only steering for active Codex app-server source replies", async () => {

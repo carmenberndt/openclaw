@@ -15,6 +15,7 @@ import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
   createMockPluginRegistry,
   onTrustedInternalDiagnosticEvent,
+  withAdmittedSessionTurnForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
@@ -47,6 +48,41 @@ function readTurnStartText(harness: ReturnType<typeof createStartedThreadHarness
   expect(text).toContain("[assistant]\nexisting context");
   expect(text).toMatch(/<\/conversation_context>\n\nCurrent user request:\nhello$/);
   return text;
+}
+
+// Runs the attempt inside its real controller turn, as a Gateway run would, and
+// observes how Codex uses that operation. The turn completes after the attempt.
+async function runWithObservedReplyTurn(params: ReturnType<typeof createParams>) {
+  const started = createDeferred<{
+    run: ReturnType<typeof runCodexAppServerAttempt>;
+    attachBackend: ReturnType<typeof vi.fn>;
+    detachBackend: ReturnType<typeof vi.fn>;
+    freezeAbort: ReturnType<typeof vi.fn>;
+  }>();
+  const turnSettled = withAdmittedSessionTurnForTest(
+    { sessionKey: params.sessionKey!, sessionId: params.sessionId },
+    async (operation) => {
+      params.replyOperation = operation;
+      const observed = {
+        attachBackend: vi.spyOn(operation, "attachBackend"),
+        detachBackend: vi.spyOn(operation, "detachBackend"),
+        freezeAbort: vi.spyOn(operation, "freezeAbort"),
+        run: runCodexAppServerAttempt(params),
+      };
+      started.resolve(observed);
+      await observed.run.catch(() => undefined);
+    },
+  );
+  void turnSettled.catch(started.reject);
+  const observed = await started.promise;
+  return {
+    ...observed,
+    turnSettled,
+    replyBackend: () =>
+      observed.attachBackend.mock.calls.at(-1)?.[0] as
+        | Pick<ReplyBackend, "cancel" | "isAbortable">
+        | undefined,
+  };
 }
 
 function holdAgentEnd() {
@@ -199,16 +235,9 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     const onRunAgentEvent = vi.fn();
     const params = createTestParams();
     params.onAgentEvent = onRunAgentEvent;
-    const attachBackend = vi.fn();
-    const detachBackend = vi.fn();
-    const freezeAbort = vi.fn();
-    params.replyOperation = {
-      attachBackend,
-      detachBackend,
-      freezeAbort,
-    } as unknown as NonNullable<typeof params.replyOperation>;
     const harness = createStartedThreadHarness();
-    const run = runCodexAppServerAttempt(params);
+    const { run, turnSettled, attachBackend, detachBackend, freezeAbort } =
+      await runWithObservedReplyTurn(params);
     let settled = false;
     void run.then(() => {
       settled = true;
@@ -259,30 +288,27 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
     expect(terminalLifecycleEvents[0]?.data).toMatchObject({ phase: "end" });
     expect(terminalLifecycleEvents[0]?.data.aborted).toBeUndefined();
     expect(detachBackend).toHaveBeenCalledWith(replyBackend);
+    await turnSettled;
     expect(resolveActiveEmbeddedRunSessionId("agent:main:session-1")).toBeUndefined();
   });
 
   it("keeps replay-safe client-close recovery cancellable during agent_end", async () => {
     const { agentEnd, releaseAgentEnd } = holdAgentEnd();
     const onAttemptAbort = vi.fn();
-    let replyBackend: Pick<ReplyBackend, "cancel" | "isAbortable"> | undefined;
     const params = createTestParams();
     params.onAttemptAbort = onAttemptAbort;
-    const freezeAbort = vi.fn();
-    params.replyOperation = {
-      attachBackend: (backend: ReplyBackend) => {
-        replyBackend = backend;
-      },
-      detachBackend: vi.fn(),
-      freezeAbort,
-    } as unknown as NonNullable<typeof params.replyOperation>;
     const harness = createStartedThreadHarness();
-    const run = runCodexAppServerAttempt(params);
+    const {
+      run,
+      freezeAbort,
+      replyBackend: readReplyBackend,
+    } = await runWithObservedReplyTurn(params);
 
     await run.waitForTurnAccepted();
     harness.close();
     await vi.waitFor(() => expect(agentEnd).toHaveBeenCalledTimes(1), fastWait);
 
+    const replyBackend = readReplyBackend();
     expect(replyBackend?.isAbortable?.()).toBe(true);
     replyBackend?.cancel("user_abort");
     expect(onAttemptAbort).toHaveBeenCalledTimes(1);
@@ -321,20 +347,15 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
       const { agentEnd, releaseAgentEnd } = holdAgentEnd();
       const onAttemptAbort = vi.fn();
       const onRunAgentEvent = vi.fn<NonNullable<ReturnType<typeof createParams>["onAgentEvent"]>>();
-      let replyBackend: Pick<ReplyBackend, "cancel" | "isAbortable"> | undefined;
       const params = createTestParams();
       params.onAttemptAbort = onAttemptAbort;
       params.onAgentEvent = onRunAgentEvent;
-      const freezeAbort = vi.fn();
-      params.replyOperation = {
-        attachBackend: (backend: ReplyBackend) => {
-          replyBackend = backend;
-        },
-        detachBackend: vi.fn(),
-        freezeAbort,
-      } as unknown as NonNullable<typeof params.replyOperation>;
       const harness = createStartedThreadHarness();
-      const run = runCodexAppServerAttempt(params);
+      const {
+        run,
+        freezeAbort,
+        replyBackend: readReplyBackend,
+      } = await runWithObservedReplyTurn(params);
 
       await harness.waitForMethod("turn/start");
       await harness.notify({
@@ -352,6 +373,7 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
       });
       await vi.waitFor(() => expect(agentEnd).toHaveBeenCalledTimes(1), fastWait);
 
+      const replyBackend = readReplyBackend();
       expect(replyBackend?.isAbortable?.()).toBe(true);
       replyBackend?.cancel("user_abort");
       expect(onAttemptAbort).toHaveBeenCalledTimes(1);

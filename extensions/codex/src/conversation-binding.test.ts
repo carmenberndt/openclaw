@@ -7,6 +7,7 @@ import {
 import type { ExecApprovalsFile } from "openclaw/plugin-sdk/exec-approvals-runtime";
 import type { PluginConversationBinding } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import { withAdmittedSessionTurnForTest } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import {
@@ -2430,9 +2431,6 @@ describe("codex conversation binding", () => {
       isCompacting: () => false,
       abort: vi.fn(),
     };
-    if (!exposeClient) {
-      setActiveEmbeddedRun(source.sessionId, activeRun, source.sessionKey);
-    }
     const { event, ctx } = boundConversationClaim(path.join(tempDir, "active-source.jsonl"));
     ctx.pluginBinding.data = {
       kind: "codex-app-server-session" as const,
@@ -2443,7 +2441,7 @@ describe("codex conversation binding", () => {
       start: { id: "start-active-source" },
     };
 
-    try {
+    const claimSource = async () => {
       const result = await handleCodexConversationInboundClaim(event, ctx, {
         config: { session: { store: storePath } },
         timeoutMs: 500,
@@ -2460,11 +2458,27 @@ describe("codex conversation binding", () => {
           bindingId: "binding-active-source",
         }),
       ).not.toHaveProperty("conversationSourceTransferComplete", true);
-    } finally {
-      if (!exposeClient) {
+    };
+    if (exposeClient) {
+      await claimSource();
+      return;
+    }
+    // A registered source run owns an admitted turn on its session, as in a Gateway run.
+    await withAdmittedSessionTurnForTest(source, async (operation) => {
+      setActiveEmbeddedRun(
+        source.sessionId,
+        activeRun,
+        source.sessionKey,
+        undefined,
+        source.agentId,
+        operation,
+      );
+      try {
+        await claimSource();
+      } finally {
         clearActiveEmbeddedRun(source.sessionId, activeRun, source.sessionKey);
       }
-    }
+    });
   });
 
   it("passes sandbox state when resolving bound turn policy", async () => {

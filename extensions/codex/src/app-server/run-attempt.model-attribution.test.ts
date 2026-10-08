@@ -12,7 +12,10 @@ import {
   createPluginStateSyncKeyedStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi, type TestPluginApiInput } from "openclaw/plugin-sdk/plugin-test-api";
-import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  createPluginRuntimeMock,
+  runInAdmittedSessionTurnForTest,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { ensureAuthProfileStore, resolveAuthProfileOrder } from "openclaw/plugin-sdk/provider-auth";
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
 import { describe, expect, it, vi } from "vitest";
@@ -226,7 +229,8 @@ describe("registered Codex harness model attribution", () => {
       stream: "lifecycle",
       data: { phase: "model", provider: "openai", model: "rerouted-model" },
     };
-    const run = registered.runAttempt(params);
+    const runAttempt = registered.runAttempt.bind(registered);
+    const run = runInAdmittedSessionTurnForTest(params, runAttempt);
     let next: typeof run | undefined;
     try {
       await Promise.race([
@@ -292,7 +296,10 @@ describe("registered Codex harness model attribution", () => {
       }
       nativeModel = "changed-native-model";
       turnStarted = createDeferred<void>();
-      next = registered.runAttempt({ ...params, runId: "native-second-turn" });
+      next = runInAdmittedSessionTurnForTest(
+        { ...params, runId: "native-second-turn" },
+        runAttempt,
+      );
       await Promise.race([
         turnStarted.promise,
         next.then((earlyResult) => {
