@@ -103,8 +103,7 @@ function retireInstance(key: string, instance: Instance): string | undefined {
   try {
     instance.token?.(true);
   } catch (error) {
-    // A closed handle no longer owns native custody. Do not turn that fact into
-    // permission to delete a path after the failed release; maintenance can reclaim it.
+    // A failed release must not delete replacement files, even if the handle closed.
     if (hasErrnoCode(error, "ENOENT")) {
       // Missing ownership permits closing our handle, never deleting replacement files.
       try {

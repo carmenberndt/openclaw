@@ -157,7 +157,7 @@ async function acquireRegistryResources(
     const failures: unknown[] = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : result.value.errors,
     );
-    // Owner-backed markers classify live custody themselves; opaque failures stay conservative.
+    // Recovery markers track release themselves; other resource failures remain blocking.
     let retained = results.some(
       (result) =>
         result.status === "rejected" ||
@@ -180,7 +180,6 @@ async function acquireRegistryResources(
       retained = true;
     }
     if (failures.length) {
-      // Preserve raw causes while classifying the resource release, not each diagnostic.
       const error = new AggregateError(failures, "Plugin inspection instances failed to retire");
       throw retained ? new PluginRuntimeCloseRetainedError(error) : error;
     }

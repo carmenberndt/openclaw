@@ -218,16 +218,16 @@ instance may omit them; feature-detect them before relying on instance cleanup.
 The existing `api.lifecycle.registerRuntimeLifecycle(...)` contract remains
 available for plugin-owned host state.
 
-Inspection release reports settled plugin callback failures without marking the managed
-resources as still retained. Prepared-model shutdown records those failures and
-can finish after cleanup settles. For host-owned captured-source resources, inspection
-release and prepared-model shutdown reconcile an explicit repeat-safe cleanup operation
-and check whether the exact resource claim was released. A close that throws after
-releasing its resource remains a diagnostic, not permanent custody. A later release or
-shutdown can retry an outstanding recoverable claim without replaying plugin callbacks
-or reopening the retired instance. Unfinished disposal, unverified module cleanup, and
-failed host prerequisites without a recovery contract still retain custody. This internal
-host capability does not change the one-shot SDK `onDispose` contract.
+Inspection release reports plugin callback failures but does not treat settled callbacks
+as retained resources. Prepared-model shutdown records these errors and can finish once
+cleanup settles.
+
+Host-owned captured-source cleanup can be retried when the owner provides a repeat-safe
+operation and a release check. If close releases the resource and then throws, the error
+remains visible without blocking shutdown. Later inspection release or shutdown calls can
+retry this cleanup without replaying plugin callbacks or reopening the retired instance.
+Unfinished disposal, unverified module cleanup, and failed host prerequisites without a
+recovery contract still block shutdown. The SDK `onDispose` callback remains one-shot.
 
 Stopping or restarting the Gateway preserves persistent plugin session state and
 runs host cleanup hooks with reason `restart`. Disabling or removing a plugin owns

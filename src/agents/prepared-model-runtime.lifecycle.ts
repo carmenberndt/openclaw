@@ -54,7 +54,7 @@ export function registerPreparedModelRuntimeClose(close: ModelRuntimeClose): () 
   return () => lifetimes.closeCallbacks.delete(close);
 }
 
-/** Register the one-shot disposal owner whose later calls reconcile retained host claims only. */
+/** Register plugin disposal; later calls recover only retained host resources. */
 export function registerPreparedPluginRetirement(retire: () => Promise<void>): void {
   capturePreparedModelRuntimeLifetime();
   lifetimes.retirePlugins ??= retire;
@@ -72,13 +72,13 @@ export function closePreparedModelRuntimeSnapshots(): Promise<void> {
     lifetimes.epoch += 1;
     const error = new Error("prepared model runtime process lifetime closed");
     const callbacks = [...lifetimes.closeCallbacks];
-    // Admission is fenced: consume this lifetime before callbacks can reenter close.
+    // Clear callbacks before they can reenter close.
     lifetimes.closeCallbacks.clear();
     lifetimes.modelCloseResults = Promise.allSettled(
       callbacks.map(async (close) => await close(error)),
     );
   }
-  // Rejected model callbacks have no recovery contract. Preserve their outcomes without replay.
+  // Reuse model-close results; only plugin resources support recovery.
   void lifetimes.modelCloseResults.then(async (results) => {
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -87,8 +87,7 @@ export function closePreparedModelRuntimeSnapshots(): Promise<void> {
       await lifetimes.retirePlugins?.();
       lifetimes.retirePlugins = undefined;
     } catch (reason) {
-      // Only the plugin owner can reconcile explicit host claims on a later close.
-      // Keep the rejected closing promise as the admission fence between attempts.
+      // Keep admission closed between recovery attempts.
       lifetimes.retryPluginClose = true;
       failures.push(reason);
     }

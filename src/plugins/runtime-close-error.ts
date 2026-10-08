@@ -1,13 +1,13 @@
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
-/** Exact host-owned resource claim; recovery must be safe to repeat after partial release. */
+/** Host cleanup that is safe to repeat after partial release. */
 export type PluginCleanupRecovery = {
   isReleased(): boolean;
   recover(): void | Promise<void>;
 };
 
-// The shared error constructor keeps one in-flight operation per exact physical capability.
+// The singleton constructor shares in-flight recovery across runtime module copies.
 const recoveryAttempts = new WeakMap<PluginCleanupRecovery, Promise<void>>();
 
 class RetainedRuntimeError extends Error {
@@ -27,7 +27,7 @@ class RetainedRuntimeError extends Error {
     return this.recovery !== undefined;
   }
 
-  /** Classification observes custody without starting cleanup or reopening admission. */
+  /** Check release state without starting cleanup. */
   get retained(): boolean {
     if (this.recovery && recoveryAttempts.has(this.recovery)) {
       return true;
@@ -39,7 +39,7 @@ class RetainedRuntimeError extends Error {
     }
   }
 
-  /** Concurrent observers join the same explicitly authorized physical release attempt. */
+  /** Join concurrent recovery attempts for the same resource. */
   recover(): Promise<void> {
     const existing = this.recovery && recoveryAttempts.get(this.recovery);
     if (existing) {
@@ -88,14 +88,14 @@ export function aggregatePluginRuntimeCloseErrors(
     : new AggregateError(failures, message);
 }
 
-/** Historical diagnostics remain visible after their resource owner verifies release. */
+/** Check for unreleased resources without discarding past cleanup errors. */
 export function hasRetainedPluginRuntimeCloseError(error: unknown): boolean {
   return collectNestedErrorCandidates(error).some(
     (candidate) => candidate instanceof PluginRuntimeCloseRetainedError && candidate.retained,
   );
 }
 
-/** Reconcile only capabilities explicitly supplied by physical cleanup owners. */
+/** Recover resources through their host-provided cleanup handles. */
 export async function recoverPluginRuntimeCloseError(error: unknown): Promise<void> {
   const owners = new Set(
     collectNestedErrorCandidates(error).filter(
@@ -106,7 +106,7 @@ export async function recoverPluginRuntimeCloseError(error: unknown): Promise<vo
   await Promise.all([...owners].map((owner) => owner.recover()));
 }
 
-/** Keep ordinary disposal one-shot while later releases reconcile only retained host claims. */
+/** Dispose once; later calls retry only recoverable host cleanup. */
 export function createRecoverablePluginRelease<T>(dispose: () => Promise<T>): () => Promise<T> {
   let completion: Promise<T> | undefined;
   let failure: { error: unknown } | undefined;

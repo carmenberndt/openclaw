@@ -49,7 +49,6 @@ export class DisposalFailures extends Set<unknown> {
 
   /** Resource cleanup failures retain custody even after their callback settles. */
   addResourceError(error: unknown, recovery?: PluginCleanupRecovery): void {
-    // Keep raw diagnoses intact; only explicit host capabilities authorize repeat cleanup.
     const retained = recovery
       ? new PluginRuntimeCloseRetainedError(error, {
           isReleased: () => recovery.isReleased(),
@@ -72,7 +71,7 @@ export class DisposalFailures extends Set<unknown> {
     this.add(retained);
   }
 
-  /** Preserve terminal diagnostics before releasing verified physical custody. */
+  /** Report cleanup failures before releasing resources. */
   finish(
     failures: unknown[],
     hostFailure: DisposalCleanup["hostFailure"],
@@ -95,7 +94,7 @@ export class DisposalFailures extends Set<unknown> {
     return this.result(failures);
   }
 
-  /** Host prerequisites must settle before explicit resource release can end cache custody. */
+  /** Release cache references only when every remaining failure is recoverable. */
   private settle(errors: readonly unknown[], owner?: PluginInstanceOwner): void {
     if (errors.some((error) => !this.resourceRecoveries.has(error))) {
       return;
@@ -119,7 +118,7 @@ export class DisposalFailures extends Set<unknown> {
         return;
       }
     } catch {
-      // An unknown physical state cannot authorize releasing the birth inventory.
+      // A failed probe does not prove the resource was released.
       return;
     }
     const release = this.releaseCustody;
