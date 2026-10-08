@@ -35,8 +35,10 @@ import {
   type SessionColdRecord,
 } from "./session-cold-storage-codec.js";
 import { readSessionColdStorageProtection } from "./session-cold-storage-eligibility.js";
-import type { SessionColdRestorationGuard } from "./session-cold-storage-guard.types.js";
-import type { SessionColdMutationResult } from "./session-cold-storage-guard.types.js";
+import type {
+  SessionColdMutationResult,
+  SessionColdRestorationGuard,
+} from "./session-cold-storage-guard.types.js";
 import { readSessionColdStorageInventory } from "./session-cold-storage-inventory.js";
 import {
   readSessionAdmissionProtectionKeys,

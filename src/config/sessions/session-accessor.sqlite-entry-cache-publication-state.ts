@@ -156,6 +156,61 @@ export function readCurrentSessionEntryProjection(
     : undefined;
 }
 
+export function isSessionEntryReplacementIdentityCurrent(
+  owner: PendingSessionEntryPublication,
+  replacement: SessionEntryReplacementPublication | undefined,
+  sessionKey: string,
+): boolean {
+  if (!owner.superseded.has(sessionKey)) {
+    return true;
+  }
+  const native = owner.superseded.get(sessionKey);
+  const committed = replacement?.current.get(sessionKey);
+  // A later metadata write supersedes sharing facts, but retains this lifecycle transition.
+  return (
+    native !== undefined &&
+    committed !== undefined &&
+    native.sessionId === committed.sessionId &&
+    native.lifecycleRevision === committed.lifecycleRevision
+  );
+}
+
+function prepareSessionEntryReplacementChanges(
+  owner: PendingSessionEntryPublication,
+  replacement: SessionEntryReplacementPublication,
+  databaseIdentity: string,
+  transcriptUnchanged: boolean,
+): PreparedSessionEntryChanges | undefined {
+  if (replacement.source?.identity !== databaseIdentity) {
+    return undefined;
+  }
+  const current = (key: string) => !owner.superseded.has(key);
+  return {
+    source: replacement.source,
+    entries: new Map(
+      [...replacement.current]
+        .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
+        .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
+    ),
+    sharing: new Map(
+      [...replacement.current]
+        .filter(([key]) => current(key))
+        .map(([key, entry]) => [key, projectSessionSharingEntry(entry)]),
+    ),
+    projection:
+      replacement.projection &&
+      new Map(
+        [...replacement.projection]
+          .filter(
+            ([key, facts]) =>
+              readCurrentSessionEntryProjection(owner, replacement, key) !== undefined &&
+              (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
+          )
+          .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
+      ),
+  };
+}
+
 export function applyPendingSessionEntryOwnerChanges(
   replacement: SessionEntryReplacementPublication | undefined,
   ownerChanges: PendingSessionEntryPublication["ownerChanges"],
@@ -187,32 +242,14 @@ export function prepareSessionEntryPublicationFacts(params: {
     params;
   const current = (key: string) => !owner.superseded.has(key);
   const transcriptUnchanged = transcriptVersion === readSessionTranscriptUpdateVersion();
-  const prepared: PreparedSessionEntryChanges | undefined =
-    !unknown && replacement?.source?.identity === databaseIdentity
-      ? {
-          source: replacement.source,
-          entries: new Map<string, SessionEntry>(
-            [...replacement.current]
-              .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
-              .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
-          ),
-          sharing: new Map(
-            [...replacement.current]
-              .filter(([key]) => current(key))
-              .map(([key, entry]) => [key, projectSessionSharingEntry(entry)]),
-          ),
-          projection:
-            replacement.projection &&
-            new Map(
-              [...replacement.projection]
-                .filter(
-                  ([key, facts]) =>
-                    readCurrentSessionEntryProjection(owner, replacement, key) !== undefined &&
-                    (facts.activitySummaryWatermark === undefined || transcriptUnchanged),
-                )
-                .map(([key, facts]) => [key, freezeJsonSnapshot(facts)]),
-            ),
-        }
+  const prepared =
+    !unknown && replacement
+      ? prepareSessionEntryReplacementChanges(
+          owner,
+          replacement,
+          databaseIdentity,
+          transcriptUnchanged,
+        )
       : undefined;
   const currentMetadata = (key: string) => current(key) && !owner.metadataSuperseded.has(key);
   const readCurrent = (key: string) => {

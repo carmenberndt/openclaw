@@ -428,6 +428,26 @@ contract. Process-held Incognito input keeps its native source identity and live
 permission checks through staging, dispatch, and transcript writes. No schema,
 permission, retention, or update migration is required.
 
+Restart-safe chat admission consumes lifecycle timestamps from its retained session
+reader, including transcript-header fallback, instead of rereading SQLite on the
+Gateway thread. Reply claim adoption, hook checkpoints, retirement, and cleanup
+reuse the physical identity and resolved key from their existing logical reader.
+Failure settlement retains the original chat target, including the acknowledged
+writer identity when a new Goal creates its store. These transitions use the
+existing agent entry-patch worker, whose synchronous transaction compares
+authoritative claim rows before committing. Accepted
+settlement remains joined during shutdown after caller cancellation. Input and
+recovery claims still commit before acknowledgment.
+Acknowledged entry publications carry complete membership and participant facts
+from the worker's existing metadata read. Foreign commits are observed by that
+reader; newer native publications and uncertain outcomes retain invalidation.
+Superseded membership requires fresh sharing preparation without revoking an
+independently published delivery generation.
+The compact membership projection does not need a separate read for an unchanged
+claim publication. Process-held incognito and released synchronous SDK freshness
+keep their existing owners. Schemas, retention, durability, and update behavior
+are unchanged.
+
 ### Incognito worker ownership (P1, inactive)
 
 The accepted incognito migration extends the canonical agent execution owner
@@ -2941,7 +2961,10 @@ activation and recovery remain post-ready.
 Session-list facts are prepared with each immutable row and reused at publication.
 A replacement row owns new facts; the cache does not retain retired rows.
 Completion acknowledgments also carry decoded records and worker-computed physical
-versions; the host does not parse or hash the retained JSON again. Transaction and
+versions; the host does not parse or hash the retained JSON again. The transfer
+owners hash the physical rows only when those versions are needed. Plain decoding,
+including maintenance and session-list projections, does not retain discarded row
+versions. Transaction and
 commit authority, terminal-event
 atomicity, uncertain-write recovery, schemas, retention, and update behavior are
 unchanged. No migration or configuration change is required.

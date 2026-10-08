@@ -11,6 +11,7 @@ import { invalidateOpenClawAgentReadOnlyProjections } from "../../state/openclaw
 import {
   applyPendingSessionEntryOwnerChanges,
   prepareSessionEntryPublicationFacts,
+  isSessionEntryReplacementIdentityCurrent,
   pendingSessionEntryPublications,
   preparedSharingReads,
   publishRetainedSessionEntryChange,
@@ -492,20 +493,8 @@ export function retainSessionEntryWorkerPublication(params: {
       const initialization =
         receipt?.kind === "session-transcript-initialized" ? receipt : undefined;
       const current = (sessionKey: string) => !owner.superseded.has(sessionKey);
-      const currentIdentity = (sessionKey: string) => {
-        if (current(sessionKey)) {
-          return true;
-        }
-        const native = owner.superseded.get(sessionKey);
-        const committed = replacement?.current.get(sessionKey);
-        // A later metadata write supersedes sharing facts, but retains this lifecycle transition.
-        return (
-          native !== undefined &&
-          committed !== undefined &&
-          native.sessionId === committed.sessionId &&
-          native.lifecycleRevision === committed.lifecycleRevision
-        );
-      };
+      const currentIdentity = (sessionKey: string) =>
+        isSessionEntryReplacementIdentityCurrent(owner, replacement, sessionKey);
       // A later native metadata write cannot restore membership omitted by an alias move.
       const membershipInvalidated = new Set(
         replacement
@@ -523,7 +512,15 @@ export function retainSessionEntryWorkerPublication(params: {
           ...membershipInvalidated,
         ]),
       ];
-      if (changed.length) {
+      const supersededMembership = replacement
+        ? replacement.changedKeys.filter(
+            (key) =>
+              owner.superseded.get(key) !== undefined &&
+              replacement.projection?.has(key) &&
+              !changed.includes(key),
+          )
+        : [];
+      if (changed.length || supersededMembership.length) {
         invalidateSessionEntryCaches(params.databaseIdentity);
       }
       const changes: SessionRowChange[] = [];
@@ -563,7 +560,7 @@ export function retainSessionEntryWorkerPublication(params: {
           }
           recordAcquiringSessionEntry(
             read.acquisition,
-            !unknown && !membershipInvalidated.has(sessionKey) ? sharingEntry : undefined,
+            sharingProjection ? sharingEntry : undefined,
             replacement?.previous.get(sessionKey),
           );
           publishRetainedSessionGeneration(
@@ -649,6 +646,28 @@ export function retainSessionEntryWorkerPublication(params: {
             databaseIdentity: params.databaseIdentity,
           });
         }
+        changes.push(change);
+      }
+      for (const sessionKey of supersededMembership) {
+        // The newer native row owns its metadata, but its delta cannot certify the
+        // worker's complete membership snapshot. Retain its exact generation while
+        // reconciling membership through the existing projection owner.
+        for (const read of preparedSharingReads.get(`${identityKey}\0${sessionKey}`) ?? []) {
+          read.facts = undefined;
+          recordAcquiringSessionEntry(read.acquisition, undefined, undefined);
+        }
+        const change: SessionRowChange = {
+          agentId: params.agentId,
+          storePath: params.storePath,
+          sessionKey,
+          scope: "session-entry",
+          factsInvalidated: true,
+        };
+        bindPreparedSessionEntryPublication(change, {
+          kind: "marker",
+          sharingChange: "unchanged",
+          databaseIdentity: params.databaseIdentity,
+        });
         changes.push(change);
       }
       // Unknown successors also retire older facts; a late receipt cannot resolve their outcome.
