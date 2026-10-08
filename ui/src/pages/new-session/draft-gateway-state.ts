@@ -190,12 +190,12 @@ export class DraftGatewayState {
         const policy = await requestSessionPlacement(client);
         signal.throwIfAborted();
         this.requiredProfileValue = policy.requiredProfile;
-        this.placementPolicyReadyValue = true;
-        this.callbacks.requestUpdate();
         if (policy.requiredProfile || !canWrite) {
           return { profiles: policy.profiles, environments: [] };
         }
-        // Local starts need the directive above, not optional inventory latency/availability.
+        // Local starts need the directive, not optional inventory latency/availability.
+        this.placementPolicyReadyValue = true;
+        this.callbacks.requestUpdate();
         const result = await requestPlaceCatalog(client, runtimeId);
         return {
           ...result,
@@ -207,6 +207,8 @@ export class DraftGatewayState {
         this.environmentsValue = placeCatalog.environments;
         this.applyCloudProfiles(placeCatalog.profiles);
         this.cloudProfilesReadyValue = true;
+        // Required starts need their profiles before an accepted cold Send can resume.
+        this.placementPolicyReadyValue = true;
       },
       onError: () => {
         // A failed refresh cannot invalidate this Gateway's last successful place catalog.

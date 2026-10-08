@@ -476,7 +476,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     }
     let publicRead = false;
     let runPayload: Record<string, unknown> | undefined;
-    let initialTurnSourceAccepted = false;
+    let sessionSourceAccepted = false;
     let runError: unknown;
     let runMeta: Record<string, unknown> | undefined;
     const allowExistingModelSelection = authorizeOperatorScopesForRequiredScope(
@@ -572,8 +572,8 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           sessionId: committed.entry.sessionId,
           lifecycleRevision: committed.entry.lifecycleRevision,
         });
-        if (hasInitialTurn && requestAuthority.family === "worker") {
-          initialTurnSourceAccepted = acceptGatewayDeviceSourceAuthority(hasCurrentClientAuthority);
+        if ((hasInitialTurn || requiredProfile) && requestAuthority.family === "worker") {
+          sessionSourceAccepted = acceptGatewayDeviceSourceAuthority(hasCurrentClientAuthority);
         }
       },
       afterCreate: async (session) => {
@@ -597,7 +597,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           options,
           {
             ...options,
-            client: initialTurnSourceAccepted ? captureAgentTurnPrincipal(client) : client,
+            client: sessionSourceAccepted ? captureAgentTurnPrincipal(client) : client,
             params: {
               sessionKey: session.key,
               agentId: session.agentId,

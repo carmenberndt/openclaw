@@ -14,7 +14,7 @@ import type { SessionCreateParams } from "./create.ts";
 import {
   listSessionPlacementRecoveryStorageKeys,
   sessionPlacementRecoveryExactStorageKey,
-  sessionPlacementRecoveryScopeStoragePrefix,
+  sessionPlacementRecoveryExactStorageKeys,
 } from "./session-placement-recovery-storage-key.ts";
 
 export type SessionPlacementStartMode = "dispatch" | "recover" | "retry";
@@ -270,9 +270,22 @@ function readOwnedSessionPlacementRecovery(
       ? validateSessionPlacementRecovery(value, gatewayUrl, recoveryScope, expectedSessionKey)
       : null;
     if (
+      recovery?.target.kind === "profile" &&
+      recovery.target.required === true &&
+      key ===
+        sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, recovery.sessionKey)
+    ) {
+      return relocateSessionPlacementRecoveryRow(storage, key, raw, recovery);
+    }
+    if (
       !recovery ||
       key !==
-        sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, recovery.sessionKey)
+        sessionPlacementRecoveryExactStorageKey(
+          gatewayUrl,
+          recoveryScope,
+          recovery.sessionKey,
+          recovery.target.kind === "profile" && recovery.target.required === true,
+        )
     ) {
       // Every row below a framed scope prefix belongs to that exact scope.
       // A bad row can therefore be removed without touching another namespace.
@@ -295,9 +308,13 @@ function relocateSessionPlacementRecoveryRow(
     recovery.gatewayUrl,
     recovery.recoveryScope,
     recovery.sessionKey,
+    recovery.target.kind === "profile" && recovery.target.required === true,
   );
   const serialized = JSON.stringify(recovery);
   try {
+    if (storage.getItem(key) !== null) {
+      return null;
+    }
     // Relocate instead of copying so a full store needs no duplicate capacity.
     storage.removeItem(sourceKey);
     if (storage.getItem(sourceKey) !== null) {
@@ -322,6 +339,39 @@ function relocateSessionPlacementRecoveryRow(
     storage.setItem(sourceKey, sourceRaw);
   } catch {
     // Fail closed if even the original bytes no longer fit.
+  }
+  return null;
+}
+
+function readStoredSessionPlacementRecovery(
+  storage: Storage,
+  gatewayUrl: string,
+  recoveryScope: string,
+  sessionKey: string,
+): { key: string; recovery: SessionPlacementRecovery } | null {
+  for (const key of sessionPlacementRecoveryExactStorageKeys(
+    gatewayUrl,
+    recoveryScope,
+    sessionKey,
+  )) {
+    const recovery = readOwnedSessionPlacementRecovery(
+      storage,
+      key,
+      gatewayUrl,
+      recoveryScope,
+      sessionKey,
+    );
+    if (recovery) {
+      return {
+        key: sessionPlacementRecoveryExactStorageKey(
+          gatewayUrl,
+          recoveryScope,
+          sessionKey,
+          recovery.target.kind === "profile" && recovery.target.required === true,
+        ),
+        recovery,
+      };
+    }
   }
   return null;
 }
@@ -385,8 +435,10 @@ export function readSessionPlacementRecovery(
     return null;
   }
   return withRecoveryStorage(null, (storage) => {
-    const key = sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, sessionKey);
-    return readOwnedSessionPlacementRecovery(storage, key, gatewayUrl, recoveryScope, sessionKey);
+    return (
+      readStoredSessionPlacementRecovery(storage, gatewayUrl, recoveryScope, sessionKey)
+        ?.recovery ?? null
+    );
   });
 }
 
@@ -402,7 +454,25 @@ export function writeSessionPlacementRecovery(recovery: SessionPlacementRecovery
     return false;
   }
   return withRecoveryStorage(false, (storage) => {
-    const key = sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, sessionKey);
+    const key = sessionPlacementRecoveryExactStorageKey(
+      gatewayUrl,
+      recoveryScope,
+      sessionKey,
+      normalized.target.kind === "profile" && normalized.target.required === true,
+    );
+    const existing = readStoredSessionPlacementRecovery(
+      storage,
+      gatewayUrl,
+      recoveryScope,
+      sessionKey,
+    );
+    if (existing && existing.key !== key) {
+      const raw = storage.getItem(existing.key);
+      return (
+        raw !== null &&
+        Boolean(relocateSessionPlacementRecoveryRow(storage, existing.key, raw, normalized))
+      );
+    }
     storage.setItem(key, JSON.stringify(normalized));
     return Boolean(
       readOwnedSessionPlacementRecovery(storage, key, gatewayUrl, recoveryScope, sessionKey),
@@ -436,37 +506,29 @@ export function promoteSessionPlacementRecovery(
     if (!previousSessionKey) {
       return false;
     }
-    const previousKey = sessionPlacementRecoveryExactStorageKey(
-      recovery.gatewayUrl,
-      recovery.recoveryScope,
-      previousSessionKey,
-    );
-    const previousRaw = storage.getItem(previousKey);
-    const previous = readOwnedSessionPlacementRecovery(
+    const stored = readStoredSessionPlacementRecovery(
       storage,
-      previousKey,
       recovery.gatewayUrl,
       recovery.recoveryScope,
       previousSessionKey,
     );
-    if (!previousRaw || !previous) {
+    if (!stored) {
       return writeSessionPlacementRecoveryIfAvailable(recovery);
+    }
+    const { key: previousKey, recovery: previous } = stored;
+    const previousRaw = storage.getItem(previousKey);
+    if (!previousRaw) {
+      return false;
     }
     if (previous.messageId !== recovery.messageId) {
       return false;
     }
-    const key = sessionPlacementRecoveryExactStorageKey(
-      recovery.gatewayUrl,
-      recovery.recoveryScope,
-      recovery.sessionKey,
-    );
-    const existing = readOwnedSessionPlacementRecovery(
+    const existing = readStoredSessionPlacementRecovery(
       storage,
-      key,
       recovery.gatewayUrl,
       recovery.recoveryScope,
       recovery.sessionKey,
-    );
+    )?.recovery;
     if (existing) {
       if (existing.messageId !== recovery.messageId) {
         return false;
@@ -489,12 +551,10 @@ export function clearSessionPlacementRecovery(
     return;
   }
   withRecoveryStorage(undefined, (storage) => {
-    if (expectedSessionKey) {
-      const key = sessionPlacementRecoveryExactStorageKey(
-        gatewayUrl,
-        recoveryScope,
-        expectedSessionKey,
-      );
+    const keys = expectedSessionKey
+      ? sessionPlacementRecoveryExactStorageKeys(gatewayUrl, recoveryScope, expectedSessionKey)
+      : listSessionPlacementRecoveryStorageKeys(gatewayUrl, recoveryScope);
+    for (const key of keys) {
       // Async completion may belong to an older submission at this session key.
       // Unconditional session/scope retirement remains available to intentional deletion.
       if (
@@ -502,17 +562,9 @@ export function clearSessionPlacementRecovery(
         parseStoredSessionPlacementRecovery(storage.getItem(key) ?? "")?.messageId !==
           expectedMessageId
       ) {
-        return;
+        continue;
       }
       removeSessionPlacementRecoveryRow(storage, key);
-      return;
-    }
-    const scopePrefix = sessionPlacementRecoveryScopeStoragePrefix(gatewayUrl, recoveryScope);
-    for (let index = storage.length - 1; index >= 0; index -= 1) {
-      const key = storage.key(index);
-      if (key?.startsWith(scopePrefix)) {
-        removeSessionPlacementRecoveryRow(storage, key);
-      }
     }
   });
 }
