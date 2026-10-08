@@ -195,6 +195,16 @@ count as the expected CLI refusal. The existing host-owned diagnostics publisher
 redacts both first-failure evidence and successful summaries. Keep the reviewed
 harness commit separate from the frozen product commit when dispatching.
 
+The readiness scenario has a 3,420-second Docker allowance inside a 3,720-second
+scheduler lane; each targeted GitHub job retains its existing 90-minute limit.
+The Docker caller establishes the absolute cell deadline after image preparation,
+75 seconds before its timeout. The driver keeps its existing 60-second
+finalization reserve, leaving 3,285 seconds for work. Earlier inherited deadlines
+are never renewed. This covers twice the measured sibling update/setup time
+(638.177 + approximately 185 seconds), three unchanged 300-second restart windows,
+and 360 seconds for added probes and identity checks, with work-time margin.
+Default sibling budgets and the product watchdogs are unchanged.
+
 ### Legacy compatibility windows
 
 Current upgrade-survivor execution requires a published baseline of `2026.6.1`

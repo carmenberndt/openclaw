@@ -46,8 +46,8 @@ assert(
 const candidate = fs.realpathSync(candidateArg);
 const artifacts = path.resolve(artifactsArg);
 fs.mkdirSync(artifacts, { recursive: true });
-// The caller's absolute deadline includes image preparation. Keep diagnostics
-// inside it so the outer Docker owner cannot remove the fixture during capture.
+// The caller owns the absolute deadline. Keep diagnostics inside it so the
+// outer Docker owner cannot remove the fixture during capture.
 const cellDeadline = Number(process.env.CELL_DEADLINE_EPOCH_SECONDS) * 1000;
 assert(
   Number.isSafeInteger(cellDeadline) && cellDeadline > 0,

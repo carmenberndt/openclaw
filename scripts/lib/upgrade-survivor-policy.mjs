@@ -267,3 +267,12 @@ export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec
     comparePublishedReleaseVersion(version, parsePublishedReleaseVersion(minimumBaseline)) >= 0
   );
 }
+
+// Published 9.7 sibling: 638.177s update + ~185s setup. Double that base,
+// reserve three unchanged 300s restart windows and 360s for added probes/identity
+// checks: ~2907s. 3285s work + existing 60s finalization + 75s container margin
+// = 3420s Docker; the scheduler retains another 300s for host preparation/upload.
+export const REPAIR_READINESS_BUDGET = Object.freeze({
+  dockerSeconds: 3420,
+  laneSeconds: 3720,
+});
