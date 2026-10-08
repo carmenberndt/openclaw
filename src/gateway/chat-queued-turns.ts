@@ -22,6 +22,8 @@ export type QueuedChatTurnEntry = {
   sessionKey: string;
   /** False once collect-mode transfers cancellation to the aggregate owner. */
   abortable?: boolean;
+  /** Parked steering retains cancellation custody without becoming a follow-up. */
+  isSteering?: () => boolean;
   abortListener?: () => void;
   agentId?: string;
   ownerConnId?: string;
@@ -49,6 +51,15 @@ export function isQueuedChatTurnForSession(
   );
 }
 
+/** Project follow-up placement without changing parked steering cancellation ownership. */
+export function isQueuedFollowupChatTurnForSession(
+  turns: QueuedChatTurnMap | undefined,
+  runId: string,
+  scope: Pick<QueuedChatTurnEntry, "sessionId" | "sessionKey" | "agentId">,
+): boolean {
+  return isQueuedChatTurnForSession(turns, runId, scope) && !turns?.get(runId)?.isSteering?.();
+}
+
 type RegisterQueuedChatTurnParams = {
   chatQueuedTurns: QueuedChatTurnMap;
   runId: string;
@@ -59,6 +70,7 @@ type RegisterQueuedChatTurnParams = {
   ownerConnId?: string;
   ownerDeviceId?: string;
   holdPendingInputWithdrawal?: QueuedChatTurnEntry["holdPendingInputWithdrawal"];
+  isSteering?: QueuedChatTurnEntry["isSteering"];
   /** Record cancellation while the exact queued entry is still current. */
   onAborted?: (reason: ChatAbortDiagnosticReason) => void;
 };
@@ -119,6 +131,7 @@ export function registerQueuedChatTurn(params: RegisterQueuedChatTurnParams): bo
     agentId: normalizeOptionalString(params.agentId)?.toLowerCase(),
     ownerConnId: normalizeOptionalString(params.ownerConnId),
     ownerDeviceId: normalizeOptionalString(params.ownerDeviceId),
+    isSteering: params.isSteering,
     ...(params.holdPendingInputWithdrawal
       ? { holdPendingInputWithdrawal: params.holdPendingInputWithdrawal }
       : {}),

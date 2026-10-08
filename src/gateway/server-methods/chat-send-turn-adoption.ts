@@ -172,7 +172,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       }
       params.controller.signal.throwIfAborted();
     },
-    onDeferred: () => {
+    onDeferred: (isSteering) => {
       if (params.hasCronCreatorAuthority) {
         lifecycle.cronCreatorAuthorityUnavailable = "queued-local-operator";
       }
@@ -185,6 +185,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
         agentId: params.agentId,
         ownerConnId: normalizeOptionalString(params.ownerConnId),
         ownerDeviceId: normalizeOptionalString(params.ownerDeviceId),
+        isSteering,
         holdPendingInputWithdrawal: () => {
           if (adoptionStarted || withdrawalHold || params.controller.signal.aborted) {
             return undefined;
