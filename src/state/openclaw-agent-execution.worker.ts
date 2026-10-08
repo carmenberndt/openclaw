@@ -29,7 +29,10 @@ import type {
 } from "./openclaw-agent-db-contract.js";
 import { readOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
 import { prepareOpenClawAgentDatabaseWorkerLease } from "./openclaw-agent-db-lease.js";
-import { retainAgentDatabase } from "./openclaw-agent-db-lifecycle.js";
+import {
+  recordOpenClawAgentDatabaseBackgroundVerification,
+  retainAgentDatabase,
+} from "./openclaw-agent-db-lifecycle.js";
 import { ensureOpenClawAgentDatabasePermissions } from "./openclaw-agent-db-permissions.js";
 import { refreshOpenClawAgentDatabaseSchema } from "./openclaw-agent-db-schema.js";
 import {
@@ -58,6 +61,7 @@ import { createIncognitoAgentDatabaseBackend } from "./openclaw-agent-execution-
 import { createAgentDatabaseMaintenanceOwner } from "./openclaw-agent-execution-maintenance.js";
 import {
   loadAgentTranscriptOperations,
+  loadAgentTranscriptReadOperations,
   loadAgentReplacementOperations,
   loadAgentRestartRecoveryOperations,
   loadAgentEntryReadOperations,
@@ -72,6 +76,7 @@ import {
   loadAgentProviderReviewOperations,
   loadAgentReactionOperations,
   loadConversationDeliveryOperations,
+  loadConversationRegistryOperations,
   loadAgentPendingInputOperations,
   loadAgentArchivePruningOperations,
   loadUsageCacheOperations,
@@ -393,12 +398,20 @@ function openAgentDatabaseBackend(
     "session.archives.preparePublication": loadAgentArchiveOperations,
     "session.archives.recordPublication": loadAgentArchiveOperations,
     "session.transcript.initialize": loadAgentTranscriptOperations,
+    "session.transcript.rawDelta.read": loadAgentTranscriptReadOperations,
+    "session.transcript.watermark.read": loadAgentTranscriptReadOperations,
+    "session.transcript.visibleDelta.read": loadAgentTranscriptReadOperations,
+    "session.transcript.memoryCapture.read": loadAgentTranscriptReadOperations,
+    "session.transcript.anchors.read": loadAgentTranscriptReadOperations,
+    "session.transcript.coldMetadata.read": loadAgentTranscriptReadOperations,
     "session.entries.replace": loadAgentReplacementOperations,
     "session.restart.recover": loadAgentRestartRecoveryOperations,
     "session.entry.acp": loadAgentAcpOperations,
     "session.providerReview.compare": loadAgentProviderReviewOperations,
     "session.reaction.set": loadAgentReactionOperations,
     "conversation.delivery.begin": loadConversationDeliveryOperations,
+    "conversation.register": loadConversationRegistryOperations,
+    "conversation.authority": loadConversationRegistryOperations,
     "conversation.delivery.transition": loadConversationDeliveryOperations,
     "session.pendingInputs.withdraw": loadAgentPendingInputOperations,
     "session.pendingInputs.read": loadAgentPendingInputOperations,
@@ -479,6 +492,11 @@ function openAgentDatabaseBackend(
     if (command.type === "database.prepareWrite") {
       openWriter(true);
       return undefined;
+    }
+    if (command.type === "database.recordIntegrity") {
+      const opened = openWriter();
+      admit("transaction");
+      return recordOpenClawAgentDatabaseBackgroundVerification(opened, () => admit("commit"));
     }
     if (command.type === "database.walMaintenance") {
       return (

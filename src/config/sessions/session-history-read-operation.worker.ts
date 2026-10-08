@@ -11,9 +11,9 @@ type DurableHistoryReadOperationRequest = Extract<
   SessionTranscriptWorkerInput,
   {
     kind:
+      | "board-snapshot"
+      | "board-widget-document"
       | "transcript-match"
-      | "transcript-search"
-      | "transcript-search-current"
       | "branch-summaries"
       | "session-title-fields"
       | "session-preview"
@@ -22,6 +22,9 @@ type DurableHistoryReadOperationRequest = Extract<
       | "transcript-watermark"
       | "transcript-message-presence"
       | "transcript-anchors"
+      | "transcript-raw-delta"
+      | "transcript-visible-delta"
+      | "session-memory-capture"
       | "session-pending-input-receipts"
       | "session-pending-input-source"
       | "session-harness-completion-source";
@@ -43,9 +46,9 @@ export function isSessionHistoryReadOperation(
   request: SessionTranscriptWorkerInput,
 ): request is DurableHistoryReadOperationRequest {
   switch (request.kind) {
+    case "board-snapshot":
+    case "board-widget-document":
     case "transcript-match":
-    case "transcript-search":
-    case "transcript-search-current":
     case "branch-summaries":
     case "session-title-fields":
     case "session-preview":
@@ -54,6 +57,9 @@ export function isSessionHistoryReadOperation(
     case "transcript-watermark":
     case "transcript-message-presence":
     case "transcript-anchors":
+    case "transcript-raw-delta":
+    case "transcript-visible-delta":
+    case "session-memory-capture":
     case "session-pending-input-receipts":
     case "session-pending-input-source":
     case "session-harness-completion-source":
@@ -97,6 +103,83 @@ async function prepareHistoryRead(
   retainedDatabase?: OpenClawAgentReadOnlyDatabase,
 ): Promise<() => SessionTranscriptWorkerValues[SessionHistoryReadOperationRequest["kind"]]> {
   switch (request.kind) {
+    case "session-memory-capture": {
+      const { readSessionMemoryCapture } =
+        await import("../../hooks/bundled/session-memory/capture.worker.js");
+      return () =>
+        runWithSessionTranscriptReadFence(request.admission, () => ({
+          kind: request.kind,
+          result: readSessionMemoryCapture({
+            scope: request.scope,
+            resolvedScope: request.resolved,
+            messageCount: request.messageCount,
+          }),
+        }));
+    }
+    case "transcript-raw-delta": {
+      const [{ readTranscriptRawDeltaInDatabase }, { withOpenClawAgentDatabaseReadOnly }] =
+        await Promise.all([
+          import("./session-accessor.sqlite-delta.js"),
+          import("../../state/openclaw-agent-db-readonly.js"),
+        ]);
+      return () =>
+        runWithSessionTranscriptReadFence(request.admission, () => {
+          const read = withOpenClawAgentDatabaseReadOnly(
+            (database) =>
+              readTranscriptRawDeltaInDatabase(database, request.resolved, request.limits),
+            { ...request.database, env: request.scope.env },
+            { snapshot: true },
+          );
+          return { kind: request.kind, result: read.found ? read.value : { kind: "missing" } };
+        });
+    }
+    case "transcript-visible-delta": {
+      const { readSessionTranscriptVisibleMessageDeltaCore } =
+        await import("./session-accessor.sqlite-active-events.js");
+      return () =>
+        runWithSessionTranscriptReadFence(request.admission, () => ({
+          kind: request.kind,
+          result: readSessionTranscriptVisibleMessageDeltaCore(request.scope, request.limits, {
+            readOnly: true,
+            resolvedScope: request.resolved,
+          }),
+        }));
+    }
+    case "board-snapshot":
+    case "board-widget-document": {
+      const [
+        { withOpenClawAgentDatabaseReadOnly },
+        { runSqliteDeferredTransactionSync },
+        { readBoardSnapshotWithHtmlViewMetadata, readBoardWidgetDocument },
+      ] = await Promise.all([
+        import("../../state/openclaw-agent-db-readonly.js"),
+        import("../../infra/sqlite-transaction.js"),
+        import("../../boards/sqlite-board-store.kernel.js"),
+      ]);
+      return () => {
+        const read = withOpenClawAgentDatabaseReadOnly(
+          (database) =>
+            runSqliteDeferredTransactionSync(database.db, () =>
+              request.kind === "board-snapshot"
+                ? {
+                    kind: request.kind,
+                    value: readBoardSnapshotWithHtmlViewMetadata(database, request.sessionKey),
+                  }
+                : {
+                    kind: request.kind,
+                    value: readBoardWidgetDocument(
+                      database,
+                      request.sessionKey,
+                      request.name,
+                      request.contentKind,
+                    ),
+                  },
+            ),
+          { ...request.database, env: request.env },
+        );
+        return read.found ? read.value : { kind: request.kind, value: undefined };
+      };
+    }
     case "transcript-anchors": {
       const [
         { withOpenClawAgentDatabaseReadOnly },
@@ -195,28 +278,6 @@ async function prepareHistoryRead(
         );
         return { kind: request.kind, result: opened.found ? opened.value : undefined };
       };
-    }
-    case "transcript-search-current": {
-      const { isSessionTranscriptSearchCurrentSync } =
-        await import("./session-transcript-search.js");
-      return () => ({
-        kind: request.kind,
-        current: isSessionTranscriptSearchCurrentSync(request.revision, {
-          ...request.database,
-          env: request.env,
-        }),
-      });
-    }
-    case "transcript-search": {
-      const { searchSessionTranscriptsReadOnlySync } =
-        await import("./session-transcript-search.js");
-      return () => ({
-        kind: request.kind,
-        result: searchSessionTranscriptsReadOnlySync(request.params, {
-          ...request.database,
-          env: cloneEnvWithPlatformSemantics(request.params.env ?? process.env),
-        }),
-      });
     }
     case "branch-summaries": {
       const { readSessionBranchSnapshot, readSessionBranchSummariesInWorker } =

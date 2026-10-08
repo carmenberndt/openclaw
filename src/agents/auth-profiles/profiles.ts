@@ -66,17 +66,6 @@ function listProviderAuthStateEntries<T>(
     .toSorted(([left], [right]) => left.localeCompare(right));
 }
 
-function readProviderAuthState<T>(
-  entries: Record<string, T> | undefined,
-  provider: string,
-): T | undefined {
-  const canonicalProvider = resolveProviderIdForAuth(provider);
-  const matches = listProviderAuthStateEntries(entries, canonicalProvider);
-  return (
-    matches.find(([key]) => normalizeProviderId(key) === canonicalProvider)?.[1] ?? matches[0]?.[1]
-  );
-}
-
 function replaceProviderAuthState<T>(
   entries: Record<string, T> | undefined,
   provider: string,
@@ -105,21 +94,18 @@ export async function setAuthProfileOrder(params: {
   const sanitized =
     params.order && Array.isArray(params.order) ? normalizeStringEntries(params.order) : [];
   const deduped = dedupeProfileIds(sanitized);
+  const order = deduped.length > 0 ? deduped : undefined;
 
   return await updateAuthProfileStoreWithLock({
     agentDir: params.agentDir,
     sharedStoreWrite: params.sharedStoreWrite,
     // Keep inherited IDs in local order; pruning them silently undoes the requested switch.
-    ...(deduped.length > 0 ? { saveOptions: { preserveOrderProfileIds: deduped } } : {}),
+    ...(order ? { saveOptions: { preserveOrderProfileIds: order } } : {}),
     updater: (store) => {
-      if (deduped.length === 0) {
-        if (listProviderAuthStateEntries(store.order, providerKey).length === 0) {
-          return false;
-        }
-        store.order = replaceProviderAuthState(store.order, providerKey);
-        return true;
+      if (!order && listProviderAuthStateEntries(store.order, providerKey).length === 0) {
+        return false;
       }
-      store.order = replaceProviderAuthState(store.order, providerKey, deduped);
+      store.order = replaceProviderAuthState(store.order, providerKey, order);
       return true;
     },
   });
@@ -144,7 +130,9 @@ export async function promoteAuthProfileInOrder(params: {
         return false;
       }
       const matchingOrderEntries = listProviderAuthStateEntries(store.order, providerKey);
-      const existing = readProviderAuthState(store.order, providerKey);
+      const existing =
+        matchingOrderEntries.find(([key]) => normalizeProviderId(key) === providerKey)?.[1] ??
+        matchingOrderEntries[0]?.[1];
       if (!existing?.length && !params.createIfMissing) {
         return false;
       }
@@ -259,16 +247,20 @@ type AuthProfileRemovalTarget = {
   expectedProfiles: ReadonlyMap<string, AuthProfileCredential | undefined>;
 };
 
+function loadRemovalStore(agentDir?: string): AuthProfileStore {
+  return loadAuthProfileStoreWithoutExternalProfiles(agentDir, {
+    allowKeychainPrompt: false,
+    inheritedAuthDir: agentDir,
+  });
+}
+
 function createAuthProfileRemovalTarget(params: {
   agentDir?: string;
   profileIds?: ReadonlySet<string>;
   provider?: string;
 }): AuthProfileRemovalTarget {
   // Removal compares the physical write target, without inherited credentials.
-  const store = loadAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
-    allowKeychainPrompt: false,
-    inheritedAuthDir: params.agentDir,
-  });
+  const store = loadRemovalStore(params.agentDir);
   const profileIds =
     params.profileIds ?? new Set(listProfilesForProvider(store, params.provider ?? ""));
   return {
@@ -376,12 +368,7 @@ function readRemovalProfileState(
     }
   };
   for (const target of targets) {
-    const store = current
-      ? loadAuthProfileStoreWithoutExternalProfiles(target.agentDir, {
-          allowKeychainPrompt: false,
-          inheritedAuthDir: target.agentDir,
-        })
-      : undefined;
+    const store = current ? loadRemovalStore(target.agentDir) : undefined;
     for (const profileId of target.profileIds) {
       add(
         target,
@@ -430,10 +417,7 @@ async function removeAuthProfileTargetsWithLocks(
   const catalogStores = credentials.size > 0 ? await listCandidateAuthProfileStores({ cfg }) : [];
   return await withOAuthProfileLocks(lockKeys, async () => {
     for (const target of targets) {
-      const current = loadAuthProfileStoreWithoutExternalProfiles(target.agentDir, {
-        allowKeychainPrompt: false,
-        inheritedAuthDir: target.agentDir,
-      });
+      const current = loadRemovalStore(target.agentDir);
       if (!authProfileRemovalTargetMatches(target, current)) {
         return { kind: "retry" };
       }
@@ -510,13 +494,7 @@ async function removeAuthProfileTargetsWithLocks(
         }
       }
       const restored = targets.every((target) =>
-        authProfileRemovalTargetMatches(
-          target,
-          loadAuthProfileStoreWithoutExternalProfiles(target.agentDir, {
-            allowKeychainPrompt: false,
-            inheritedAuthDir: target.agentDir,
-          }),
-        ),
+        authProfileRemovalTargetMatches(target, loadRemovalStore(target.agentDir)),
       );
       throw new AggregateError(
         failures,
@@ -590,12 +568,14 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
       params.beforeRemove || params.onIncomplete
         ? await prepareAuthProfileRemovalPeers(targets, params.cfg ?? {})
         : [];
-    const reconcileSurvivors = async () => {
+    const reconcileSurvivors = async (onlyIfPresent = false) => {
       if (!params.onIncomplete) {
         return;
       }
       const surviving = readRemovalProfileState(targets, peers, true);
-      await params.onIncomplete(surviving.profiles, surviving.scopes);
+      if (!onlyIfPresent || surviving.profiles.size > 0) {
+        await params.onIncomplete(surviving.profiles, surviving.scopes);
+      }
     };
     // Config cleanup must not make a later credential generation eligible for this removal.
     let result: AuthProfileRemovalResult;
@@ -610,13 +590,8 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
       throw error;
     }
     if (result.kind === "updated") {
-      if (params.onIncomplete) {
-        const surviving = readRemovalProfileState(targets, peers, true);
-        // A captured peer may have reconnected while config cleanup was awaiting I/O.
-        if (surviving.profiles.size > 0) {
-          await params.onIncomplete(surviving.profiles, surviving.scopes);
-        }
-      }
+      // A captured peer may have reconnected while config cleanup was awaiting I/O.
+      await reconcileSurvivors(true);
       return true;
     }
     if (result.kind === "contention" || params.beforeRemove) {

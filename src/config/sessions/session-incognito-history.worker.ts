@@ -1,20 +1,27 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { prepareSessionHistorySubagentFacts } from "../../gateway/session-history-delta-visibility.js";
+import { createBoundSessionHistorySubagentProjection } from "../../gateway/session-history-readonly-reader.js";
 import { selectSessionTranscriptProjection } from "../../gateway/session-transcript-read-kernel.js";
 import type { SessionTranscriptProjectionSelection } from "../../gateway/session-transcript-read.types.js";
 import {
   SOURCE_PAGE_MAX_BYTES,
   SOURCE_PAGE_MAX_MESSAGES,
 } from "../../gateway/session-transcript-source-pages.js";
+import { resolveGatewaySessionStoreReadSources } from "../../gateway/session-utils-store-sources.js";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
+import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "./session-accessor.sqlite-active-context.js";
 import { readSessionTranscriptBoundedMessageTailPageFromProjection } from "./session-accessor.sqlite-active-events-read.js";
 import {
   readLatestSessionTranscriptMessageEvent,
   readRecentSessionTranscriptActiveEvents,
+  readSessionTranscriptVisibleMessageDeltaCore,
 } from "./session-accessor.sqlite-active-events.js";
+import { resolveConversationInDatabase } from "./session-accessor.sqlite-conversation-read.js";
 import { readSessionTranscriptCurrentTurnEntry } from "./session-accessor.sqlite-current-turn.js";
+import { readTranscriptRawDeltaInDatabase } from "./session-accessor.sqlite-delta.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { listTranscriptInstancesFromDatabase } from "./session-accessor.sqlite-history.js";
 import { readCurrentProjectionSnapshot } from "./session-accessor.sqlite-projection-read.js";
@@ -77,6 +84,23 @@ export function createIncognitoHistoryWorker(
 ) {
   let prepared: PreparedHistoryRead<Command["type"]> | undefined;
   const prepare = async (command: Command) => {
+    if (command.type === "session.history.memory-targets") {
+      const { readMemorySessionTargets } = await import("./session-memory-targets.js");
+      const selected = new Set(command.input.sessions.map((session) => session.sessionKey));
+      prepared = prepareHistoryRead(command.type, () =>
+        readMemorySessionTargets({
+          ...command.input.selectors,
+          agentId: database.agentId,
+          storePath: database.path,
+          env,
+        }).filter(
+          (target) =>
+            target.resolution === "unresolved" ||
+            (target.sessionKey !== undefined && selected.has(target.sessionKey)),
+        ),
+      );
+      return;
+    }
     if (command.type === "session.history.search") {
       const { sessions, ...selection } = command.input;
       const { searchSessionTranscriptsReadOnlySync } =
@@ -132,6 +156,55 @@ export function createIncognitoHistoryWorker(
       }
       return { ...target, sessionId: readSessionId };
     };
+    if (command.type === "session.history.visibility") {
+      const sources = command.input.sourceDiscovery
+        ? resolveGatewaySessionStoreReadSources(command.input.sourceDiscovery)
+        : undefined;
+      prepared = prepareHistoryRead(command.type, () => {
+        const missingSources = new Set<string>();
+        const incognitoSources = new Map(command.input.incognitoSources);
+        const missing = new Error("Incognito source lineage requires its owning actor facts");
+        const resolver = createBoundSessionHistorySubagentProjection(
+          (read) => {
+            const snapshot = readCurrentProjectionSnapshot(database, resolvedScope, read);
+            if (snapshot.kind === "unavailable") {
+              throw new SessionTranscriptProjectionUnavailableError(sessionId);
+            }
+            return snapshot.value;
+          },
+          command.input.stateDatabase,
+          () => sources?.sources,
+          (sourceSessionKey) => {
+            if (!isIncognitoSessionKey(sourceSessionKey)) {
+              return undefined;
+            }
+            const hidden = incognitoSources.get(sourceSessionKey);
+            if (hidden === undefined) {
+              missingSources.add(sourceSessionKey);
+              throw missing;
+            }
+            return hidden;
+          },
+        );
+        const facts = prepareSessionHistorySubagentFacts(resolver, (recording) => {
+          for (const lookup of command.input.lookups) {
+            try {
+              if (lookup.kind === "session") {
+                recording.isSubagentSession(lookup.sessionKey);
+              } else {
+                recording.isSubagentRunMessage(lookup.runId, lookup.messageSeq);
+              }
+            } catch (error) {
+              if (error !== missing) {
+                throw error;
+              }
+            }
+          }
+        });
+        return { facts, missingSources: [...missingSources] };
+      });
+      return;
+    }
     const selection = historySelection(command);
     if (selection) {
       prepared = prepareHistoryRead(command.type, () =>
@@ -149,6 +222,36 @@ export function createIncognitoHistoryWorker(
     }
     let request: SessionHistoryReadOperationRequest;
     switch (command.type) {
+      case "session.history.raw-delta":
+        prepared = prepareHistoryRead(command.type, () =>
+          runWithSessionTranscriptReadFence(admission, () =>
+            readTranscriptRawDeltaInDatabase(database, resolvedScope, command.input.limits),
+          ),
+        );
+        return;
+      case "session.history.visible-delta":
+        prepared = prepareHistoryRead(command.type, () =>
+          runWithSessionTranscriptReadFence(admission, () =>
+            readSessionTranscriptVisibleMessageDeltaCore(target, command.input.limits, {
+              readOnly: true,
+              resolvedScope,
+            }),
+          ),
+        );
+        return;
+      case "session.history.conversation-binding":
+        prepared = prepareHistoryRead(command.type, () => {
+          const conversation = resolveConversationInDatabase(
+            database,
+            command.input.conversationRef,
+          );
+          if (!conversation) {
+            return null;
+          }
+          const { channel, accountId, target: address, threadId, nativeChannelId } = conversation;
+          return { channel, accountId, target: address, threadId, nativeChannelId };
+        });
+        return;
       case "session.history.anchors":
         prepared = prepareHistoryRead(command.type, () =>
           readSessionTranscriptAnchorFactsInDatabase(database, resolvedScope, command.input),
@@ -468,9 +571,24 @@ export function createIncognitoHistoryWorker(
     prepare,
     execute(command: Command, facts: IncognitoSessionFacts[]) {
       const targets =
-        command.type === "session.history.search" ? command.input.sessions : [command.input];
+        command.type === "session.history.search" ||
+        command.type === "session.history.memory-targets"
+          ? command.input.sessions
+          : [command.input];
       for (const target of targets) {
         const entry = readExactSessionEntryRow(database, target.sessionKey)?.entry;
+        if (target.allowMissing) {
+          if (
+            entry ||
+            (command.type !== "session.history.context" &&
+              command.type !== "session.history.native-context" &&
+              command.type !== "session.history.native-context-current" &&
+              command.type !== "session.history.anchors")
+          ) {
+            throw new Error("Incognito missing context no longer matches its captured session");
+          }
+          continue;
+        }
         if (
           !entry ||
           entry.sessionId !== target.sessionId ||

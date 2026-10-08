@@ -69,28 +69,23 @@ export async function prepareAgentSession(params: PrepareAgentSessionParams) {
   if (!selected.entry?.sessionId) {
     return prepareAdmittedAgentSession(params, selected, requestedAgentId);
   }
-  const database = toDatabaseOptions(
-    resolveSqliteScope({
-      agentId: parseAgentSessionKey(selected.canonicalKey)?.agentId ?? requestedAgentId,
-      sessionKey: selected.canonicalKey,
-      storePath: selected.storePath,
-    }),
-  );
+  const databaseForSession = (session: typeof selected) =>
+    toDatabaseOptions(
+      resolveSqliteScope({
+        agentId: parseAgentSessionKey(session.canonicalKey)?.agentId ?? requestedAgentId,
+        sessionKey: session.canonicalKey,
+        storePath: session.storePath,
+      }),
+    );
   return withOpenClawAgentDatabaseRuntime(
-    database,
+    databaseForSession(selected),
     (opened) => {
       params.assertCurrent?.();
       const current = loadSessionEntry(params.requestedSessionKey, {
         agentId: requestedAgentId,
         clone: false,
       });
-      const currentDatabase = toDatabaseOptions(
-        resolveSqliteScope({
-          agentId: parseAgentSessionKey(current.canonicalKey)?.agentId ?? requestedAgentId,
-          sessionKey: current.canonicalKey,
-          storePath: current.storePath,
-        }),
-      );
+      const currentDatabase = databaseForSession(current);
       if (
         current.canonicalKey !== selected.canonicalKey ||
         currentDatabase.agentId !== opened.agentId ||
@@ -227,10 +222,9 @@ async function prepareAdmittedAgentSession(
       channel: sessionDeliveryChannel(entry) ?? params.recipientChannel,
     }),
   });
-  const visibleRequest =
-    effectiveBootstrapContextRunKind !== "cron" &&
-    effectiveBootstrapContextRunKind !== "heartbeat" &&
-    !params.request.internalEvents?.length;
+  const isSystemGatewayRun =
+    effectiveBootstrapContextRunKind === "cron" || effectiveBootstrapContextRunKind === "heartbeat";
+  const visibleRequest = !isSystemGatewayRun && !params.request.internalEvents?.length;
   const failedSessionTranscriptMissing = (candidateEntry: SessionEntry | undefined): boolean => {
     if (candidateEntry?.status !== "failed" || !candidateEntry.sessionId?.trim()) {
       return false;
@@ -248,8 +242,6 @@ async function prepareAdmittedAgentSession(
     }
   };
   const mainSessionKey = resolveAgentMainSessionKey({ cfg, agentId: canonicalSessionAgentId });
-  const isSystemGatewayRun =
-    effectiveBootstrapContextRunKind === "cron" || effectiveBootstrapContextRunKind === "heartbeat";
   const reuse = await evaluateAgentSessionReuse({
     freshEntry: entry,
     cfg,

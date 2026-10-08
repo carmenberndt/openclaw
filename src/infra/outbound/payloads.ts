@@ -76,23 +76,15 @@ function appendBlockMirrorText(lines: string[], blocks: readonly MirrorTextBlock
   for (const block of blocks) {
     if ((block.type === "text" || block.type === "context") && block.text.trim()) {
       lines.push(block.text.trim());
-      continue;
-    }
-    if (block.type === "buttons") {
+    } else if (block.type === "buttons") {
       for (const button of block.buttons) {
         lines.push(button.label);
       }
-      continue;
-    }
-    if (block.type === "chart") {
+    } else if (block.type === "chart") {
       lines.push(renderMessagePresentationChartFallbackText(block));
-      continue;
-    }
-    if (block.type === "table") {
+    } else if (block.type === "table") {
       lines.push(renderMessagePresentationTableFallbackText(block));
-      continue;
-    }
-    if (block.type === "select") {
+    } else if (block.type === "select") {
       if (block.placeholder) {
         lines.push(block.placeholder);
       }
@@ -221,13 +213,12 @@ function createStructuredOutboundPayloadPlanEntry(
   if (!isRenderablePayload(normalizedPayload)) {
     return null;
   }
-  const hasChannelData = hasReplyChannelData(normalizedPayload.channelData);
   return {
     payload: normalizedPayload,
     parts: resolveSendableOutboundReplyParts(normalizedPayload),
     hasPresentation: hasMessagePresentationBlocks(normalizedPayload.presentation),
     hasInteractive: hasLegacyInteractiveReplyBlocks(normalizedPayload.interactive),
-    hasChannelData,
+    hasChannelData: hasReplyChannelData(normalizedPayload.channelData),
   };
 }
 
@@ -241,14 +232,10 @@ function buildOutboundPayloadPlan(
   const plan: OutboundPayloadPlan[] = [];
   for (const [sourceIndex, payload] of payloads.entries()) {
     const prepared = preparePayload ? preparePayload(payload) : payload;
-    if (!prepared) {
-      continue;
+    const entry = prepared ? createStructuredOutboundPayloadPlanEntry(prepared) : null;
+    if (entry) {
+      plan.push({ sourceIndex, ...entry });
     }
-    const entry = createStructuredOutboundPayloadPlanEntry(prepared);
-    if (!entry) {
-      continue;
-    }
-    plan.push({ sourceIndex, ...entry });
   }
   return plan;
 }

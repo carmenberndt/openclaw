@@ -40,3 +40,15 @@ export function resolveChannelSenderAvatarUrl(
   url.searchParams.set("sender", identity.id);
   return url.pathname + url.search;
 }
+
+export function channelSenderAvatarMemoKey(source: ChannelSenderAvatarSource | null | undefined) {
+  return [
+    source?.key,
+    source?.channelAvatarUrl,
+    source?.origin?.provider,
+    source?.origin?.accountId,
+    source?.origin?.from,
+    source?.origin?.nativeDirectUserId,
+    source?.origin?.chatType,
+  ];
+}
