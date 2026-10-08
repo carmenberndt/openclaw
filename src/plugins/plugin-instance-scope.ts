@@ -9,6 +9,12 @@ import type {
   PluginInstanceDisposalResult,
   PluginInstanceExecution,
 } from "./plugin-instance.types.js";
+import type {
+  PluginRetentionSnapshot,
+  PluginRetentionReason,
+  PluginRetentionOwner,
+  PluginWorkRelease,
+} from "./plugin-retention-diagnostics.js";
 import type { PluginRecord, PluginRegistry, PluginRegistryGatewayOwner } from "./registry-types.js";
 
 /** Runtime consumers retain capabilities, never the concrete loader implementation. */
@@ -25,7 +31,8 @@ export interface PluginInstanceHandle extends PluginInvocationInstance, PluginIn
     factory: (...args: never[]) => unknown,
     resultCallbacks?: readonly PropertyKey[],
   ): void;
-  retainWork(): () => void;
+  retainWork(reason?: PluginRetentionReason): PluginWorkRelease;
+  retentionSnapshot(options?: { limit?: number; includeOwners?: boolean }): PluginRetentionSnapshot;
   readonly retainedWorkCount: number;
   readonly ordinaryCallCount: number;
   waitForRetainedWork(
@@ -38,6 +45,7 @@ export interface PluginInstanceHandle extends PluginInvocationInstance, PluginIn
     invoke?: <T>(run: () => T) => T,
     registry?: PluginRegistry,
     kind?: "work" | "custody",
+    diagnostics?: { reason?: PluginRetentionReason; owner?: PluginRetentionOwner },
   ): PluginInstanceConsumer;
   runInRegistry<T>(registry: PluginRegistry, run: () => T, options?: { joinDisposal?: boolean }): T;
   createRegistryView(registry: PluginRegistry, invoke: <T>(run: () => T) => T): <T>(value: T) => T;
@@ -185,4 +193,27 @@ export function setPluginOriginalValue(
 export function runPluginStreamConsumer<T>(stream: object, consume: () => T): T {
   const instance = getPluginValueInstance(stream);
   return instance ? instance.runConsumer(consume) : consume();
+}
+
+/** Associate identity-sensitive data with its instance without replacing values with views. */
+export function adoptPluginInstanceValue<T>(value: T, instance: PluginInstanceHandle): T {
+  const seen = new Set<object>();
+  const visit = (candidate: unknown) => {
+    if (
+      !candidate ||
+      (typeof candidate !== "object" && typeof candidate !== "function") ||
+      seen.has(candidate)
+    ) {
+      return;
+    }
+    seen.add(candidate);
+    pluginInstanceState.values.set(candidate, instance);
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(candidate))) {
+      if ("value" in descriptor) {
+        visit(descriptor.value);
+      }
+    }
+  };
+  visit(value);
+  return value;
 }

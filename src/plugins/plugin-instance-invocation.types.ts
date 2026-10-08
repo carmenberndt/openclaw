@@ -1,6 +1,7 @@
 import type { ScopedPluginMetadataSnapshot } from "./current-plugin-metadata-snapshot.types.js";
 import type { PluginCacheScope } from "./plugin-cache.types.js";
 import type { PluginInvocationInstance } from "./plugin-instance.types.js";
+import type { PluginRetentionOwner } from "./plugin-retention-diagnostics.js";
 
 export type PluginInstanceInvocation = {
   instance: PluginInvocationInstance;
@@ -15,6 +16,7 @@ export type PluginSourceCaptureStorage = Readonly<{
 }>;
 
 export type PluginExecutionScopes = {
+  readonly retentionOwner?: PluginRetentionOwner;
   readonly invocation?: PluginInstanceInvocation;
   readonly metadataScope?: ScopedPluginMetadataSnapshot;
   readonly cacheScope?: PluginCacheScope;
