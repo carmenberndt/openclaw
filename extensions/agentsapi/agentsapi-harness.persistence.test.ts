@@ -12,7 +12,10 @@ import {
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
-import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  createPluginRuntimeMock,
+  runInAdmittedSessionTurnForTest,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { createSandboxTestContext } from "openclaw/plugin-sdk/test-fixtures";
@@ -489,7 +492,9 @@ function registerHarness(env: NodeJS.ProcessEnv, readConfig: () => OpenClawConfi
     throw new Error("The registered Agents API harness requires run, reset, and disposal");
   }
   return {
-    runAttempt: harness.runAttempt.bind(harness),
+    // Gateway runs reach the harness inside an admitted session turn.
+    runAttempt: (params: AgentHarnessAttemptParamsV2) =>
+      runInAdmittedSessionTurnForTest(params, (admitted) => harness.runAttempt(admitted)),
     reset: harness.reset.bind(harness),
     dispose: harness.dispose.bind(harness),
   };

@@ -11,6 +11,7 @@ import {
   initializeGlobalHookRunner,
   loadUserTurnTranscriptRecorderFactoryForTest,
   resetGlobalHookRunner,
+  runInAdmittedSessionTurnForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
@@ -299,7 +300,14 @@ describe("Agents API retry prompt history", () => {
         if (!handle) {
           throw new Error("Expected the registered Agents API run");
         }
-        const queue = vi.spyOn(handle, "queueMessage");
+        // The session controller delivers an accepted steer to the native run asynchronously.
+        const delivered = createDeferred<unknown>();
+        const queueMessage = handle.queueMessage.bind(handle);
+        vi.spyOn(handle, "queueMessage").mockImplementation((...args) => {
+          const queued = queueMessage(...args);
+          delivered.resolve(queued);
+          return queued;
+        });
         expect(
           queueAgentHarnessMessage(fixture.params.sessionId, "Use the updated result.", {
             isInboundUserMessage: true,
@@ -308,7 +316,7 @@ describe("Agents API retry prompt history", () => {
             userTurnTranscriptRecorder: steering,
           }),
         ).toBe(true);
-        await queue.mock.results[0]?.value;
+        await delivered.promise;
         await steering.confirmSteerTargetRunIdForPersistence?.(fixture.params.runId);
       } finally {
         finish.resolve();
@@ -474,18 +482,21 @@ async function createAttempt() {
     revoke: (error: Error) => {
       revocation = error;
     },
+    // Gateway runs reach the harness inside an admitted session turn.
     run: () =>
-      runAgentsApiAttempt(
-        params,
-        binding,
-        async (next) => {
-          binding = next;
-        },
-        assertCurrent,
-        () => {},
-        target,
-        () => ({}),
-        promptHistories,
+      runInAdmittedSessionTurnForTest(params, (admitted) =>
+        runAgentsApiAttempt(
+          admitted,
+          binding,
+          async (next) => {
+            binding = next;
+          },
+          assertCurrent,
+          () => {},
+          target,
+          () => ({}),
+          promptHistories,
+        ),
       ),
   };
 }
