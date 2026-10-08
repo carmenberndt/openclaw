@@ -1,4 +1,4 @@
-import type { QueuedDelivery } from "./delivery-queue-types.js";
+import { hasActiveDeliveryOwner, type QueuedDelivery } from "./delivery-queue-types.js";
 
 const DEFAULT_MAX_RETRIES = 5;
 
@@ -24,4 +24,16 @@ export function resolveMaxRetries(entry: QueuedDelivery): number {
 
 export function isPermanentDeliveryError(error: string): boolean {
   return PERMANENT_ERROR_PATTERNS.some((re) => re.test(error));
+}
+
+/** Select before claiming locally; authoritative reload still fences later ownership changes. */
+export function selectDeliveryRecoveryCandidates(
+  entries: readonly QueuedDelivery[],
+  matches?: (entry: QueuedDelivery, now: number) => boolean,
+): QueuedDelivery[] {
+  const now = Date.now();
+  return entries.filter(
+    (entry) =>
+      entry.settlement || (!hasActiveDeliveryOwner(entry, now) && (matches?.(entry, now) ?? true)),
+  );
 }
