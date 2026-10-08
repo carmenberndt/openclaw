@@ -7,6 +7,7 @@ import type {
 
 export const CI_AUTOMATION_OPTIONS = ["autoFix", "autoMerge", "autoArchive"] as const;
 export type CiAutomationOption = (typeof CI_AUTOMATION_OPTIONS)[number];
+export type CiAutomationOptions = Record<CiAutomationOption, boolean>;
 export type CiAutomationTarget = {
   sessionKey: string;
   sessionId: string;
