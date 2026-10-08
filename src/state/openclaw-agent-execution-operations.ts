@@ -385,6 +385,53 @@ export async function loadConversationDeliveryOperations() {
   } satisfies Handlers;
 }
 
+export async function loadConversationRegistryOperations() {
+  const { prepareConversationIdentities, upsertConversationIdentities } =
+    await import("../config/sessions/session-accessor.sqlite-conversation.js");
+  const { selectConversationRowsFromDatabase, resolveConversationInDatabase } =
+    await import("../config/sessions/session-accessor.sqlite-conversation-read.js");
+  const { readConversationDeliveryInDatabase } =
+    await import("../config/sessions/conversation-delivery-store.kernel.js");
+  return {
+    "conversation.register": (
+      input: {
+        identities: Parameters<typeof prepareConversationIdentities>[0];
+        discoveredAt: number;
+        query?: Parameters<typeof selectConversationRowsFromDatabase>[1];
+      },
+      { writeTransaction, admit },
+    ) => {
+      const prepared = prepareConversationIdentities(input.identities);
+      return writeTransaction("conversation.register", "Conversation registration", (database) => {
+        upsertConversationIdentities(database, prepared, input.discoveredAt);
+        const rows = input.query
+          ? selectConversationRowsFromDatabase(database, input.query)
+          : undefined;
+        admit("commit");
+        return rows;
+      });
+    },
+    "conversation.authority": (
+      input: { conversationRef: string } | { operationId: string },
+      { writeTransaction, admit },
+    ) =>
+      writeTransaction("conversation.authority", "Conversation authority", (database) => {
+        const operation =
+          "operationId" in input ? readConversationDeliveryInDatabase(database, input) : undefined;
+        const conversationRef =
+          "conversationRef" in input ? input.conversationRef : operation?.conversationRef;
+        const facts = {
+          operation: operation ? { conversationRef: operation.conversationRef } : undefined,
+          conversation: conversationRef
+            ? resolveConversationInDatabase(database, conversationRef)
+            : undefined,
+        };
+        admit("commit", { kind: "conversation-authority", facts });
+        return facts;
+      }),
+  } satisfies Handlers;
+}
+
 export async function loadUsageCacheOperations() {
   const kernel = await import("../infra/session-cost-usage-cache.kernel.js");
   return {
@@ -424,7 +471,7 @@ export async function loadUsageCacheOperations() {
 
 export async function loadAgentVoiceSessionOperations() {
   const { readRefusedSessionSource } =
-    await import("../config/sessions/session-entry-patch-guard.js");
+    await import("../config/sessions/session-source-predicate.worker.js");
   const kernel = await import("../talk/client-voice-session-write.kernel.js");
   const store = await import("../talk/client-voice-session-store.js");
   const entries = await import("../config/sessions/session-accessor.sqlite-entry-read.js");
@@ -503,6 +550,7 @@ export type RegisteredAgentWorkerOperations = WorkerOperations<
     Awaited<ReturnType<typeof loadAgentReactionOperations>> &
     Awaited<ReturnType<typeof loadAgentPendingInputOperations>> &
     Awaited<ReturnType<typeof loadAgentArchivePruningOperations>> &
-    Awaited<ReturnType<typeof loadConversationDeliveryOperations>>
+    Awaited<ReturnType<typeof loadConversationDeliveryOperations>> &
+    Awaited<ReturnType<typeof loadConversationRegistryOperations>>
 > &
   AgentDatabaseMaintenanceOperations;

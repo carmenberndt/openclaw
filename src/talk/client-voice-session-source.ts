@@ -83,7 +83,7 @@ export async function prepareClientVoiceSessionSourceChecks(
   ] = await Promise.all([
     import("../state/openclaw-agent-db-readonly.js"),
     import("../state/openclaw-agent-db-identity.js"),
-    import("../config/sessions/session-entry-patch-guard.js"),
+    import("../config/sessions/session-source-predicate.worker.js"),
     import("../config/sessions/session-accessor.sqlite-owner-projection.js"),
     import("../infra/sqlite-schema-facts.js"),
   ]);

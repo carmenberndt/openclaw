@@ -20,7 +20,10 @@ import {
   authorizeOwnSessionMutation,
   type SessionSharingTarget,
 } from "./session-sharing-policy.js";
-import type { PreparedSessionSharingProfiles } from "./session-sharing-read.js";
+import type {
+  PreparedMutationSharing,
+  PreparedSessionSharingProfiles,
+} from "./session-sharing-read.js";
 import type { SessionMutationTarget } from "./session-sharing-target-input.js";
 import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import type { GatewaySessionStoreCache } from "./session-utils-store-lookup.js";
@@ -56,12 +59,7 @@ export type ExpectedSessionMutationTarget = Readonly<{
   sessionId: string;
 }>;
 
-export type PreparedMutationSharing = {
-  target: SessionSharingTarget | null;
-  storageTarget: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
-  members: readonly import("../config/sessions/session-sharing-store.kernel.js").SessionMember[];
-  assertCurrent: () => void;
-};
+export type { PreparedMutationSharing } from "./session-sharing-read.js";
 
 export type SessionSharingLookupCaches = {
   storeCache: GatewaySessionStoreCache;
