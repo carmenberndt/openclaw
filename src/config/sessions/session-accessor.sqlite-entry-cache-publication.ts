@@ -555,7 +555,9 @@ export function retainSessionEntryWorkerPublication(params: {
             publishRetainedSessionEntryPredicate(
               read,
               entry,
-              !unknown && replacement !== undefined,
+              !unknown &&
+                replacement !== undefined &&
+                !replacement.unavailableParticipantKeys?.includes(sessionKey),
             );
           }
           recordAcquiringSessionEntry(

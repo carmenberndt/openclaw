@@ -131,6 +131,8 @@ export type SessionEntryReplacementPublication = {
   pendingArchiveRecovery: boolean;
   previous: Map<string, Pick<SessionEntry, "sessionId" | "lifecycleRevision">>;
   current: Map<string, SessionEntry>;
+  /** Canonical metadata is committed, but these entries lack a valid display projection. */
+  unavailableParticipantKeys?: readonly string[];
   ageChanges: SessionEntryMaintenanceAgeChange[];
   source?: SessionEntryPublicationSource;
   projection?: ReadonlyMap<string, SessionEntryProjectionFacts>;
@@ -178,9 +180,13 @@ export type SessionEntryPublicationRecord = {
       sharingChange: "changed" | "unchanged";
       prepared: PreparedSessionEntryChanges;
       /** Row delivery rechecks and folds synchronous writes made by earlier listeners. */
-      readCurrent?: (
-        sessionKey: string,
-      ) => { entry: SessionEntry; projection?: SessionEntryProjectionFacts } | undefined;
+      readCurrent?: (sessionKey: string) =>
+        | {
+            entry?: SessionEntry;
+            sharing?: SessionSharingEntry;
+            projection?: SessionEntryProjectionFacts;
+          }
+        | undefined;
     }
   | { kind: "placeholder"; sharingChange: "changed"; receipt: PlaceholderReceipt }
 );

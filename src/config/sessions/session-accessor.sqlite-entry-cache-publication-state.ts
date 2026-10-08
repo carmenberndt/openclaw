@@ -189,7 +189,12 @@ function prepareSessionEntryReplacementChanges(
     source: replacement.source,
     entries: new Map(
       [...replacement.current]
-        .filter(([key]) => current(key) && !owner.metadataSuperseded.has(key))
+        .filter(
+          ([key]) =>
+            current(key) &&
+            !owner.metadataSuperseded.has(key) &&
+            !replacement.unavailableParticipantKeys?.includes(key),
+        )
         .map(([key, entry]) => [key, freezeJsonSnapshot(entry)]),
     ),
     sharing: new Map(
@@ -263,7 +268,17 @@ export function prepareSessionEntryPublicationFacts(params: {
         ? applySessionEntryOwnerChange(selected, mutation)
         : selected;
     if (!entry) {
-      return undefined;
+      const metadata = replacement?.unavailableParticipantKeys?.includes(key)
+        ? replacement.current.get(key)
+        : undefined;
+      const current =
+        metadata && mutation && mutation !== foldedOwnerChanges.get(key)
+          ? applySessionEntryOwnerChange(metadata, mutation)
+          : metadata;
+      // Missing participant display cannot erase acknowledged identity or certify an empty row.
+      return current
+        ? { entry: undefined, projection: undefined, sharing: projectSessionSharingEntry(current) }
+        : undefined;
     }
     const projection = readCurrentSessionEntryProjection(owner, replacement, key)
       ? prepared?.projection?.get(key)
@@ -504,7 +519,7 @@ export function readPreparedSessionEntryChange(change: object, sessionKey: strin
     source: prepared.source,
     entry,
     sharing: record.readCurrent
-      ? current && projectSessionSharingEntry(current.entry)
+      ? (current?.sharing ?? (current?.entry && projectSessionSharingEntry(current.entry)))
       : (prepared.sharing?.get(sessionKey) ??
         (entry ? projectSessionSharingEntry(entry) : undefined)),
     projection: record.readCurrent ? current?.projection : prepared.projection?.get(sessionKey),

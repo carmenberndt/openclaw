@@ -49,6 +49,7 @@ export function prepareSessionEntryReplacementPublication(
   const invalidated = new Set([...result.membershipInvalidatedKeys, ...archived]);
   const current = new Map<string, SessionEntry>();
   const projection = new Map<string, SessionEntryProjectionFacts>();
+  const unavailableParticipantKeys = new Set<string>();
   let readCommitted: ReturnType<typeof prepareExactSessionEntryRowReads> | undefined;
   for (const key of result.current.keys()) {
     readCommitted ??= prepareExactSessionEntryRowReads(
@@ -56,7 +57,11 @@ export function prepareSessionEntryReplacementPublication(
       [...result.current.keys()],
       "list",
       undefined,
-      { includeBoardPresence: true, includeMembership: true },
+      {
+        includeBoardPresence: true,
+        includeMembership: true,
+        onParticipantProjectionError: (key) => unavailableParticipantKeys.add(key),
+      },
     );
     // Read the final persisted bytes and side tables after assignment, alias moves and maintenance.
     const committed = readCommitted(key);
@@ -71,6 +76,9 @@ export function prepareSessionEntryReplacementPublication(
       throw new Error(`Session publication lost its committed membership: ${key}`);
     }
     current.set(key, freezeJsonSnapshot(committed.entry));
+    if (unavailableParticipantKeys.has(key)) {
+      continue;
+    }
     const { entry } = committed;
     projection.set(
       key,
@@ -123,6 +131,9 @@ export function prepareSessionEntryReplacementPublication(
     ),
     current,
     projection,
+    ...(unavailableParticipantKeys.size > 0
+      ? { unavailableParticipantKeys: [...unavailableParticipantKeys] }
+      : {}),
     ageChanges: [...current].map(([sessionKey, entry]) =>
       captureSessionEntryMaintenanceAgeChange({
         sessionKey,
