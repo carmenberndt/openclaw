@@ -30,6 +30,8 @@ import type {
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
 } from "../embedded-agent-runner/run/types.js";
+import { buildAgentInternalEventContext } from "../internal-events.js";
+import { projectRuntimeContextFragments } from "../internal-runtime-context.js";
 import {
   unwrapModelHeaderSentinelsForProviderEgress,
   unwrapSecretSentinelsForProviderEgress,
@@ -633,10 +635,13 @@ function preparePluginHarnessParams(
     ? unwrapSecretSentinelsForProviderEgress(params.resolvedApiKey, boundary)
     : params.resolvedApiKey;
   const model = unwrapModelHeaderSentinelsForProviderEgress(params.model, boundary);
+  const currentInboundContext = foldRuntimeEventContext(params);
   const preparedParams =
-    model === params.model && resolvedApiKey === params.resolvedApiKey
+    model === params.model &&
+    resolvedApiKey === params.resolvedApiKey &&
+    currentInboundContext === params.currentInboundContext
       ? params
-      : { ...params, model, resolvedApiKey };
+      : { ...params, model, resolvedApiKey, currentInboundContext };
   const policies = resolvePluginHarnessToolPolicies(
     preparedParams,
     harness.conversationToolPolicySupport === "exact"
@@ -663,6 +668,26 @@ function preparePluginHarnessParams(
       ]),
   );
   return effectiveParams;
+}
+
+// Plugin harnesses read only the prepared inbound context, so a runtime-event turn
+// (prompt RUNTIME_EVENT_USER_PROMPT) must carry its events there or the model never
+// sees them. Uses the embedded/CLI fragment builder and the steer's projection.
+function foldRuntimeEventContext(
+  params: import("./types.js").AgentHarnessAttemptParamsV2,
+): import("./types.js").AgentHarnessAttemptParamsV2["currentInboundContext"] {
+  const fragments = buildAgentInternalEventContext(
+    params.internalEvents,
+    params.runtimeContextFragments,
+  ).filter((fragment) => fragment.text.trim());
+  if (fragments.length === 0) {
+    return params.currentInboundContext;
+  }
+  return appendCurrentInboundContext(
+    params.currentInboundContext,
+    fragments,
+    projectRuntimeContextFragments(fragments),
+  );
 }
 
 function applyPluginHarnessDenyAllToolPolicy(
