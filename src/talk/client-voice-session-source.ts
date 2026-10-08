@@ -1,8 +1,12 @@
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
+import { resolveSqliteAgentId } from "../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import {
   releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
 } from "../config/sessions/session-source-authority.js";
+import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
+import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import { captureSessionStoreWriteCandidates } from "../config/sessions/session-store-target-inventory.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import {
   assertDatabasePathIdentity,
@@ -11,6 +15,7 @@ import {
   type DatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import {
   assertClientVoiceSessionSettlementCurrent,
   captureClientVoiceSessionSettlementContext,
@@ -22,6 +27,56 @@ export function captureClientVoiceSessionSourceOptions(agentId: string) {
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   const path = resolveOpenClawAgentSqlitePath({ agentId, env });
   return { agentId, env, path };
+}
+
+/** Retain entry ownership independently of the durable voice metadata store. */
+export async function captureClientVoiceEntrySource(
+  params: { agentId: string; storePath?: string },
+  assertLifetimeCurrent: () => void,
+) {
+  const original = captureClientVoiceSessionSourceOptions(params.agentId);
+  const storePath = params.storePath ?? original.path;
+  const captured = captureSessionStoreWriteCandidates(storePath);
+  const canonical = resolveUnsuffixedSqliteTargetFromSessionStorePath(storePath);
+  const assertCurrent = () => {
+    assertLifetimeCurrent();
+    captured.assertCurrent();
+  };
+  const capture = (target: Awaited<ReturnType<typeof prepareSqliteTargetFromSessionStorePath>>) => {
+    assertCurrent();
+    const agentId = resolveSqliteAgentId({
+      scopedAgentId: params.agentId,
+      storeAgentId: target.agentId,
+      storeShared: target.shared,
+    });
+    if (!agentId || !target.agentId) {
+      throw new Error("Talk entry target has no physical owner");
+    }
+    const observed = captured.resolveIdentity(target.path);
+    const options = { agentId: target.agentId, path: observed.canonicalPath, env: original.env };
+    const execution = captureOpenClawAgentDatabaseExecution(options, {
+      ...(observed.key.startsWith("file:")
+        ? {
+            expectedIdentity: {
+              kind: "file" as const,
+              physicalIdentity: observed.key.slice("file:".length),
+              nativeLocation: observed.canonicalPath,
+              birthtime: observed.birthtime,
+            },
+          }
+        : { expectedCreationIdentity: observed }),
+      requestedPath: target.path,
+    });
+    return { options, execution, agentId, storePath, assertCurrent };
+  };
+  return canonical.agentId
+    ? capture(canonical)
+    : capture(
+        await prepareSqliteTargetFromSessionStorePath(storePath, {
+          agentId: params.agentId,
+          env: original.env,
+        }),
+      );
 }
 
 export function createClientVoiceSessionSource(

@@ -11,6 +11,7 @@ import {
   validateTalkSessionSubmitToolResultParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
@@ -22,6 +23,7 @@ import {
 import { resolveConfiguredRealtimeVoiceProvider } from "../../../talk/provider-resolver.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "../../operator-scopes.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
+import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandlers, RespondFn } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
@@ -97,14 +99,16 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
   "talk.session.create": defineValidatedGatewayHandler(
     "talk.session.create",
     validateTalkSessionCreateParams,
-    async ({
-      params,
-      respond,
-      context,
-      client,
-      sessionMutationAuthorization,
-      sessionMutationCommitGuard,
-    }) => {
+    async (request) => {
+      const {
+        params,
+        respond,
+        context,
+        client,
+        sessionMutationAuthorization,
+        sessionMutationCommitGuard,
+      } = request;
+      const requester = readGatewayRequestMutationAuthority(request);
       const mode = params.mode ?? (params.transport === "managed-room" ? "stt-tts" : "realtime");
       const transport = params.transport ?? (mode === "stt-tts" ? "managed-room" : "gateway-relay");
       const brain = params.brain ?? (mode === "transcription" ? "none" : "agent-consult");
@@ -299,7 +303,21 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             creation:
               resolveSandboxedSessionCreation(client, runtimeConfig) ??
               resolveOperatorSessionCreation(client),
-            assertCommitAllowed,
+            requester: composeSessionSourceAssertion([
+              requester.assertCurrent,
+              replacement?.source(target).assertCurrent,
+            ]),
+            source: sessionMutationAuthorization?.assertCurrent,
+            assertCurrent: requester.assertPreparationCurrent,
+            onCommittedSource: (readSource, entry) =>
+              sessionMutationAuthorization?.recordCreatedSession?.({
+                agentId,
+                sessionKey: target.canonicalKey,
+                storePath: target.storePath,
+                sessionId: entry.sessionId,
+                lifecycleRevision: entry.lifecycleRevision,
+                readSource,
+              }),
           });
           const assertEnsuredTargetCurrent = () => {
             sessionMutationCommitGuard?.();

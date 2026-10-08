@@ -60,6 +60,7 @@ import {
   requestTalkVoiceChange,
   resolveTalkVoiceSession,
 } from "../voice-selection.js";
+import { registerClientCreateEnsureTests } from "./client-create-ensure.test-support.js";
 import { createTalkClient } from "./client-create.js";
 import {
   browserSession,
@@ -650,34 +651,18 @@ describe("voice creation authority", () => {
     }
   });
 
-  it.each(["missing", "idless"])(
-    "publishes the ensured %s chat before preparing voice authority",
-    async (kind) => {
-      const key = `agent:main:voice-${kind}`;
+  registerClientCreateEnsureTests({
+    tempDir: () => tempDir,
+    ownVoice: (id, key) => {
+      ownedVoiceSessionId = id;
       ownedVoiceSessionKey = key;
-      if (kind === "idless") {
-        await replaceSessionEntry(
-          { agentId: "main", sessionKey: key },
-          { sessionId: "", updatedAt: 1 },
-        );
-      }
-      const fixture = configureDelegatedBrowserProvider(async () => browserSession);
-      const respond = vi.fn();
-      await invokeCreate({
-        params: { sessionKey: key, provider: "openai" },
-        respond,
-        context: fixture.context,
-        client: fixture.client,
-      } as never);
-      expect(respond.mock.lastCall?.[0]).toBe(true);
-      ownedVoiceSessionId = respond.mock.lastCall?.[1].voiceSessionId;
-      expect(loadSessionEntry({ agentId: "main", sessionKey: key })?.sessionId).toBeTruthy();
-      expect(clientVoiceSessionTesting.readRecord("main", ownedVoiceSessionId!)).toMatchObject({
-        sessionKey: key,
-        status: "open",
-      });
     },
-  );
+    configureProvider: configureDelegatedBrowserProvider,
+    invokeCreate,
+    observeAdmission: (observer) => {
+      observeAdmission = observer;
+    },
+  });
 
   it.each(["identity", "label"] as const)(
     "checks final foreign %s before acknowledging a committed voice session",

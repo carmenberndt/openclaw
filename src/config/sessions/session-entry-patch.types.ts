@@ -1,5 +1,6 @@
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
 import type { ConversationAuthority } from "./conversation-authority.types.js";
 import type {
   SessionEntryPatchContext,
@@ -19,6 +20,8 @@ import type {
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
 export type SqliteSessionEntryPatchOptions = SessionEntryPatchOptions & {
+  /** Exact captured writer under its caller's foreground reservation; never a new owner. */
+  retainedExecution?: OpenClawAgentDatabaseExecution;
   /** Audited internal updaters: no nested writer admission; guards retain only host authority. */
   workerGuard?: SessionEntryPatchGuard;
   /** Recheck owner cancellation after async preparation, immediately before committing. */

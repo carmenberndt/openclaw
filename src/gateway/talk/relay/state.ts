@@ -5,7 +5,7 @@ import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
 import type { RealtimeVoiceAgentControlResult } from "../../../talk/agent-run-control.js";
 import type { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
-import type { ClientVoiceSessionWriter } from "../../../talk/client-voice-session-write.js";
+import type { ClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import type {
   RealtimeVoiceAudioClearReason,
@@ -283,6 +283,7 @@ export type RelaySession = {
   // Turn cancellation invalidates async acceptance callbacks from the prior turn.
   toolResultEpoch: number;
   voiceConfig?: OpenClawConfig;
+  voiceSessionSource?: ClientVoiceSessionSource;
   voiceSessionCreated: boolean;
   voiceSessionCreation?: Promise<boolean>;
   voiceTranscriptSeq: number;
@@ -292,7 +293,7 @@ export type RelaySession = {
   closing?: {
     reason: "completed" | "error";
     completion?: Promise<void>;
-    runTranscript?: (run: (source: ClientVoiceSessionWriter) => boolean) => boolean;
+    runTranscript?: (run: () => boolean) => boolean;
   };
   failSession: (message: string) => void;
 };

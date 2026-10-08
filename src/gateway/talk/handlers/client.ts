@@ -8,8 +8,15 @@ import {
   validateTalkClientTranscriptParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
+import {
+  prepareSessionSourceAuthority,
+  releaseSessionSourceAuthorities,
+} from "../../../config/sessions/session-source-authority.js";
 import { createPluginRuntime } from "../../../plugins/runtime/index.js";
-import { withOpenClawAgentDatabaseRuntime } from "../../../state/openclaw-agent-db.js";
+import {
+  withOpenClawAgentDatabaseAsync,
+  withOpenClawAgentDatabaseRuntime,
+} from "../../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission } from "../../../state/openclaw-agent-write-admission.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -90,90 +97,134 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         return;
       }
       const prepareVoiceSession = async (assertStoreCurrent?: () => void) => {
-        let confirmationGrant: ClientVoiceConfirmationGrant | undefined;
-        await withOpenClawAgentDatabaseRuntime(
-          { agentId },
-          () => undefined,
-          () => {
-            assertStoreCurrent?.();
-            request.sessionMutationAuthorization?.assertCurrent();
-          },
-          request.signal,
-        );
-        assertStoreCurrent?.();
-        request.sessionMutationAuthorization?.assertCurrent();
-        // Shipped clients may consult without ever creating a voice session (old app,
-        // restarted gateway, ambiguous open records). Implicitly create one instead of
-        // erroring so confirmation and mutation evidence stay always-on.
-        let selectedVoiceSessionId =
-          explicitVoiceSessionId ??
-          relaySessionId ??
-          (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined);
-        if (selectedVoiceSessionId === undefined) {
-          const inferred = await resolveOpenClientVoiceSessionId({
-            agentId,
-            sessionKey: params.sessionKey,
-          });
-          // Another consult may have created and bound this connection during the read.
-          selectedVoiceSessionId =
-            (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined) ?? inferred;
-        }
-        assertStoreCurrent?.();
-        request.sessionMutationAuthorization?.assertCurrent();
-        const voiceSessionId =
-          selectedVoiceSessionId ??
-          (await createOrResumeClientVoiceSession({
-            agentId,
-            sessionKey: params.sessionKey,
-            origin: "client",
-            requester: readGatewayRequestMutationAuthority(request).assertCurrent,
-            source: {
-              storePath: target.storePath,
-              assertCurrent: request.sessionMutationAuthorization?.assertCurrent ?? (() => {}),
-            },
-            assertCurrent: () => {
-              assertStoreCurrent?.();
-              readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
-            },
-          }));
-        if (relaySessionId && connId) {
-          await ensureClientVoiceAgentSessionEntry({
-            agentId,
-            sessionKey: params.sessionKey,
-            creation: resolveSandboxedSessionCreation(request.client, config),
-          });
-          await ensureTalkRealtimeRelayVoiceSession({
-            relaySessionId,
-            connId,
-            sessionKey: params.sessionKey,
-          });
-          await flushTalkRealtimeRelayVoiceWrites({ relaySessionId, connId });
-        }
-        assertStoreCurrent?.();
-        request.sessionMutationAuthorization?.assertCurrent();
-        const parsedArgs = parseRealtimeVoiceAgentConsultArgs(params.args ?? {});
-        const origin = assertClientVoiceSessionOpen({
-          agentId,
-          sessionKey: params.sessionKey,
-          voiceSessionId,
+        const requester = readGatewayRequestMutationAuthority(request);
+        const preparedRequester = await prepareSessionSourceAuthority(requester.assertCurrent);
+        const borrowedRequester = Object.assign(() => requester.assertCurrent(), {
+          prepareSessionSource: async () => ({ ...preparedRequester, release: undefined }),
         });
-        if (origin === "relay" && (!relaySessionId || !connId)) {
-          throw new Error(
-            "relay-owned voice sessions require relaySessionId and connection ownership",
+        const errors: unknown[] = [];
+        try {
+          let confirmationGrant: ClientVoiceConfirmationGrant | undefined;
+          const assertPreparationCurrent = () => {
+            assertStoreCurrent?.();
+            requester.assertPreparationCurrent();
+            if (preparedRequester.assertPreparedCurrent) {
+              preparedRequester.assertPreparedCurrent();
+            } else if (!preparedRequester.nativeSource) {
+              preparedRequester.assertCurrent();
+            }
+          };
+          const admit = preparedRequester.opaqueCommitGuard
+            ? withOpenClawAgentDatabaseAsync
+            : withOpenClawAgentDatabaseRuntime;
+          await admit(
+            { agentId },
+            () => undefined,
+            preparedRequester.opaqueCommitGuard
+              ? () => {
+                  assertPreparationCurrent();
+                  requester.assertCurrent();
+                  request.sessionMutationAuthorization?.assertCurrent();
+                }
+              : assertPreparationCurrent,
+            request.signal,
           );
-        }
-        if (parsedArgs.confirmationId) {
-          confirmationGrant = authorizeClientVoiceConfirmation({
+          assertStoreCurrent?.();
+          request.sessionMutationAuthorization?.assertCurrent();
+          // Shipped clients may consult without ever creating a voice session (old app,
+          // restarted gateway, ambiguous open records). Implicitly create one instead of
+          // erroring so confirmation and mutation evidence stay always-on.
+          let selectedVoiceSessionId =
+            explicitVoiceSessionId ??
+            relaySessionId ??
+            (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined);
+          if (selectedVoiceSessionId === undefined) {
+            const inferred = await resolveOpenClientVoiceSessionId({
+              agentId,
+              sessionKey: params.sessionKey,
+            });
+            // Another consult may have created and bound this connection during the read.
+            selectedVoiceSessionId =
+              (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined) ?? inferred;
+          }
+          assertStoreCurrent?.();
+          request.sessionMutationAuthorization?.assertCurrent();
+          const voiceSessionId =
+            selectedVoiceSessionId ??
+            (await createOrResumeClientVoiceSession({
+              agentId,
+              sessionKey: params.sessionKey,
+              origin: "client",
+              requester: borrowedRequester,
+              source: {
+                storePath: target.storePath,
+                assertCurrent: request.sessionMutationAuthorization?.assertCurrent ?? (() => {}),
+              },
+              assertCurrent: () => {
+                assertStoreCurrent?.();
+                readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
+              },
+            }));
+          if (relaySessionId && connId) {
+            await ensureClientVoiceAgentSessionEntry({
+              agentId,
+              sessionKey: target.canonicalKey,
+              storePath: target.storePath,
+              creation: resolveSandboxedSessionCreation(request.client, config),
+              requester: borrowedRequester,
+              source: request.sessionMutationAuthorization?.assertCurrent,
+              assertCurrent: () => {
+                assertStoreCurrent?.();
+                readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
+              },
+              onCommittedSource: (readSource, entry) =>
+                request.sessionMutationAuthorization?.recordCreatedSession?.({
+                  agentId,
+                  sessionKey: target.canonicalKey,
+                  storePath: target.storePath,
+                  sessionId: entry.sessionId,
+                  lifecycleRevision: entry.lifecycleRevision,
+                  readSource,
+                }),
+            });
+            await ensureTalkRealtimeRelayVoiceSession({
+              relaySessionId,
+              connId,
+              sessionKey: params.sessionKey,
+            });
+            await flushTalkRealtimeRelayVoiceWrites({ relaySessionId, connId });
+          }
+          assertStoreCurrent?.();
+          request.sessionMutationAuthorization?.assertCurrent();
+          const parsedArgs = parseRealtimeVoiceAgentConsultArgs(params.args ?? {});
+          const origin = assertClientVoiceSessionOpen({
             agentId,
+            sessionKey: params.sessionKey,
             voiceSessionId,
-            confirmationId: parsedArgs.confirmationId,
           });
+          if (origin === "relay" && (!relaySessionId || !connId)) {
+            throw new Error(
+              "relay-owned voice sessions require relaySessionId and connection ownership",
+            );
+          }
+          if (parsedArgs.confirmationId) {
+            confirmationGrant = authorizeClientVoiceConfirmation({
+              agentId,
+              voiceSessionId,
+              confirmationId: parsedArgs.confirmationId,
+            });
+          }
+          // Only validated calls may replace the legacy client's connection binding.
+          if (connId && !relaySessionId) {
+            rememberLegacyVoiceBinding({ connId, sessionKey: params.sessionKey, voiceSessionId });
+          }
+          return { voiceSessionId, confirmationGrant };
+        } catch (error) {
+          errors.push(error);
+          throw error;
+        } finally {
+          await releaseSessionSourceAuthorities([preparedRequester], errors);
         }
-        // Only validated calls may replace the legacy client's connection binding.
-        if (connId && !relaySessionId) {
-          rememberLegacyVoiceBinding({ connId, sessionKey: params.sessionKey, voiceSessionId });
-        }
-        return { voiceSessionId, confirmationGrant };
       };
       let preparedVoiceSession: Awaited<ReturnType<typeof prepareVoiceSession>>;
       try {
@@ -195,13 +246,14 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         args: params.args ?? {},
         relaySessionId: normalizeOptionalString(params.relaySessionId),
         connId,
-        onRunStarted: async (runId, { assertWorkAdmissionCurrent }) => {
+        onRunStarted: async (runId, { assertWorkAdmissionCurrent, physicalSource }) => {
           const release = await registerClientVoiceConsultRun({
             agentId,
             sessionKey: params.sessionKey,
             voiceSessionId,
             runId,
             config: request.context.getRuntimeConfig(),
+            physicalSource,
             requester: readGatewayRequestMutationAuthority(request).assertCurrent,
             source: {
               storePath: target.storePath,

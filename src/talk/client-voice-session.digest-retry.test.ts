@@ -14,6 +14,7 @@ import {
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
+import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
@@ -370,6 +371,101 @@ describe("client voice session lifecycle", () => {
     },
   );
 
+  it.each([false, true])(
+    "settles a queued consult replay after run completion without reviving its owner (replacement=%s)",
+    async (replacement) => {
+      const target = { agentId: "main", sessionKey: "agent:main:main" };
+      const to = "channel:queued-consult-digest";
+      await seedSession(target.sessionKey, { channel: "discord", to });
+      const voiceSessionId = await createOrResumeClientVoiceSession({
+        ...target,
+        origin: "client",
+      });
+      const binding = { ...target, voiceSessionId, runId: "queued-consult" };
+      const releaseOriginal = await registerClientVoiceConsultRun(binding);
+      await closeClientVoiceSession({ ...target, voiceSessionId, config: {} });
+      await settleDigestAttempts();
+      expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+
+      const entered = createDeferred();
+      const resume = createDeferred();
+      const blocker = runOpenClawAgentWorkerWrite(target, async () => {
+        entered.resolve();
+        await resume.promise;
+      });
+      await entered.promise;
+      let settled = false;
+      const registering = registerClientVoiceConsultRun({ ...binding, config: {} }).then(
+        (release) => {
+          settled = true;
+          return release;
+        },
+      );
+      void registering.catch(() => {});
+      let releaseReplacement: (() => void) | undefined;
+      const successor = {
+        agentId: "successor",
+        sessionKey: "agent:successor:main",
+        voiceSessionId: "successor-voice",
+      };
+      try {
+        emitTrustedDiagnosticEvent({
+          type: "tool.execution.started",
+          runId: binding.runId,
+          toolCallId: "queued-effect",
+          toolName: "message",
+          mutatingAction: true,
+        });
+        emitTrustedDiagnosticEvent({
+          type: "tool.execution.completed",
+          runId: binding.runId,
+          toolCallId: "queued-effect",
+          toolName: "message",
+          durationMs: 5,
+        });
+        await completeRun(binding.runId);
+        expect(settled).toBe(false);
+        expect(resolveClientVoiceRunBinding(binding.runId)).toBeUndefined();
+        if (replacement) {
+          await createOrResumeClientVoiceSession({ ...successor, origin: "client" });
+          releaseReplacement = await registerClientVoiceConsultRun({
+            ...successor,
+            runId: binding.runId,
+          });
+        }
+        resume.resolve();
+        const releaseReplay = await registering;
+        await settleDigestAttempts();
+        expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toMatchObject({
+          status: "closed",
+          consultRunIds: [binding.runId],
+          effects: [{ runId: binding.runId, toolCallId: "queued-effect", status: "succeeded" }],
+          digestDeliveredAt: expect.any(Number),
+        });
+        expect(sendDurableMessageBatch).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            to,
+            durability: "required",
+            payloads: [{ text: "Voice call changes\n- message: succeeded" }],
+          }),
+        );
+        releaseReplay();
+        expect(resolveClientVoiceRunBinding(binding.runId)).toEqual(
+          replacement ? successor : undefined,
+        );
+        await closeClientVoiceSession({ ...target, voiceSessionId, config: {} });
+        await settleDigestAttempts();
+        expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
+      } finally {
+        resume.resolve();
+        await blocker;
+        (await registering)();
+        releaseOriginal();
+        releaseReplacement?.();
+      }
+    },
+  );
+
   it("retries a deferred digest on the next lifecycle trigger after run completion", async () => {
     await seedSession("agent:main:main", {
       channel: "discord",
@@ -678,8 +774,8 @@ describe("client voice session lifecycle", () => {
     });
   });
   describe("startup", () => {
-    it("stamps required Talk creation once", async () => {
-      const target = { agentId: "main", sessionKey: "agent:main:talk:new" };
+    it.each(["main", "fresh"])("stamps required Talk creation once in %s", async (agentId) => {
+      const target = { agentId, sessionKey: `agent:${agentId}:talk:new` };
       const actor = { type: "human" as const, source: "profile" as const, id: "profile-required" };
       const creation = { actor, sandbox: "required" as const };
       const sessionId = await ensureClientVoiceAgentSessionEntry({ ...target, creation });
@@ -826,7 +922,7 @@ describe("client voice session lifecycle", () => {
       const controller = new AbortController();
       const creating = ensureClientVoiceAgentSessionEntry({
         ...target,
-        assertCommitAllowed: () => controller.signal.throwIfAborted(),
+        assertCurrent: () => controller.signal.throwIfAborted(),
       });
       controller.abort(new Error("browser disconnected"));
       const rejected = expect(creating).rejects.toThrow("browser disconnected");

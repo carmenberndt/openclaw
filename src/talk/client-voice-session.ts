@@ -73,6 +73,7 @@ type ClientVoiceRun = {
   source: ClientVoiceSessionSource;
   settlement?: ReturnType<typeof captureClientVoiceSessionSettlement>;
   stopObserving?: () => void;
+  retired?: true;
 };
 
 const voiceSessionByRunId = new Map<string, ClientVoiceRun>();
@@ -153,6 +154,7 @@ function retireClientVoiceRun(runId: string, owner: ClientVoiceRun, retry = true
   if (voiceSessionByRunId.get(runId) !== owner) {
     return;
   }
+  owner.retired = true;
   voiceSessionByRunId.delete(runId);
   owner.stopObserving?.();
   try {
@@ -201,6 +203,7 @@ export async function registerClientVoiceConsultRun(
     voiceSessionId: string;
     runId: string;
     config?: OpenClawConfig;
+    physicalSource?: ClientVoiceSessionSource;
   },
 ): Promise<() => void> {
   const params = { ...input };
@@ -232,11 +235,14 @@ export async function registerClientVoiceConsultRun(
         now: Date.now(),
       };
       const publish = (record: ClientVoiceSessionRecord | undefined) => {
+        // A queued replay still commits, but cannot revive its retired run owner.
+        const retired = sameBinding && previous.retired;
         const current = voiceSessionByRunId.get(params.runId);
         if (
-          current?.binding.agentId !== params.agentId ||
-          current.binding.voiceSessionId !== params.voiceSessionId ||
-          current.binding.sessionKey !== params.sessionKey
+          !retired &&
+          (current?.binding.agentId !== params.agentId ||
+            current.binding.voiceSessionId !== params.voiceSessionId ||
+            current.binding.sessionKey !== params.sessionKey)
         ) {
           if (current) {
             retireClientVoiceRun(params.runId, current);
@@ -265,7 +271,7 @@ export async function registerClientVoiceConsultRun(
           });
         }
         ensureToolEffectSubscription();
-        const owner = voiceSessionByRunId.get(params.runId);
+        const owner = retired ? undefined : voiceSessionByRunId.get(params.runId);
         return () => {
           if (owner) {
             retireClientVoiceRun(params.runId, owner);

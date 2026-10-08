@@ -43,6 +43,7 @@ import {
   expectRecordFields,
   expectRespondError,
   expectRespondOk,
+  expectSessionEntryEnsure,
   mockCallArg,
 } from "./responses.test-support.js";
 
@@ -1802,14 +1803,7 @@ describe("talk.session unified handlers", () => {
       surface: "gateway-relay",
       autoRespondToAudio: false,
     });
-    expect(mocks.ensureClientVoiceAgentSessionEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: "main",
-        sessionKey: "agent:main:main",
-        storePath: expect.any(String),
-        assertCommitAllowed: expect.any(Function),
-      }),
-    );
+    expectSessionEntryEnsure(mocks.ensureClientVoiceAgentSessionEntry, "main", "agent:main:main");
     const relayCreateInput = mockCallArg(mocks.createTalkRealtimeRelaySession) as Record<
       string,
       unknown
@@ -2092,13 +2086,10 @@ describe("talk.session unified handlers", () => {
     expect(mocks.resolveConfiguredRealtimeVoiceProvider).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "research" }),
     );
-    expect(mocks.ensureClientVoiceAgentSessionEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: "research",
-        sessionKey: "agent:research:incident-42",
-        storePath: expect.any(String),
-        assertCommitAllowed: expect.any(Function),
-      }),
+    expectSessionEntryEnsure(
+      mocks.ensureClientVoiceAgentSessionEntry,
+      "research",
+      "agent:research:incident-42",
     );
     const response = expectRespondOk(respond, { relaySessionId: "relay-talk-owner" });
     expect(JSON.stringify(response)).not.toContain(model);
@@ -2208,13 +2199,10 @@ describe("talk.session unified handlers", () => {
         }),
       }),
     );
-    expect(mocks.ensureClientVoiceAgentSessionEntry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: "voice-agent",
-        sessionKey: "agent:voice-agent:main",
-        storePath: expect.any(String),
-        assertCommitAllowed: expect.any(Function),
-      }),
+    expectSessionEntryEnsure(
+      mocks.ensureClientVoiceAgentSessionEntry,
+      "voice-agent",
+      "agent:voice-agent:main",
     );
     expectRespondOk(respond, { relaySessionId: "relay-effective-model" });
   });
@@ -3227,14 +3215,7 @@ describe("talk.client.create handler", () => {
       expect(createInput).not.toHaveProperty("provider");
       expect(createInput).not.toHaveProperty("providers");
       expect(createInput).not.toHaveProperty("transport");
-      expect(mocks.ensureClientVoiceAgentSessionEntry).toHaveBeenCalledWith(
-        expect.objectContaining({
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          storePath: expect.any(String),
-          assertCommitAllowed: expect.any(Function),
-        }),
-      );
+      expectSessionEntryEnsure(mocks.ensureClientVoiceAgentSessionEntry, "main", "agent:main:main");
       expect(mocks.readSessionPreviewItemsFromTranscriptAsync).toHaveBeenCalledWith(
         {
           agentId: "main",

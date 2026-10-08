@@ -1,9 +1,11 @@
+import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
+import type { ClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import { registerClientVoiceConsultRun } from "../../../talk/client-voice-session.js";
 import type { RealtimeVoiceAgentConsultRunner } from "../../../talk/provider-types.js";
 import { abortChatRunById } from "../../chat-abort.js";
 import type { TalkAgentConsultRequest } from "../client-agent-consult.types.js";
 import type { RelaySession } from "./state.js";
-import { ensureRelayVoiceSession } from "./voice.js";
+import { captureRelayVoiceSessionSource, ensureRelayVoiceSession } from "./voice.js";
 
 type RelayAgentConsultRunner = RealtimeVoiceAgentConsultRunner & {
   adoptCompletionClaims: () => void;
@@ -66,7 +68,10 @@ export function createRelayAgentRunRegistration(
     runId: string;
     callId?: string;
     assertCurrent?: () => void;
-    registerVoice?: (assertCurrent: () => void) => Promise<() => void>;
+    registerVoice?: (
+      assertCurrent: () => void,
+      physicalSource: ClientVoiceSessionSource,
+    ) => Promise<() => void>;
   }): Promise<() => void> {
     const session = getRelaySession(params.relaySessionId, params.connId);
     const callId = params.callId?.trim();
@@ -93,30 +98,40 @@ export function createRelayAgentRunRegistration(
       }
     };
     try {
-      assertCurrent();
-      if (callId && !session.toolCalls.tryAdmit([callId])) {
-        throw new Error("Realtime relay tool-call session limit exceeded");
-      }
-      session.activeAgentRuns.set(params.runId, params.sessionKey);
-      if (callId) {
-        session.activeAgentToolCalls.set(callId, params.runId);
-      }
-      if (!(await ensureRelayVoiceSession(session))) {
-        throw new Error("Realtime relay voice session could not be created for agent consult");
-      }
-      assertCurrent();
-      const { agentId, sessionKey } = session.sessionTarget;
-      releaseVoice = params.registerVoice
-        ? await params.registerVoice(assertCurrent)
-        : await registerClientVoiceConsultRun({
-            agentId,
-            sessionKey,
-            voiceSessionId: session.id,
-            runId: params.runId,
-            assertCurrent,
-          });
-      assertCurrent();
-      return release;
+      const source = captureRelayVoiceSessionSource(session);
+      return await withClientVoiceSessionSettlement(
+        async () => {
+          assertCurrent();
+          if (callId && !session.toolCalls.tryAdmit([callId])) {
+            throw new Error("Realtime relay tool-call session limit exceeded");
+          }
+          session.activeAgentRuns.set(params.runId, params.sessionKey);
+          if (callId) {
+            session.activeAgentToolCalls.set(callId, params.runId);
+          }
+          if (!(await ensureRelayVoiceSession(session))) {
+            throw new Error("Realtime relay voice session could not be created for agent consult");
+          }
+          assertCurrent();
+          const { agentId, sessionKey } = session.sessionTarget;
+          const physicalSource = captureRelayVoiceSessionSource(session);
+          physicalSource.assertCurrent();
+          releaseVoice = params.registerVoice
+            ? await params.registerVoice(assertCurrent, physicalSource)
+            : await registerClientVoiceConsultRun({
+                agentId,
+                sessionKey,
+                voiceSessionId: session.id,
+                runId: params.runId,
+                assertCurrent,
+                physicalSource,
+              });
+          assertCurrent();
+          return release;
+        },
+        undefined,
+        source.settlementContext,
+      );
     } catch (error) {
       release();
       abortChatRunById(session.context, {

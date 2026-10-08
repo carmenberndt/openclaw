@@ -21,6 +21,7 @@ const voiceSessionMocks = vi.hoisted(() => ({
   closeRelayVoiceSessionRecord: vi.fn(),
   createOrResumeClientVoiceSession: vi.fn(),
   captureClientVoiceSessionWriter: vi.fn(),
+  captureClientVoiceSessionSource: vi.fn(),
 }));
 
 // mock-isolation: The queue policy is exercised without durable voice state.
@@ -38,6 +39,9 @@ vi.mock("../../../talk/client-voice-session-lifecycle.js", async (importOriginal
 vi.mock("../../../talk/client-voice-session-write.js", () => ({
   captureClientVoiceSessionWriter: voiceSessionMocks.captureClientVoiceSessionWriter,
 }));
+vi.mock("../../../talk/client-voice-session-source.js", () => ({
+  captureClientVoiceSessionSource: voiceSessionMocks.captureClientVoiceSessionSource,
+}));
 // mock-isolation: Exercise retry decisions without wall-clock backoff.
 vi.mock("../../../utils/sleep.js", () => ({ sleep: async () => {} }));
 
@@ -47,8 +51,12 @@ function createRelaySession(refuseCloseSource = false): {
 } {
   const failSession = vi.fn(() => {
     if (refuseCloseSource) {
-      voiceSessionMocks.captureClientVoiceSessionWriter.mockImplementationOnce(() => {
-        throw new Error("Voice source was replaced before close");
+      const capture = voiceSessionMocks.captureClientVoiceSessionWriter.getMockImplementation()!;
+      voiceSessionMocks.captureClientVoiceSessionWriter.mockImplementation((...args) => {
+        if (session.voiceTranscriptQueue.isIdle) {
+          throw new Error("Voice source was replaced before close");
+        }
+        return capture(...args);
       });
     }
     void closeRelayVoiceSession(session);
@@ -85,9 +93,11 @@ describe("realtime relay voice transcript persistence", () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockReset();
     voiceSessionMocks.closeRelayVoiceSessionRecord.mockReset().mockResolvedValue(undefined);
     voiceSessionMocks.createOrResumeClientVoiceSession.mockReset().mockResolvedValue("voice");
+    const source = { assertCurrent: () => {} };
+    voiceSessionMocks.captureClientVoiceSessionSource.mockReset().mockReturnValue(source);
     voiceSessionMocks.captureClientVoiceSessionWriter
       .mockReset()
-      .mockImplementation(() => ({ release: () => Promise.resolve() }));
+      .mockImplementation(() => ({ source, release: () => Promise.resolve() }));
   });
 
   it("joins its accepted prefix after close settlement admission is lost", async () => {

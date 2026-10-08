@@ -14,6 +14,7 @@ import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultChatMessage,
 } from "../../talk/agent-consult-tool.js";
+import type { ClientVoiceSessionSource } from "../../talk/client-voice-session-source.js";
 import { abortChatRunById } from "../chat-abort.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
@@ -46,7 +47,10 @@ export async function startTalkRealtimeAgentConsult(
     connId?: string;
     onRunStarted: (
       runId: string,
-      context: { assertWorkAdmissionCurrent: () => void },
+      context: {
+        assertWorkAdmissionCurrent: () => void;
+        physicalSource?: ClientVoiceSessionSource;
+      },
     ) => Promise<() => void>;
   },
 ): Promise<{ ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }> {
@@ -149,8 +153,11 @@ export async function startTalkRealtimeAgentConsult(
               runId,
               callId: params.callId,
               assertCurrent: assertWorkAdmissionCurrent,
-              registerVoice: (assertRelayCurrent) =>
-                params.onRunStarted(runId, { assertWorkAdmissionCurrent: assertRelayCurrent }),
+              registerVoice: (assertRelayCurrent, physicalSource) =>
+                params.onRunStarted(runId, {
+                  assertWorkAdmissionCurrent: assertRelayCurrent,
+                  physicalSource,
+                }),
             });
           } else {
             releaseClient = await params.onRunStarted(runId, { assertWorkAdmissionCurrent });

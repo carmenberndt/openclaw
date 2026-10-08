@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
+import {
+  applySessionEntryOperation,
+  applySessionEntryTargetOperation,
+} from "../config/sessions/session-accessor.sqlite-entry.js";
+import { resolveSqliteSessionKey } from "../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionPendingInputAuthorityFacts } from "../config/sessions/session-pending-input-authority.js";
 import {
   prepareSessionSourceAuthority,
+  composeSessionSourceAssertion,
   releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
@@ -20,9 +25,11 @@ import {
   isSessionStoreReadCandidateCurrent,
 } from "../config/sessions/session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "../config/sessions/session-store-target-inventory.js";
+import { collectSessionEntryLookupKeys } from "../config/sessions/store-entry.js";
 import { mergeSessionEntry, type InternalSessionEntry } from "../config/sessions/types.js";
 import { assertDatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+import { isIncognitoSessionKey } from "../routing/session-key.js";
 import type { OpenClawAgentDatabaseAdmissionExecution } from "../state/openclaw-agent-db-admission.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db-contract.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
@@ -39,6 +46,7 @@ import {
 } from "./client-voice-session-lifecycle.js";
 import {
   captureClientVoiceSessionSource,
+  captureClientVoiceEntrySource,
   createClientVoiceSessionSource,
   prepareClientVoiceSessionSourceChecks,
   type ClientVoiceSessionSource,
@@ -194,7 +202,8 @@ export function captureClientVoiceSessionWriter(params: {
     get admissionExecution(): OpenClawAgentDatabaseAdmissionExecution {
       return execution;
     },
-    adoptNativeDatabase: execution.adoptNativeDatabase,
+    adoptNativeDatabase: (database: OpenClawAgentDatabase) =>
+      execution.adoptNativeDatabase(database),
     release: () => execution.release(),
     read(voiceSessionId: string) {
       return runOpenClawAgentWorkerWrite(options, () =>
@@ -220,44 +229,138 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   sessionKey: string;
   storePath?: string;
   deadlineAt?: number;
-  assertCommitAllowed?: () => void;
+  requester?: SessionSourceAssertion;
+  source?: SessionSourceAssertion;
+  assertCurrent?: () => void;
   onCommitted?: (entry: InternalSessionEntry) => void;
   onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: InternalSessionEntry) => void;
   creation?: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
 }): Promise<string> {
-  const created = await patchSessionEntryCore(
-    params,
-    (_entry, context) => {
-      if (context.existingEntry?.sessionId) {
-        return null;
-      }
-      if (context.existingEntry) {
-        return { sessionId: randomUUID() };
-      }
-      return buildSessionCreationStamp({
-        via: "talk",
-        actor: params.creation?.actor ?? { type: "human", source: "unknown" },
-        sandbox: params.creation?.sandbox,
-      });
-    },
-    {
-      fallbackEntry: mergeSessionEntry(undefined, {}),
-      onCommitted: params.onCommitted,
-      onCommittedSource: params.onCommittedSource,
-      assertCommitAllowed: () => {
-        // Provider startup can end while this write is queued or being prepared.
-        // Revalidate at commit so it cannot leave an unusable empty chat.
-        params.assertCommitAllowed?.();
-        if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
-          throw new Error("Realtime browser session expired during startup; try again");
-        }
+  const assertLifetimeCurrent = () => {
+    params.assertCurrent?.();
+    if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
+      throw new Error("Realtime browser session expired during startup; try again");
+    }
+  };
+  const reduction = () => {
+    const fallbackEntry = mergeSessionEntry(undefined, {});
+    return {
+      operation: {
+        kind: "ensure-identity" as const,
+        sessionId: fallbackEntry.sessionId,
+        creation: buildSessionCreationStamp({
+          via: "talk",
+          actor: params.creation?.actor ?? { type: "human", source: "unknown" },
+          sandbox: params.creation?.sandbox,
+        }),
       },
-    },
-  );
-  if (!created?.sessionId) {
-    throw new Error(`agent session could not be initialized (${params.sessionKey})`);
+      fallbackEntry,
+    };
+  };
+  const publication = {
+    onCommitted: params.onCommitted,
+    onCommittedSource: params.onCommittedSource,
+  };
+  const complete = (created: InternalSessionEntry | null) => {
+    if (!created?.sessionId) {
+      throw new Error(`agent session could not be initialized (${params.sessionKey})`);
+    }
+    return created.sessionId;
+  };
+  if (isIncognitoSessionKey(params.sessionKey)) {
+    const { operation, fallbackEntry } = reduction();
+    const authority = composeSessionSourceAssertion([params.requester, params.source]);
+    return complete(
+      await applySessionEntryOperation(params, operation, {
+        ...publication,
+        fallbackEntry,
+        workerGuard: { assertCurrent: assertLifetimeCurrent },
+        assertCommitAllowed: () => {
+          assertLifetimeCurrent();
+          authority();
+        },
+      }),
+    );
   }
-  return created.sessionId;
+  const resources: Array<Pick<PreparedSessionSourceAuthority, "release">> = [];
+  const errors: unknown[] = [];
+  try {
+    const selected = await captureClientVoiceEntrySource(params, assertLifetimeCurrent);
+    resources.push(selected.execution);
+    return await runOpenClawAgentWriteAdmission(
+      selected.options,
+      async () => {
+        const { execution, agentId } = selected;
+        const requester = await prepareSessionSourceAuthority(params.requester);
+        resources.push(requester);
+        const borrowedRequester = Object.assign(() => params.requester?.(), {
+          prepareSessionSource: async () => ({ ...requester, release: undefined }),
+        });
+        const source = composeSessionSourceAssertion([borrowedRequester, params.source]);
+        const assertPreparationCurrent = () => {
+          execution.assertCurrent();
+          selected.assertCurrent();
+          if (requester.assertPreparedCurrent) {
+            requester.assertPreparedCurrent();
+          } else if (!requester.nativeSource) {
+            requester.assertCurrent();
+          }
+        };
+        const { withOpenClawAgentDatabaseAsync, withOpenClawAgentDatabaseRuntimeFromExecution } =
+          await import("../state/openclaw-agent-db.js");
+        const apply = async (database: OpenClawAgentDatabase) => {
+          await execution.adoptNativeDatabase(database);
+          assertPreparationCurrent();
+          const identity = execution.fileIdentity;
+          if (!identity) {
+            throw new Error("Talk entry preparation omitted its physical source");
+          }
+          const canonicalKey = resolveSqliteSessionKey(params.sessionKey, agentId);
+          const { operation, fallbackEntry } = reduction();
+          return complete(
+            await applySessionEntryTargetOperation(
+              {
+                agentId,
+                env: selected.options.env,
+                storePath: selected.storePath,
+                target: { canonicalKey, storeKeys: collectSessionEntryLookupKeys(canonicalKey) },
+                readSource: {
+                  agentId: execution.agentId,
+                  path: identity.nativeLocation,
+                  databaseIdentity: identity.physicalIdentity,
+                  databaseBirthtime: identity.birthtime,
+                },
+              },
+              operation,
+              {
+                ...publication,
+                fallbackEntry,
+                retainedExecution: execution,
+                workerGuard: { source, assertCurrent: assertPreparationCurrent },
+              },
+            ),
+          );
+        };
+        return requester.opaqueCommitGuard
+          ? withOpenClawAgentDatabaseAsync(selected.options, apply, () => {
+              assertPreparationCurrent();
+              source();
+            })
+          : withOpenClawAgentDatabaseRuntimeFromExecution(
+              selected.options,
+              execution,
+              apply,
+              assertPreparationCurrent,
+            );
+      },
+      true,
+    );
+  } catch (error) {
+    errors.push(error);
+    throw error;
+  } finally {
+    await releaseSessionSourceAuthorities(resources, errors);
+  }
 }
 
 export type ClientVoiceSessionMutationAuthority = {

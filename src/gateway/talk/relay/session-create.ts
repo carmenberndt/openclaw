@@ -3,7 +3,6 @@ import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/n
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
 import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
-import type { ClientVoiceSessionWriter } from "../../../talk/client-voice-session-write.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceAudioClearReason,
@@ -433,8 +432,7 @@ export function createTalkRealtimeRelaySession(
         confirmationReadiness.observeUserTranscript(text, false);
       }
       const previousTranscriptSeq = relay.voiceTranscriptSeq;
-      const enqueueTranscript = (source?: ClientVoiceSessionWriter) =>
-        enqueueRelayVoiceTranscript(relay, role, text, source);
+      const enqueueTranscript = () => enqueueRelayVoiceTranscript(relay, role, text);
       if (
         final &&
         !(relay.closing?.runTranscript

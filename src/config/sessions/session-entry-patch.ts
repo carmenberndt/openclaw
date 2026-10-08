@@ -46,6 +46,7 @@ import type { InternalSessionEntry as SessionEntry } from "./types.js";
 export async function patchSessionEntryInWorker(params: {
   database: OpenClawAgentDatabaseOptions & { path: string };
   databaseIdentity?: string;
+  retainedExecution?: OpenClawAgentDatabaseExecution;
   agentId: string;
   selection: SessionEntryPatchSelection;
   assertCurrent: () => void;

@@ -25,6 +25,7 @@ import {
   resolveOpenClawAgentSqlitePath,
 } from "../../../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWriteAdmission } from "../../../state/openclaw-agent-write-admission.js";
+import { readVoiceSessionRecord } from "../../../talk/client-voice-session-store.js";
 import * as voiceSessions from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
@@ -34,9 +35,18 @@ import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js
 import { createGatewayRequestContext } from "../../server-request-context.js";
 import { makeContextParams } from "../../server-request-context.test-support.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
+import { createIdleRelayProvider } from "../relay/index.test-support.js";
+import { closeRelaySession } from "../relay/operations.js";
+import { createTalkRealtimeRelaySession } from "../relay/session-create.js";
+import { relaySessions } from "../relay/state.js";
+import { prepareTalkSessionTarget } from "../session-target.js";
 import { talkClientHandlers } from "./client.js";
 
-const chat = vi.hoisted(() => ({ current: true, dispatched: vi.fn() }));
+const chat = vi.hoisted(() => ({
+  current: true,
+  dispatched: vi.fn(),
+  beforeRegistration: vi.fn(),
+}));
 vi.mock("../../server-methods/chat-send-handler.js", () => ({
   handleTrustedInternalChatSend: async (
     request: GatewayRequestHandlerOptions,
@@ -55,6 +65,7 @@ vi.mock("../../server-methods/chat-send-handler.js", () => ({
     let release: void | (() => void) = undefined;
     try {
       assertCurrent();
+      chat.beforeRegistration();
       release = await options.beforeDispatch?.({
         runId: "queued-consult",
         assertCurrent,
@@ -96,6 +107,7 @@ describe("voice consult registration authority", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     chat.current = true;
+    chat.beforeRegistration.mockReset();
     inWorkerGrant = false;
     workerGrantReads = [];
     tempDir = tempDirs.make("openclaw-consult-authority-");
@@ -123,6 +135,129 @@ describe("voice consult registration authority", () => {
         }, attachment),
     );
   });
+
+  it("keeps delegated relay registration on its source through the real tool-call handler", async () => {
+    const originalEnv = { ...process.env };
+    const env = captureEnv(["OPENCLAW_STATE_DIR"]);
+    const successor = path.join(tempDir, "successor");
+    const config = {
+      agents: { defaults: { workspace: path.join(tempDir, "workspace") } },
+      session: { store: resolveOpenClawAgentSqlitePath({ agentId: scope.agentId }) },
+    };
+    const context = createGatewayRequestContext(makeContextParams());
+    context.getRuntimeConfig = () => config;
+    context.getCommittedRuntimeConfig = () => config;
+    const client = { connId: "relay-delegation-source" };
+    const created = createTalkRealtimeRelaySession({
+      context,
+      connId: client.connId,
+      cfg: config,
+      provider: createIdleRelayProvider(),
+      providerConfig: {},
+      instructions: "brief",
+      tools: [],
+      controlSource: "transcript",
+      sessionTarget: prepareTalkSessionTarget(config, scope.sessionKey),
+    });
+    const relay = relaySessions.get(created.relaySessionId)!;
+    try {
+      setTestEnvValue("OPENCLAW_STATE_DIR", successor);
+      await voiceSessions.createOrResumeClientVoiceSession({
+        ...scope,
+        voiceSessionId: relay.id,
+        origin: "relay",
+      });
+      env.restore();
+      const params = {
+        sessionKey: scope.sessionKey,
+        relaySessionId: relay.id,
+        voiceSessionId: relay.id,
+        callId: "delegated-source-call",
+        name: "openclaw_agent_consult",
+        args: { question: "Report fixture status" },
+      };
+      const authorized = resolveSessionMutationAuthorization({
+        method: "talk.client.toolCall",
+        requestParams: params,
+        context,
+        client: client as never,
+      });
+      expect(authorized.error).toBeNull();
+      chat.beforeRegistration.mockImplementationOnce(() => {
+        setTestEnvValue("OPENCLAW_STATE_DIR", successor);
+      });
+      const respond = vi.fn();
+      await talkClientHandlers["talk.client.toolCall"]!({
+        req: { type: "req", id: "delegated-source", method: "talk.client.toolCall" },
+        params,
+        context,
+        client,
+        respond,
+        sessionMutationAuthorization: authorized.authorization,
+      } as never);
+      expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(true);
+      expect(chat.dispatched).toHaveBeenCalledOnce();
+      expect(readVoiceSessionRecord(scope.agentId, relay.id, { env: originalEnv })).toMatchObject({
+        consultRunIds: ["queued-consult"],
+        status: "open",
+      });
+      expect(readVoiceSessionRecord(scope.agentId, relay.id)).toMatchObject({
+        consultRunIds: [],
+        status: "open",
+      });
+    } finally {
+      env.restore();
+      await closeRelaySession(relay, "completed");
+      await cleanupSessionStateForTest({ stateDir: successor, rootPath: successor });
+    }
+  });
+
+  it.each([false, true])(
+    "reopens a cold tool-call target with its SDK guard classified (sdk=%s)",
+    async (sdk) => {
+      const config = { agents: { defaults: { workspace: path.join(tempDir, "workspace") } } };
+      const context = createGatewayRequestContext(makeContextParams());
+      context.getRuntimeConfig = () => config;
+      context.getCommittedRuntimeConfig = () => config;
+      const params = {
+        sessionKey: scope.sessionKey,
+        voiceSessionId,
+        callId: "cold-consult-call",
+        name: "openclaw_agent_consult",
+        args: { question: "Report the fixture status" },
+      };
+      const authorized = resolveSessionMutationAuthorization({
+        method: "talk.client.toolCall",
+        requestParams: params,
+        context,
+        client: null,
+      });
+      expect(authorized.error).toBeNull();
+      expect(getOpenClawAgentDatabaseIfOpen(scope)).toBeUndefined();
+      let checkedWhileCold = false;
+      const respond = vi.fn();
+      await talkClientHandlers["talk.client.toolCall"]!({
+        req: { type: "req", id: "cold-consult", method: "talk.client.toolCall" },
+        params,
+        context,
+        client: null,
+        respond,
+        sessionMutationAuthorization: authorized.authorization,
+        ...(sdk
+          ? {
+              sessionMutationCommitGuard: () => {
+                expect(inWorkerGrant).toBe(false);
+                checkedWhileCold ||= getOpenClawAgentDatabaseIfOpen(scope) === undefined;
+              },
+            }
+          : {}),
+      } as never);
+      expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(true);
+      expect(chat.dispatched).toHaveBeenCalledOnce();
+      expect(checkedWhileCold).toBe(sdk);
+      expect(workerGrantReads.filter(isSessionEntryDataSql)).toEqual([]);
+    },
+  );
 
   it.for(["current", "worker-current", "sdk", "session", "chat"] as const)(
     "publishes only a currently authorized queued consult (%s)",

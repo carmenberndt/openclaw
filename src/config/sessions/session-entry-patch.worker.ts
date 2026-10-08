@@ -83,7 +83,7 @@ export function commitSessionEntryPatch(
           ...input,
           existing,
           writeBase,
-          patch: reduceSessionEntryPatch(input.operation, writeBase),
+          patch: reduceSessionEntryPatch(input.operation, writeBase, existing),
         });
         mutation = writeSessionEntryPatchInDatabase(database, {
           sessionKey: input.sessionKey,

@@ -8,6 +8,7 @@ import {
   resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../paths.js";
 import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-exact-read.js";
@@ -20,6 +21,7 @@ export function captureSessionEntryPatchSource(
   scope: ResolvedSqliteScope,
   sessionKey: string,
   captured?: CapturedSessionEntryReadSource,
+  retainedExecution?: OpenClawAgentDatabaseExecution,
 ) {
   // Queueing and either cold open must retain the same registration and lease owner.
   const resolved = {
@@ -69,11 +71,27 @@ export function captureSessionEntryPatchSource(
     );
   };
   const assertCurrent = () => {
+    if (retainedExecution) {
+      retainedExecution.assertCurrent();
+      const identity = retainedExecution.fileIdentity;
+      if (
+        !captured ||
+        !identity ||
+        retainedExecution.agentId !== databaseOptions.agentId ||
+        captured.databaseIdentity !== identity.physicalIdentity ||
+        captured.databaseBirthtime !== identity.birthtime
+      ) {
+        throw new Error("Retained session writer differs from its acknowledged source");
+      }
+    }
     if (targetIdentity.key.startsWith("file:")) {
       assertExistingDatabaseIdentity(databasePath, targetIdentity.key, targetIdentity.birthtime);
     }
     assertCapturedSource();
   };
+  if (retainedExecution) {
+    assertCurrent();
+  }
   return {
     resolved,
     databaseOptions,

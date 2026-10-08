@@ -1798,6 +1798,13 @@ operation checks its own current authority even when reusing a writer.
 Non-opaque native operations use the existing runtime admission owner to prepare
 cold targets in the worker. Bootstrap grants carry only physical and lifetime
 fences; full source authority is rechecked after admission and before native writes.
+Talk entry initialization uses a closed ensure operation in the existing entry
+writer. Cold admission retains the original executor and hands its acknowledged
+physical source into the entry operation. Complete selector-family inventories
+qualify originally absent suffixes; later file appearances or alias changes refuse
+the write. Already admitted sessions reuse their bound identity without a no-op
+entry transaction. Entry COMMIT, source recording, and publication remain before
+voice admission, so a later voice refusal does not roll back the created chat.
 Same-store Talk creation and consult registration consume entry and membership
 facts from their voice transaction through the existing sharing grant, without a
 separate planning read.
@@ -1810,6 +1817,14 @@ Consult registration retains requester, session-source, and accepted-work author
 through the queue and commit, then publishes its run binding before execution
 starts. Chat-backed relays use that same registration once, carrying the relay's
 live cancellation fence. Lifetime-only registrations keep the direct worker path.
+The relay retains its creator's physical source through coalesced creation,
+registration, transcript queues, and close. Only that creator can publish its
+acknowledged source; later operations borrow writers from that source after
+creation settles. Accepted settlement spans those waits and provider-final
+callbacks. Known creation failures may retain the creator's admitted database,
+while unknown outcomes remain non-replayable. A queued consult replay cannot
+reinstall a retired run binding or release its replacement, but still settles
+accepted effects and re-arms the closed call's digest.
 Transcript failure reservations remain durable before the
 fallible append. Same-store append and success bookkeeping commit together, then
 observers consume the acknowledged transcript and voice facts. Gateway

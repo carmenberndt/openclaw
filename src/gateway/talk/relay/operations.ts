@@ -8,10 +8,6 @@ import {
   type RealtimeVoiceAgentControlResult,
 } from "../../../talk/agent-run-control.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
-import {
-  captureClientVoiceSessionWriter,
-  type ClientVoiceSessionWriter,
-} from "../../../talk/client-voice-session-write.js";
 import type {
   RealtimeVoiceCloseOptions,
   RealtimeVoiceToolResultOptions,
@@ -57,7 +53,11 @@ import {
   retireRelayAgentRuns,
   type RelaySession,
 } from "./state.js";
-import { closeRelayVoiceSession, ensureRelayVoiceSession } from "./voice.js";
+import {
+  captureRelayVoiceSessionSource,
+  closeRelayVoiceSession,
+  ensureRelayVoiceSession,
+} from "./voice.js";
 
 export function adoptTalkRealtimeRelaySession(
   session: RelaySession,
@@ -117,12 +117,14 @@ export function closeRelaySession(
   };
   session.closing = closing;
   const close = async (admissionFailure?: { error: unknown }) => {
-    let borrowed: ReturnType<typeof captureClientVoiceSessionWriter>;
     try {
       if (admissionFailure) {
         throw admissionFailure.error;
       }
-      borrowed = captureClientVoiceSessionWriter({ agentId: session.sessionTarget.agentId });
+      const source = captureRelayVoiceSessionSource(session);
+      if (session.voiceSessionCreated) {
+        source.assertCurrent();
+      }
     } catch (error) {
       closing.reason = "error";
       closing.runTranscript = () => false;
@@ -137,25 +139,20 @@ export function closeRelaySession(
       }
       throw error;
     }
-    try {
-      closing.runTranscript = AsyncLocalStorage.bind(
-        (run: (source: ClientVoiceSessionWriter) => boolean) => run(borrowed),
-      );
-      await finishRelaySessionClose(
-        session,
-        reason,
-        closing,
-        () => closeRelayVoiceSession(session, borrowed),
-        options,
-      );
-    } finally {
-      await borrowed.release();
-    }
+    closing.runTranscript = AsyncLocalStorage.bind((run: () => boolean) => run());
+    await finishRelaySessionClose(
+      session,
+      reason,
+      closing,
+      () => closeRelayVoiceSession(session),
+      options,
+    );
   };
-  void withClientVoiceSessionSettlement(close, (error) => close({ error })).then(
-    completion.resolve,
-    completion.reject,
-  );
+  void withClientVoiceSessionSettlement(
+    close,
+    (error) => close({ error }),
+    session.voiceSessionSource?.settlementContext,
+  ).then(completion.resolve, completion.reject);
   // Disconnects, expiry, and provider callbacks have no RPC caller to observe cleanup failures.
   void completion.promise.catch((error: unknown) => {
     session.context.logGateway.warn(

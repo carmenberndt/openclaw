@@ -1,6 +1,8 @@
+import { releaseSessionSourceAuthorities } from "../../../config/sessions/session-source-authority.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
+import { captureClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import {
   captureClientVoiceSessionWriter,
   type ClientVoiceSessionWriter,
@@ -23,43 +25,78 @@ function logRelayVoiceFailure(session: RelaySession, message: string, error: unk
   session.context.logGateway?.warn(`${message}: ${formatErrorMessage(error)}`);
 }
 
-export function ensureRelayVoiceSession(
-  session: RelaySession,
-  retainedWriter?: ClientVoiceSessionWriter,
-): Promise<boolean> {
-  if (session.voiceSessionCreated) {
-    return Promise.resolve(true);
+export function captureRelayVoiceSessionSource(session: RelaySession) {
+  return (session.voiceSessionSource ??= captureClientVoiceSessionSource(
+    session.sessionTarget.agentId,
+  ));
+}
+
+export function ensureRelayVoiceSession(session: RelaySession): Promise<boolean> {
+  const fail = (error: unknown) => {
+    if (!hasSqliteWorkerOutcomeUnknown(error)) {
+      session.voiceSessionCreation = undefined;
+    }
+    logRelayVoiceFailure(session, "realtime relay voice session create failed", error);
+    return false;
+  };
+  try {
+    const source = captureRelayVoiceSessionSource(session);
+    if (session.voiceSessionCreated) {
+      source.assertCurrent();
+      return Promise.resolve(true);
+    }
+    const { agentId, sessionKey } = session.sessionTarget;
+    session.voiceSessionCreation ??= withClientVoiceSessionSettlement(
+      async () => {
+        let writer: ClientVoiceSessionWriter | undefined;
+        const errors: unknown[] = [];
+        try {
+          writer = captureClientVoiceSessionWriter({ agentId, physicalSource: source });
+          await createOrResumeClientVoiceSession(
+            {
+              agentId,
+              sessionKey,
+              provider: session.provider,
+              origin: "relay",
+              voiceSessionId: session.id,
+            },
+            writer,
+          );
+          const committed = writer.source;
+          committed.assertCurrent();
+          session.voiceSessionSource = committed;
+          session.voiceSessionCreated = true;
+          return true;
+        } catch (error) {
+          errors.push(error);
+          if (writer && !hasSqliteWorkerOutcomeUnknown(error)) {
+            try {
+              // Admission may have created the file before the voice write was refused.
+              const admitted = writer.source;
+              admitted.assertCurrent();
+              session.voiceSessionSource = admitted;
+            } catch {
+              // Keep the original descriptor fenced when its creator cannot certify the file.
+            }
+          }
+          throw error;
+        } finally {
+          await releaseSessionSourceAuthorities(writer ? [writer] : [], errors);
+        }
+      },
+      undefined,
+      source.settlementContext,
+    ).catch(fail);
+    return session.voiceSessionCreation;
+  } catch (error) {
+    return Promise.resolve(fail(error));
   }
-  const { agentId, sessionKey } = session.sessionTarget;
-  session.voiceSessionCreation ??= createOrResumeClientVoiceSession(
-    {
-      agentId,
-      sessionKey,
-      provider: session.provider,
-      origin: "relay",
-      voiceSessionId: session.id,
-    },
-    retainedWriter,
-  )
-    .then(() => {
-      session.voiceSessionCreated = true;
-      return true;
-    })
-    .catch((error: unknown) => {
-      if (!hasSqliteWorkerOutcomeUnknown(error)) {
-        session.voiceSessionCreation = undefined;
-      }
-      logRelayVoiceFailure(session, "realtime relay voice session create failed", error);
-      return false;
-    });
-  return session.voiceSessionCreation;
 }
 
 export function enqueueRelayVoiceTranscript(
   session: RelaySession,
   role: "user" | "assistant",
   text: string,
-  retainedWriter?: ClientVoiceSessionWriter,
 ): boolean {
   const observed =
     role === "user" && !session.closing
@@ -80,13 +117,17 @@ export function enqueueRelayVoiceTranscript(
   };
   const completion = withClientVoiceSessionSettlement(
     async () => {
-      const writer = retainedWriter ?? captureClientVoiceSessionWriter({ agentId });
-      try {
-        const admission = session.voiceTranscriptQueue.enqueue(
-          async () => {
-            if (!(await ensureRelayVoiceSession(session, writer))) {
-              throw new Error("Realtime voice session could not be recorded");
-            }
+      captureRelayVoiceSessionSource(session);
+      const admission = session.voiceTranscriptQueue.enqueue(
+        async () => {
+          if (!(await ensureRelayVoiceSession(session))) {
+            throw new Error("Realtime voice session could not be recorded");
+          }
+          const writer = captureClientVoiceSessionWriter({
+            agentId,
+            physicalSource: captureRelayVoiceSessionSource(session),
+          });
+          try {
             let lastError: unknown;
             for (const delayMs of RELAY_TRANSCRIPT_RETRY_DELAYS_MS) {
               if (delayMs > 0) {
@@ -116,24 +157,22 @@ export function enqueueRelayVoiceTranscript(
               }
             }
             throw lastError;
-          },
-          { weight: normalizedText.length },
-        );
-        accepted = admission.accepted;
-        if (!admission.accepted) {
-          rejection = admission.reason;
-          return;
-        }
-        session.voiceTranscriptSeq = transcriptSeq;
-        await admission.completion.then(observed?.persisted, reportFailure);
-      } finally {
-        if (!retainedWriter) {
-          await writer.release();
-        }
+          } finally {
+            await writer.release();
+          }
+        },
+        { weight: normalizedText.length },
+      );
+      accepted = admission.accepted;
+      if (!admission.accepted) {
+        rejection = admission.reason;
+        return;
       }
+      session.voiceTranscriptSeq = transcriptSeq;
+      await admission.completion.then(observed?.persisted, reportFailure);
     },
     undefined,
-    retainedWriter?.settlementContext,
+    session.voiceSessionSource?.settlementContext,
   );
   void completion.catch(reportFailure);
   if (!accepted) {
@@ -148,10 +187,7 @@ export function enqueueRelayVoiceTranscript(
   return true;
 }
 
-export function closeRelayVoiceSession(
-  session: RelaySession,
-  retainedWriter?: ClientVoiceSessionWriter,
-): Promise<void> {
+export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
   if (session.voiceSessionClose) {
     return session.voiceSessionClose;
   }
@@ -159,19 +195,22 @@ export function closeRelayVoiceSession(
   const { agentId, sessionKey } = session.sessionTarget;
   session.voiceSessionClose = withClientVoiceSessionSettlement(
     async () => {
-      let writer: ClientVoiceSessionWriter;
       try {
-        writer = retainedWriter ?? captureClientVoiceSessionWriter({ agentId });
+        captureRelayVoiceSessionSource(session);
+        await ensureRelayVoiceSession(session);
       } catch (error) {
         await session.voiceTranscriptQueue.flush();
         throw error;
       }
+      await session.voiceTranscriptQueue.flush();
+      if (!session.voiceSessionCreated) {
+        return;
+      }
+      const writer = captureClientVoiceSessionWriter({
+        agentId,
+        physicalSource: captureRelayVoiceSessionSource(session),
+      });
       try {
-        await ensureRelayVoiceSession(session, writer);
-        await session.voiceTranscriptQueue.flush();
-        if (!session.voiceSessionCreated) {
-          return;
-        }
         const config = session.voiceConfig ?? session.context.getRuntimeConfig();
         await closeRelayVoiceSessionRecord(
           {
@@ -183,16 +222,14 @@ export function closeRelayVoiceSession(
           writer,
         );
       } finally {
-        if (!retainedWriter) {
-          await writer.release();
-        }
+        await writer.release();
       }
     },
     async (error) => {
       await session.voiceTranscriptQueue.flush();
       throw error;
     },
-    retainedWriter?.settlementContext,
+    session.voiceSessionSource?.settlementContext,
   ).catch((error: unknown) => {
     logRelayVoiceFailure(session, "realtime relay voice session close failed", error);
   });

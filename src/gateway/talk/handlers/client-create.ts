@@ -442,7 +442,15 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
                     resolveSandboxedSessionCreation(client, runtimeConfig) ??
                     resolveOperatorSessionCreation(client),
                   deadlineAt: sessionEntryDeadlineAt,
-                  assertCommitAllowed,
+                  requester: composeSessionSourceAssertion([
+                    requester.assertCurrent,
+                    replacement?.source(target).assertCurrent,
+                  ]),
+                  source: sessionMutationAuthorization?.assertCurrent,
+                  assertCurrent: () => {
+                    requester.assertPreparationCurrent();
+                    gatewayControlOwner?.assertOpen();
+                  },
                   onCommittedSource: (readSource, entry) =>
                     sessionMutationAuthorization?.recordCreatedSession?.({
                       ...sessionTarget,

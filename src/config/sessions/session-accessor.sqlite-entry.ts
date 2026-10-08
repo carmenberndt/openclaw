@@ -395,7 +395,12 @@ async function patchSqliteSessionEntrySnapshot(
     incognitoBinding,
     assertCapturedSource,
     assertCurrent,
-  } = captureSessionEntryPatchSource(params.resolved, sessionKey, captured);
+  } = captureSessionEntryPatchSource(
+    params.resolved,
+    sessionKey,
+    captured,
+    options.retainedExecution,
+  );
   const prepare = async (prepared: SqliteLifecycleTargetSnapshot) => {
     const existing = prepared[0]?.entry;
     const writeBase = existing ?? options.fallbackEntry;
@@ -406,7 +411,7 @@ async function patchSqliteSessionEntrySnapshot(
     let contextEntryBorrowed = true;
     const patch =
       typeof params.update !== "function"
-        ? reduceSessionEntryPatch(params.update, writeBase)
+        ? reduceSessionEntryPatch(params.update, writeBase, existing)
         : await params.update(structuredClone(writeBase), {
             get existingEntry() {
               if (contextEntryBorrowed) {
@@ -477,6 +482,7 @@ async function patchSqliteSessionEntrySnapshot(
       assertCurrent: () => assertCurrent?.(),
       guard: options.workerGuard,
       preparedSource,
+      retainedExecution: options.retainedExecution,
       reduction:
         typeof params.update === "function"
           ? undefined
@@ -609,9 +615,11 @@ async function patchSqliteSessionEntrySnapshot(
     },
     params.operationLabel,
     undefined,
-    // Source-free worker patches may reuse a foreground planner's reservation.
+    // The captured source validated the retained writer before borrowing its reservation.
     // The admission owner still prevents reentry during a worker write grant.
-    useWorker && !sourceAssertion ? "foreground-reentrant" : "foreground",
+    options.retainedExecution || (useWorker && !sourceAssertion)
+      ? "foreground-reentrant"
+      : "foreground",
   );
   if (wrote) {
     kickSessionEntryMaintenanceAfterWrite({

@@ -1,6 +1,7 @@
 import { buildRestartRecoveryClaimCleanupPatch } from "./restart-recovery-state.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { projectCompactionAccountingPatch } from "./session-entry-projection.js";
+import type { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import {
   projectSessionEntryUsageUpdate,
   type SessionEntryUsageUpdate,
@@ -17,6 +18,11 @@ type ExpectedSession = Pick<SessionEntry, "sessionId"> &
 /** Closed internal operations; arbitrary updater callbacks retain prepare/CAS. */
 export type SessionEntryPatchOperation = (
   | { kind: "fields"; patch: Partial<SessionEntry> }
+  | {
+      kind: "ensure-identity";
+      sessionId: string;
+      creation: ReturnType<typeof buildSessionCreationStamp>;
+    }
   | { kind: "usage-accounting"; usage: SessionEntryUsageUpdate }
   | {
       kind: "restart-safe-terminal";
@@ -33,6 +39,7 @@ export type SessionEntryPatchOperation = (
 export function reduceSessionEntryPatch(
   operation: SessionEntryPatchOperation,
   entry: SessionEntry,
+  existingEntry: SessionEntry | undefined,
 ): Partial<SessionEntry> | null {
   const expected = operation.expected;
   if (
@@ -46,6 +53,12 @@ export function reduceSessionEntryPatch(
     return null;
   }
   switch (operation.kind) {
+    case "ensure-identity":
+      return existingEntry?.sessionId
+        ? null
+        : existingEntry
+          ? { sessionId: operation.sessionId }
+          : { ...operation.creation, sessionId: operation.sessionId };
     case "fields":
       return operation.patch;
     case "compaction-accounting":
