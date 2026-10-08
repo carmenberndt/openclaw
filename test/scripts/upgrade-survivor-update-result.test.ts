@@ -8,16 +8,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { publishDiagnostics } from "../../scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 import {
   observeSnapshotAllocations,
-  readNativeSnapshotRequest,
+  readSnapshotWorkerLaunch,
 } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-capture-binding.mjs";
 import { createSnapshotAcquisitionRecorder } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-evidence.mjs";
 import {
   assertSnapshotCleanupRefusal,
   bindSnapshotRuntimeIdentity,
-  observeSnapshotNativeBackups,
   readSnapshotProcessIdentity,
   writeSnapshotCleanupEvidence,
 } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-refusal.mjs";
+import { observeSnapshotNativeBackups } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-copy-fault.mjs";
 import { readWorkerCellPackageIdentity } from "../../scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs";
 import { redactSensitiveText } from "../../src/logging/redact.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -593,6 +593,42 @@ describe("published upgrade survivor consent recovery", () => {
 });
 
 // Synthetic validator records only; real caller/native proof uses the maintenance owner.
+function nativeTransportFixture(ipc: boolean): {
+  transport: "ipc" | "one-shot";
+  ipcRequestId: number | null;
+  close: { code: number | null; signal: string | null };
+  stops: Array<{
+    kind: string;
+    signal: string;
+    accepted: boolean;
+    at: string;
+    owner: { name: string; file: string; sha256: string };
+  }>;
+  reply?: { id: number; ok: boolean; sha256: string; receivedAt: string };
+  observationError?: string;
+} {
+  return {
+    transport: ipc ? "ipc" : "one-shot",
+    ipcRequestId: ipc ? 2 : null,
+    close: ipc ? { code: null, signal: "SIGKILL" } : { code: 1, signal: null },
+    stops: ipc
+      ? [
+          {
+            kind: "failed-reply-retirement",
+            signal: "SIGKILL",
+            accepted: true,
+            at: "115",
+            owner: {
+              name: "retire",
+              file: "dist/sqlite-readonly-worker-session-fixture.mjs",
+              sha256: "f".repeat(64),
+            },
+          },
+        ]
+      : [],
+    ...(ipc ? { reply: { id: 2, ok: false, sha256: "e".repeat(64), receivedAt: "110" } } : {}),
+  };
+}
 function refusalRecords(artifacts: string) {
   const write = (name: string, value: unknown) =>
     writeFileSync(join(artifacts, name), JSON.stringify(value));
@@ -609,7 +645,11 @@ function refusalRecords(artifacts: string) {
   writeFileSync(marker, "");
   const stat = fs.statSync(marker, { bigint: true });
   const native = {
+    key: "d".repeat(64),
     pid: 101,
+    childStart: "125",
+    parentStart: "123",
+    ...nativeTransportFixture(false),
     request: 1,
     operationId: "99:123:1",
     parentPid: 99,
@@ -625,9 +665,14 @@ function refusalRecords(artifacts: string) {
         mtimeNs: String(stat.mtimeNs),
       },
     },
-    close: { code: 1, signal: null },
     closedAt: "120",
-    retirement: { afterNativeClose: true, producerRefused: true, removed: true },
+    retirement: {
+      afterNativeClose: true,
+      producerRefused: true,
+      removed: true,
+      startedAt: "121",
+      finishedAt: "122",
+    },
   };
   const doctor = {
     pid: 99,
@@ -641,7 +686,7 @@ function refusalRecords(artifacts: string) {
     threadId: 0,
     identity,
     doctor,
-    native,
+    native: structuredClone(native),
     injectedAt: "100",
     staging,
     cleanupDenials: 1,
@@ -653,6 +698,8 @@ function refusalRecords(artifacts: string) {
     failure: {
       message: "SQLite artifact-preserving copy and cleanup failed",
       sha256: "c".repeat(64),
+      resultSha256: "e".repeat(64),
+      channel: "stdout",
     },
     removed: false,
   };
@@ -660,7 +707,7 @@ function refusalRecords(artifacts: string) {
     write("snapshot-cleanup-fixture.json", { candidateCommit, baseline, source });
     write("snapshot-cleanup-driver.json", { identity: baseline });
     write("snapshot-cleanup-candidate-identity.json", {});
-    write("snapshot-cleanup-copy-101-0.json", fault);
+    write("snapshot-cleanup-copy-" + fault.native.key + ".json", fault);
     write("snapshot-cleanup-native-" + "d".repeat(64) + ".json", native);
     write("snapshot-cleanup-doctor-99.json", doctor);
     write("snapshot-cleanup-attempts-101-0.json", {
@@ -688,7 +735,7 @@ describe("snapshot cleanup refusal evidence", () => {
       const source = join(root, "source.sqlite");
       const sibling = join(root, "sibling");
       mkdirSync(sibling);
-      const request = readNativeSnapshotRequest([
+      const request = readSnapshotWorkerLaunch([
         "/package/worker.mjs",
         "--openclaw-sqlite-readonly-child",
         kind === "other-mode" ? "async" : "sync",
@@ -696,8 +743,10 @@ describe("snapshot cleanup refusal evidence", () => {
         root,
       ]);
       const observed: string[] = [];
-      const restore = observeSnapshotAllocations(source, request, (directory: string) =>
-        observed.push(directory),
+      const restore = observeSnapshotAllocations(
+        source,
+        () => request,
+        (directory: string) => observed.push(directory),
       );
       try {
         // openclaw-temp-dir: allow exercises the actual intercepted allocator boundary
@@ -824,6 +873,166 @@ describe("snapshot cleanup refusal evidence", () => {
       error,
     );
   });
+  it.each(["SIGKILL", "exit1"])(
+    "accepts only owner-retired IPC refusal with %s close",
+    (outcome) => {
+      const artifacts = tempDirs.make("snapshot-ipc-close-");
+      const f = refusalRecords(artifacts);
+      Object.assign(f.native, nativeTransportFixture(true));
+      f.fault.native = structuredClone(f.native);
+      f.fault.failure.channel = "process.send";
+      if (outcome === "exit1") {
+        f.native.close = { code: 1, signal: null };
+      }
+      f.save();
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        expect(() =>
+          assertSnapshotCleanupRefusal(artifacts, { exitCode: 1, signal: null }),
+        ).not.toThrow();
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+  it.each([
+    {
+      name: "external cancel",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        expectDefined(f.native.stops[0], "selected retirement stop").kind =
+          "external-or-unobserved";
+      },
+      error: "External cancellation",
+    },
+    {
+      name: "unobserved kill",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.stops = [];
+      },
+      error: "retirement was not observed",
+    },
+    {
+      name: "unsent kill",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        expectDefined(f.native.stops[0], "selected retirement stop").accepted = false;
+      },
+      error: "close was not",
+    },
+    {
+      name: "other signal",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.close.signal = "SIGTERM";
+      },
+      error: "close was not",
+    },
+    {
+      name: "wrong request",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        expectDefined(f.native.reply, "selected failure reply").id++;
+      },
+      error: "selected failure reply",
+    },
+    {
+      name: "wrong result",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        expectDefined(f.native.reply, "selected failure reply").sha256 = "0".repeat(64);
+      },
+      error: "failure replies differ",
+    },
+    {
+      name: "reused pid",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.childStart = "999";
+      },
+      error: "native request identity",
+    },
+    {
+      name: "wrong parent birth",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.parentStart = "999";
+      },
+      error: "native request identity",
+    },
+    {
+      name: "observer failure",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.observationError = "unreadable owner";
+      },
+      error: "observation was incomplete",
+    },
+    {
+      name: "stdout substitute",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.fault.failure.channel = "stdout";
+      },
+      error: "real IPC reply",
+    },
+    {
+      name: "retirement before reply",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        expectDefined(f.native.stops[0], "selected retirement stop").at = "109";
+      },
+      error: "External cancellation",
+    },
+    {
+      name: "cleanup before close",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.native.retirement.startedAt = "119";
+      },
+      error: "cleanup ordering",
+    },
+    {
+      name: "same worker another request",
+      change: (f: ReturnType<typeof refusalRecords>) => {
+        f.write("snapshot-cleanup-native-" + "a".repeat(64) + ".json", {
+          ...f.native,
+          ipcRequestId: 3,
+        });
+      },
+      error: "another native request",
+    },
+  ])("rejects IPC custody with $name", ({ change, error }) => {
+    const artifacts = tempDirs.make("snapshot-ipc-negative-");
+    const f = refusalRecords(artifacts);
+    Object.assign(f.native, nativeTransportFixture(true));
+    f.fault.native = structuredClone(f.native);
+    f.fault.failure.channel = "process.send";
+    change(f);
+    f.save();
+    expect(() => assertSnapshotCleanupRefusal(artifacts, { exitCode: 1, signal: null })).toThrow(
+      error,
+    );
+  });
+  it("does not retain an allocator request after its completion or on a neighboring request", () => {
+    const root = tempDirs.make("snapshot-request-lifetime-");
+    const source = join(root, "source.sqlite");
+    let current: { source: string; stagingRoot: string } | undefined;
+    const observed: string[] = [];
+    const restore = observeSnapshotAllocations(
+      source,
+      () => current,
+      (directory: string) => observed.push(directory),
+    );
+    const allocate = () => {
+      // openclaw-temp-dir: allow actual allocator under the test-owned parent
+      return fs.mkdtempSync(join(root, "openclaw-sqlite-readonly-"));
+    };
+    try {
+      allocate();
+      current = { source, stagingRoot: root };
+      const selected = allocate();
+      current = undefined;
+      allocate();
+      current = { source: source + ".other", stagingRoot: root };
+      allocate();
+      expect(observed).toEqual([selected]);
+    } finally {
+      restore();
+    }
+    expect(
+      readSnapshotWorkerLaunch(["worker.mjs", "--openclaw-sqlite-readonly-child", "session"]),
+    ).toEqual({ entrypoint: "worker.mjs", transport: "ipc" });
+  });
   it("counts repeated acquisition observations in the same directory", () => {
     const artifacts = tempDirs.make("snapshot-same-directory-");
     const f = refusalRecords(artifacts);
@@ -880,6 +1089,9 @@ it.each(["failed", "timeout", "passed"] as const)(
     const write = (name: string, value: unknown) =>
       writeFileSync(join(artifacts, name), JSON.stringify(value));
     const f = refusalRecords(artifacts);
+    Object.assign(f.native, nativeTransportFixture(true));
+    f.fault.native = structuredClone(f.native);
+    f.fault.failure.channel = "process.send";
     f.fault.failure.message =
       "SQLite artifact-preserving copy and cleanup failed; " + '\\"\n'.repeat(2000);
     f.save();
@@ -975,7 +1187,19 @@ it.each(["failed", "timeout", "passed"] as const)(
       overflow: false,
       unknown: [],
       inventoryOmitted: true,
-      fault: { pid: 101, terminalRefusal: true, groupIncompleteAtRefusal: true },
+      fault: {
+        pid: 101,
+        terminalRefusal: true,
+        groupIncompleteAtRefusal: true,
+        failure: { channel: "process.send", resultSha256: "e".repeat(64) },
+      },
+      custody: {
+        transport: "ipc",
+        ipcRequestId: 2,
+        childStart: "125",
+        stopCount: 1,
+        close: { code: null, signal: "SIGKILL" },
+      },
       doctor: { pid: 99, result: { status: "error" } },
       outer: { status: "error", exitCode: 1, failedDoctorStep: true },
       acquisitions: { selected: 1, unselectedBefore: 80, unselectedAfter: 40, unknown: 0 },
