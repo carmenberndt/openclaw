@@ -328,36 +328,29 @@ it.each([false, true])(
   },
 );
 
-it.each([false, true])(
-  "preserves pinned-copy disk-full diagnostics when cleanup fails: %s",
-  (cleanupFails) => {
-    const source = fixture(Buffer.from("captured"), "fixture.js");
-    const failure = Object.assign(new Error("capture filesystem is full"), { code: "ENOSPC" });
-    const rmSync = fs.rmSync;
-    aroundPinnedCopy(source.filename, (target) => {
-      if (cleanupFails) {
-        vi.spyOn(fs, "rmSync").mockImplementation((filename, options) => {
-          if (filename === target) {
-            throw Object.assign(new Error("capture cleanup failed"), { code: "EACCES" });
-          }
-          rmSync(filename, options);
-        });
+it("preserves pinned-copy disk-full diagnostics when cleanup fails", () => {
+  const source = fixture(Buffer.from("captured"), "fixture.js");
+  const failure = Object.assign(new Error("capture filesystem is full"), { code: "ENOSPC" });
+  const rmSync = fs.rmSync;
+  aroundPinnedCopy(source.filename, (target) => {
+    vi.spyOn(fs, "rmSync").mockImplementation((filename, options) => {
+      if (filename === target) {
+        throw Object.assign(new Error("capture cleanup failed"), { code: "EACCES" });
       }
-      throw failure;
+      rmSync(filename, options);
     });
+    throw failure;
+  });
 
-    let reported: unknown;
-    try {
-      source.capture();
-    } catch (error) {
-      reported = error;
-    }
-    expect(reported).toMatchObject({
-      code: "ENOSPC",
-      message: expect.stringContaining("capture filesystem is full"),
-    });
-    if (cleanupFails) {
-      expect(reported).toHaveProperty("message", expect.stringContaining("capture cleanup failed"));
-    }
-  },
-);
+  let reported: unknown;
+  try {
+    source.capture();
+  } catch (error) {
+    reported = error;
+  }
+  expect(reported).toMatchObject({
+    code: "ENOSPC",
+    message: expect.stringContaining("capture filesystem is full"),
+  });
+  expect(reported).toHaveProperty("message", expect.stringContaining("capture cleanup failed"));
+});
