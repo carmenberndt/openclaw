@@ -30,6 +30,7 @@ import {
 } from "../config/sessions/transcript-write-context.js";
 import { createGatewayMetadataCloseFixture } from "../gateway/server-close.metadata.test-support.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
+import { buildConversationRef } from "../routing/conversation-ref.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -371,6 +372,12 @@ it.each(["owned", "fresh"] as const)(
   async (authorityKind) => {
     await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
       const scope = await seed(env);
+      const conversationRef = buildConversationRef({
+        channel: "reef",
+        accountId: "default",
+        kind: "direct",
+        peerId: "locked-unbound",
+      });
       let inSourceGrant = false;
       let checkedSourceGrant = false;
       let acceptedMatches: readonly number[] | undefined;
@@ -397,8 +404,8 @@ it.each(["owned", "fresh"] as const)(
                   fields: ["sessionId"],
                   expected: read.value,
                   conversationAlternatives: [
-                    [{ conversationRef: "synthetic:locked-unbound", sessionKey: scope.sessionKey }],
-                    [{ conversationRef: "synthetic:locked-unbound", sessionKey: null }],
+                    [{ conversationRef, sessionKey: scope.sessionKey }],
+                    [{ conversationRef, sessionKey: null }],
                   ],
                 },
                 acceptConversationMatches(matches: readonly number[]) {
