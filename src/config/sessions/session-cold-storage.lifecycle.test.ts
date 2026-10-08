@@ -45,7 +45,8 @@ import {
 import * as archiveWorkers from "./session-accessor.sqlite-archive.js";
 import {
   linkSessionConversation,
-  upsertConversationIdentity,
+  prepareConversationIdentities,
+  upsertConversationIdentities,
 } from "./session-accessor.sqlite-conversation.js";
 import { trimSessionTranscriptForManualCompact } from "./session-accessor.transcript.js";
 import { resolveSessionColdArchivePath } from "./session-cold-storage-codec.js";
@@ -564,9 +565,13 @@ describe("cold current transcript lifecycle", () => {
         }
         return identity;
       });
+      const preparedConversations = conversations.map((identity) => ({
+        identity,
+        encoded: prepareConversationIdentities([identity]),
+      }));
       runOpenClawAgentWriteTransaction((database) => {
-        for (const identity of conversations) {
-          upsertConversationIdentity(database, identity, 1);
+        for (const { identity, encoded } of preparedConversations) {
+          upsertConversationIdentities(database, encoded, 1);
           linkSessionConversation({
             database,
             sessionId: sourceScope.sessionId,
