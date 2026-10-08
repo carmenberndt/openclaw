@@ -384,7 +384,12 @@ function releaseGhTransportErrorText(error) {
 }
 
 export function releaseGhRateLimitRetryAt(error, now = Date.now(), failures = 0) {
-  const response = parseGithubResponse(String(error?.stdout ?? ""));
+  // gh retains successful pages before the failed response. Its final frame owns
+  // the throttle deadline; earlier quota headers must not override that failure.
+  const output = String(error?.stdout ?? "");
+  const response = parseGithubResponse(
+    output.split(/(?=^HTTP\/\d+(?:\.\d+)? [1-5]\d{2}\b)/mu).at(-1),
+  );
   const text = releaseGhTransportErrorText(error);
   const limited =
     response.status === "429" ||

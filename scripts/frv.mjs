@@ -238,7 +238,7 @@ async function execCommand(command, args, options = {}) {
     maxBuffer: 64 * 1024 * 1024,
     timeout: options.timeoutMs ?? 60_000,
   });
-  return result.stdout.trim();
+  return result.stdout;
 }
 
 function execGh(args, options = {}) {
@@ -319,8 +319,8 @@ async function readGhApi(repository, path, args = [], options = {}, fresh = true
   // gh emits a header block for each paginated response, even with --jq.
   // Keep successful JSON rows intact while retaining failed-response retry headers.
   return include
-    ? output.replace(/^HTTP\/\d+(?:\.\d+)? [^\r\n]+\r?\n(?:[^\r\n]+\r?\n)*\r?\n/gmu, "")
-    : output;
+    ? output.replace(/^HTTP\/\d+(?:\.\d+)? [^\r\n]+\r?\n(?:[^\r\n]+\r?\n)*\r?\n/gmu, "").trim()
+    : output.trim();
 }
 
 async function ghJson(repository, path, options, fresh) {
