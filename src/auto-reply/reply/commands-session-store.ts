@@ -1,5 +1,8 @@
 import { resolveSessionStoreEntryCore, type SessionEntry } from "../../config/sessions.js";
-import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import {
+  matchesSessionAbortTargetOwner,
+  patchSessionEntryCore,
+} from "../../config/sessions/session-accessor.js";
 import { sessionSnapshotChangesApplied } from "../../config/sessions/session-snapshot-merge.js";
 import {
   captureExternalSessionCommitGuard,
@@ -110,7 +113,10 @@ export async function persistAbortTargetEntry(params: {
     await patchSessionEntryCore(
       { storePath, sessionKey: key },
       (nextEntry) => {
-        if (!params.isCurrent?.sessionSource && params.isCurrent?.() === false) {
+        if (
+          (!params.isCurrent?.sessionSource && params.isCurrent?.() === false) ||
+          !matchesSessionAbortTargetOwner(nextEntry, entry)
+        ) {
           return null;
         }
         applied = true;

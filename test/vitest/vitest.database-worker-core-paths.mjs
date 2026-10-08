@@ -2,7 +2,6 @@
 export const databaseWorkerCoreTestFiles = [
   "src/agents/cli-session-store.test.ts",
   "src/agents/tools/sessions-list-privacy.test.ts",
-  "src/auto-reply/reply/abort.target-owner.test.ts",
   "src/auto-reply/reply/agent-runner-cli-dispatch.test.ts",
   "src/auto-reply/reply/commands-reset-hooks.test.ts",
   "src/auto-reply/reply/commands-session-store.test.ts",
@@ -326,6 +325,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/system-agent/setup-apply.concurrency.test.ts",
   "src/agents/bash-tools.exec-authorization.integration.test.ts",
   "src/agents/bash-tools.exec-background-followup.test.ts",
+  "src/auto-reply/reply/abort.target-owner.test.ts",
   "src/agents/bash-tools.exec-foreground-failures.test.ts",
   "src/agents/bash-tools.exec-group-cleanup.real.test.ts",
   "src/agents/bash-tools.exec-host-gateway.integration.test.ts",
@@ -537,6 +537,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/cli/update-cli.test.ts",
   "src/cli/update-cli.windows-lifecycle.test.ts",
   "src/cli/update-cli/status.test.ts",
+  "src/cli/update-cli/status.readonly.test.ts",
   "src/cli/update-cli/update-command-convergence-authority.test.ts",
   "src/cli/update-cli/update-command-doctor-authority-callers.test.ts",
   "src/cli/update-cli/update-command-doctor-capability.test.ts",
