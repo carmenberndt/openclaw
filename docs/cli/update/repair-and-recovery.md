@@ -78,6 +78,12 @@ history; replacing the code alone cannot undo a migration. The original
 failed update still exits nonzero after the agent finishes, even if the repair
 succeeds.
 
+On Linux, systemd can unload an inactive unit after the updater stops it. The
+owning updater reloads that unit's metadata when rechecking admission, retaining
+the original manager and service identity. This does not start the service or
+rewrite its definition. A later refusal still uses the recorded stop to restore
+the previous Gateway; a service that was already stopped remains stopped.
+
 After activation succeeds, a failure to read or publish update reporting leaves
 the updated installation in place. Reporting failures do not trigger package
 rollback. The command still exits nonzero when required finalization cannot
@@ -207,6 +213,47 @@ deleting database rows to work around this failure.
 
 ## `update repair`
 
+An older updater can leave package activation at `prepared` after refusing an
+update before publication. Run `openclaw update repair` from an installation
+containing this fix. Repair verifies that the original package and launchers are
+unchanged, aborts the unused preparation, and retires its recovery artifacts so
+the next update can proceed. It does not publish the staged candidate. An active
+updater, changed package or launcher, or unfinished state restoration keeps its
+existing recovery checks. A candidate cannot patch the older updater already
+running; use the manual installation hop below if the installed CLI lacks this
+repair.
+
+For a publication stranded at `publishing` after an external write, repair can
+close it as `publication-settled-external-change` when the installed build-info
+reports the exact candidate version, every file in the package's own dist content
+inventory still matches, and no updater owns the installation. Repair uses fresh
+executor ownership even if the old lease store was removed or replaced. It never
+executes the old helper; changed or missing helper bytes and replaced retained
+directories are not required proof of the live candidate. The root `package.json` must parse with name `openclaw`, the
+candidate version, and type `module`; every `main`, `exports`, and `bin` target must
+resolve to a file in the package. Targets within `dist/` must be inventoried;
+top-level targets such as `openclaw.mjs` are checked for resolution without content
+verification. Extra `package.json` files under `dist/` refuse settlement because
+they can change how inventoried code loads. Dependency manifests under
+`node_modules/` are expected and ignored. Other extra dist files remain warnings.
+Restore any changed inventoried file to its packaged bytes before retrying; a
+working Gateway alone does not waive an inventory failure. Repair preserves the
+previous package and any remaining helper, leaves the installed package and launchers in
+place, and records the warning and extra paths in update history. The warning and
+receipt identify the root manifest as field-verified, not content-verified. The
+sealed tree digest cannot identify old per-file metadata differences. Use a CLI
+containing this fix; the original sealed helper keeps its original recovery checks.
+
+After recording a settlement, repair moves the completed control journal intact
+into `control/` inside the reported recovery-evidence directory. It no longer
+appears as active `packageActivation` state or blocks an older updater on an
+unfamiliar settlement reason. If reporting stops before that move, rerun repair
+from the compatible CLI. Archival failure after durable completion is a warning:
+evidence stays preserved and does not prevent repair finalization or a later update. Retained evidence is not deleted or used as
+authority for later updates. Unfinished operations still require a compatible
+recovery owner. This behavior does not deliver a newer repair implementation to
+an already-blocked older CLI; the first-hop installation limitation remains.
+
 For a package update stranded by an older updater's launcher ownership checks,
 use the manual installation hop, then repair from the new CLI at the same root:
 
@@ -220,22 +267,35 @@ Follow the [manual update precautions](/install/updating/update-methods#alternat
 including a verified backup and stopping the managed Gateway during replacement.
 When the installed package directory matches neither recorded generation, repair
 closes the previous package operation as `superseded-by-manual-install`, warns with
-its operation ID, and preserves its staged files and helper beside the installation.
+its operation ID, and preserves any remaining staged files and helper beside the installation.
+Changed or missing historical artifacts and archive collisions become maintenance
+warnings after the durable close; they do not prevent finalization.
 The original failed history entry remains intact. The pending package-recovery
-gate then clears, so another update can proceed. Same-identity recovery keeps its
-original sealed-helper checks; missing packages, active update owners, and pending
+gate then clears, so another update can proceed. Unfinished restoration keeps
+its original recovery checks; missing packages, active update owners, and pending
 database or configuration restoration still require their existing recovery path.
 
 If recovery instead reports `managed handoff lease database identity changed`,
 run `openclaw update repair` from a CLI containing this fix. Repair acquires fresh
-update ownership on the current lease database and closes the orphaned package
-operation as `recovery-lease-identity-changed`. It warns with the old operation ID
+update ownership on the current lease database. A still-installed published
+candidate must pass the verification above before its operation can close. An
+untouched obsolete preparation can close as `recovery-lease-identity-changed`. It warns with the old operation ID
 and retained artifact path, leaves the installed package and launchers in place,
 and clears package admission for the next update. The original helper cannot
 recover against a replaced lease database. Matching lease identities keep the
 original recovery checks; another live update owner still prevents settlement.
 No recovery artifacts are deleted. An older installed CLI cannot obtain this fix
 from a candidate it has not yet staged; use the manual installation hop above.
+
+The same repair handles `ENOENT` when the recorded handoff lease database is
+missing, for example after a reboot clears a temporary filesystem. Its storage
+owner recreates the lease database, and repair acquires fresh update ownership
+before closing an untouched obsolete preparation as `recovery-lease-missing`.
+A missing or changed lease never permits discarding an unfinished rollback.
+The installed package, launchers, and retained recovery evidence keep the same
+protections. Repair then continues through Doctor and plugin convergence;
+plugin data/settings warnings clear only when their migration owners complete
+the required work. Remaining warnings name the next repair action.
 
 Rerun update finalization after the core package already changed but later
 repair work did not finish cleanly. This is the supported recovery path when

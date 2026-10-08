@@ -163,7 +163,7 @@ deleting obsolete backups; rollback still hashes a backup before restoring it
 and verifies the restored bytes. These improvements belong to the installed
 updater and do not change an older updater already running.
 
-Within one updater process, these checks still walk every entry to verify
+When full verification is available, these checks walk every entry to verify
 identity, metadata, directory listings, links, and a final metadata sweep. A
 file's content digest from the earlier baseline or staged-package scan is reused
 only when its complete metadata, including inode, link count, size, modification
