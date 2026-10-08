@@ -36,6 +36,7 @@ type AdmissionFixture = {
     sessionStore?: Record<string, SessionEntry>;
     sessionKey?: string;
     storePath?: string;
+    resolvedQueueMode?: string;
     runOverrides?: Partial<FollowupRun["run"]>;
   }) => { run: () => Promise<ReplyPayload | ReplyPayload[] | undefined> };
   makeSessionFixture: (
@@ -174,13 +175,17 @@ export function registerReplyAdmissionCases({
   });
 
   it.each([
-    { storage: "durable", orphanedRecovery: false, claimedRecovery: false },
-    { storage: "durable", orphanedRecovery: true, claimedRecovery: false },
-    { storage: "incognito", orphanedRecovery: false, claimedRecovery: false },
-    { storage: "durable", orphanedRecovery: false, claimedRecovery: true },
+    { storage: "durable", orphanedRecovery: false, owedRecovery: false, queueMode: "interrupt" },
+    { storage: "durable", orphanedRecovery: true, owedRecovery: false, queueMode: "interrupt" },
+    { storage: "incognito", orphanedRecovery: false, owedRecovery: false, queueMode: "interrupt" },
+    { storage: "durable", orphanedRecovery: false, owedRecovery: true, queueMode: "followup" },
+    { storage: "durable", orphanedRecovery: false, owedRecovery: true, queueMode: "interrupt" },
   ])(
-    "publishes the admitted rotation without rereading it ($storage, orphaned recovery=$orphanedRecovery, claimed recovery=$claimedRecovery)",
-    async ({ storage, orphanedRecovery, claimedRecovery }) => {
+    "publishes the admitted rotation without rereading it ($storage, orphaned recovery=$orphanedRecovery, owed recovery=$owedRecovery, $queueMode)",
+    async ({ storage, orphanedRecovery, owedRecovery, queueMode }) => {
+      // An ordinary input claims the owed resend; an interrupt retires it (never replayed or charged).
+      const claimedRecovery = owedRecovery && queueMode !== "interrupt";
+      const interruptedRecovery = owedRecovery && queueMode === "interrupt";
       const sessionKey = "agent:main:main";
       const initial = {
         sessionId: "pre-compact-session",
@@ -235,7 +240,7 @@ export function registerReplyAdmissionCases({
               restartRecoveryRuns: [{ runId: "orphaned-run", lifecycleGeneration: "retired" }],
             }
           : {}),
-        ...(claimedRecovery
+        ...(owedRecovery
           ? {
               status: "running" as const,
               abortedLastRun: true,
@@ -274,6 +279,9 @@ export function registerReplyAdmissionCases({
           });
         } else {
           expect(published.mainRestartRecovery).toBeUndefined();
+        }
+        if (interruptedRecovery) {
+          expect(published).toMatchObject({ abortedLastRun: false, status: "killed" });
         }
       };
       let observer: ReturnType<typeof observeMainThreadSql> | undefined;
@@ -340,6 +348,7 @@ export function registerReplyAdmissionCases({
         sessionStore,
         sessionKey,
         storePath,
+        resolvedQueueMode: queueMode,
         runOverrides: { sessionId: sessionEntry.sessionId },
       });
       const pending = run();
