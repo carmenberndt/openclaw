@@ -2,7 +2,7 @@ import { deferSqliteWorkerCommitReceipt } from "../../infra/sqlite-worker-operat
 import { createSqliteWorkerTransferOwner } from "../../infra/sqlite-worker-transfer.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
-import { captureTrajectoryRuntimeRetentionEntryPatch } from "../../trajectory/runtime-retention.sqlite.js";
+import { captureTrajectoryRuntimeRetentionMetadataMutation } from "../../trajectory/runtime-retention.sqlite.js";
 import {
   applySessionEntryPatchInDatabase,
   writeSessionEntryPatchInDatabase,
@@ -46,6 +46,10 @@ export function commitSessionEntryPatch(
       // A false predicate precedes CAS and the throwing guard, including for a null patch.
       result = { kind: "session-entry-patch", entry: null };
     } else {
+      const publishRetention =
+        "operation" in input || input.next
+          ? captureTrajectoryRuntimeRetentionMetadataMutation(database.db)
+          : undefined;
       const options = {
         consumePendingReset: input.consumePendingReset,
         providerReviewMutation: input.providerReviewMutation,
@@ -65,7 +69,6 @@ export function commitSessionEntryPatch(
         },
       };
       let mutation;
-      let publishRetention: ReturnType<typeof captureTrajectoryRuntimeRetentionEntryPatch>;
       if ("operation" in input) {
         if (input.validateCanonicalKeys) {
           assertCanonicalSqliteSessionKeysCurrent(database);
@@ -86,9 +89,6 @@ export function commitSessionEntryPatch(
           writeBase,
           patch: reduceSessionEntryPatch(input.operation, writeBase),
         });
-        publishRetention = next
-          ? captureTrajectoryRuntimeRetentionEntryPatch(database.db)
-          : undefined;
         mutation = writeSessionEntryPatchInDatabase(database, {
           sessionKey: input.sessionKey,
           fresh,
@@ -97,9 +97,6 @@ export function commitSessionEntryPatch(
           options,
         });
       } else {
-        publishRetention = input.next
-          ? captureTrajectoryRuntimeRetentionEntryPatch(database.db)
-          : undefined;
         mutation = applySessionEntryPatchInDatabase(database, {
           ...input,
           readSnapshot: (current) => readSessionEntryPatchSnapshot(current, input.selection),
@@ -117,7 +114,10 @@ export function commitSessionEntryPatch(
             database,
           )
         : undefined;
-      publishRetention?.();
+      // Publish after every patch-owned write, including commit-receipt preparation.
+      if (mutation.identity) {
+        publishRetention?.();
+      }
       result = { kind: "session-entry-patch", entry: mutation.entry, publication };
     }
     return transferSessionEntryWorkerCandidate(database, admit, result);

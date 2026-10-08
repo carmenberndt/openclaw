@@ -14,6 +14,7 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import {
+  captureExternalSessionCommitGuard,
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "./session-source-authority.js";
@@ -342,10 +343,10 @@ export function withSessionTranscriptWriteAssertion<T>(
     {
       ...parent,
       sessionTarget: parent?.sessionTarget ?? target,
-      assertCommitAllowed: () => {
-        parent?.assertCommitAllowed?.();
-        assertCurrent();
-      },
+      assertCommitAllowed: composeSessionSourceAssertion([
+        captureExternalSessionCommitGuard(parent?.assertCommitAllowed),
+        captureExternalSessionCommitGuard(assertCurrent),
+      ]),
       withTranscriptWrite: parent ? (write) => parent.withTranscriptWrite(write) : trackAsyncWork,
     },
     run,
@@ -468,7 +469,10 @@ export function captureOwnedTranscriptWriteAssertion(
   const context = ownedTranscriptWriteContext.getStore();
   const target = captureWriteTarget(scope);
   return composeSessionSourceAssertion(
-    [context?.assertCommitAllowed, context?.initialWriter?.assertActive],
+    [
+      captureExternalSessionCommitGuard(context?.assertCommitAllowed),
+      context?.initialWriter?.assertActive,
+    ],
     (assertSource) => assertTranscriptWriteContext(context, target, assertSource),
   );
 }

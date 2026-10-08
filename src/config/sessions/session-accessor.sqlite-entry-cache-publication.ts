@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   sessionChanges,
   type SessionRowChange,
@@ -6,7 +5,6 @@ import {
 } from "../../sessions/session-row-changes.js";
 import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { invalidateOpenClawAgentWritableProjections } from "../../state/openclaw-agent-db-lifecycle.js";
 import { invalidateOpenClawAgentReadOnlyProjections } from "../../state/openclaw-agent-db-readonly-scope.js";
@@ -22,6 +20,7 @@ import {
   recordCommittedSessionOwnerPublication,
   retainedSharingReads,
   stageSessionSharingPublication,
+  preparedSharingChanges,
 } from "./session-accessor.sqlite-entry-cache-publication-state.js";
 import {
   publishTrackedCacheUpdate,
@@ -63,62 +62,17 @@ import {
 } from "./session-accessor.sqlite-sharing-acquisition.js";
 import type { SessionEntry } from "./types.js";
 
+export {
+  isPreparedSessionSharingChange,
+  readPreparedSessionEntryChange,
+  readPreparedSessionEntryPublicationSource,
+  readPreparedSessionSharingChange,
+} from "./session-accessor.sqlite-entry-cache-publication-state.js";
 export type {
   PreparedSessionEntryChanges,
   SessionEntryPublicationSource,
   SessionEntryReplacementPublication,
 } from "./session-accessor.sqlite-entry-cache.types.js";
-
-const preparedSharingChanges = resolveGlobalSingleton(
-  Symbol.for("openclaw.preparedSessionSharingChanges"),
-  () => ({
-    changes: new WeakMap<object, SessionEntryPublicationRecord>(),
-    operations: new WeakMap<SessionEntryCreationOperation, CreationRecord>(),
-    current: new AsyncLocalStorage<CreationRecord>(),
-  }),
-);
-
-/** Private owner metadata follows the original event object without changing its public fields. */
-export function isPreparedSessionSharingChange(change: SessionRowChange): boolean {
-  const record = preparedSharingChanges.changes.get(change);
-  return record !== undefined && record.kind !== "source";
-}
-
-export function readPreparedSessionSharingChange(change: object) {
-  const record = preparedSharingChanges.changes.get(change);
-  return record && "sharingChange" in record ? record.sharingChange : undefined;
-}
-
-/** Physical publication facts are captured by the writer, never resolved by observers. */
-export function readPreparedSessionEntryPublicationSource(change: object) {
-  const record = preparedSharingChanges.changes.get(change);
-  const source = record?.kind === "metadata" ? record.prepared.source : undefined;
-  return {
-    identity: record?.databaseIdentity ?? source?.identity,
-    canonicalPath: record?.canonicalPath ?? source?.canonicalPath,
-  };
-}
-
-/** Commit metadata follows the same original row or identity event through preparation. */
-export function readPreparedSessionEntryChange(change: object, sessionKey: string) {
-  const record = preparedSharingChanges.changes.get(change);
-  if (record?.kind !== "metadata") {
-    return undefined;
-  }
-  const { prepared } = record;
-  const current = record.readCurrent?.(sessionKey);
-  const entry = record.readCurrent ? current?.entry : prepared.entries.get(sessionKey);
-  // A withheld postimage must still identify the store that committed the change.
-  return {
-    source: prepared.source,
-    entry,
-    sharing: record.readCurrent
-      ? current && projectSessionSharingEntry(current.entry)
-      : (prepared.sharing?.get(sessionKey) ??
-        (entry ? projectSessionSharingEntry(entry) : undefined)),
-    projection: record.readCurrent ? current?.projection : prepared.projection?.get(sessionKey),
-  };
-}
 
 export function bindPreparedSessionEntryPublication(
   change: object,
@@ -489,6 +443,7 @@ export function retainSessionEntryWorkerPublication(params: {
     ownerChanges: new Map(),
     membershipInvalidated: new Set(),
     sharingUnchanged: new Set(),
+    generationUnchanged: new Set(),
     settled: false,
     completion: completion.promise,
   };
@@ -501,6 +456,7 @@ export function retainSessionEntryWorkerPublication(params: {
       sessionKeys: readonly string[],
       membershipInvalidatedKeys: readonly string[],
       sharingUnchangedKeys: readonly string[] = [],
+      generationUnchangedKeys: readonly string[] = [],
     ) {
       if (pending) {
         return;
@@ -509,6 +465,7 @@ export function retainSessionEntryWorkerPublication(params: {
       transcriptVersion = readSessionTranscriptUpdateVersion();
       owner.membershipInvalidated = new Set(membershipInvalidatedKeys);
       owner.sharingUnchanged = new Set(sharingUnchangedKeys);
+      owner.generationUnchanged = new Set(generationUnchangedKeys);
       pending = true;
       for (const sessionKey of keys) {
         const key = `${identityKey}\0${sessionKey}`;

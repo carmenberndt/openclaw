@@ -27,6 +27,10 @@ import { settleRequesterRun } from "./requester-run-settlement.js";
 import { createSessionPlacementSettlementClosedAbortError } from "./run-termination.js";
 import type { SandboxContext } from "./sandbox/types.js";
 import { beginForegroundSessionMaintenance } from "./session-maintenance/coordinator.js";
+import type {
+  LocalTurnPlacementClaim,
+  RequiredSessionPlacementAdmission,
+} from "./session-placement-admission.types.js";
 import {
   resolveSessionPlacementForcedTerminalSettlement,
   resolveSessionPlacementTurnSettlementAssertion,
@@ -36,13 +40,6 @@ import {
   getGatewayToolCallerIdentity,
   withoutGatewayToolCallerIdentity,
 } from "./tools/gateway-caller-context.js";
-
-export type LocalTurnPlacementClaim = {
-  sessionId: string;
-  agentId?: string;
-  sessionKey?: string;
-  runId: string;
-};
 
 export type SessionPlacementTurnParams = RunEmbeddedAgentInternalParams & { sessionFile: string };
 
@@ -60,13 +57,7 @@ export type PreparedSessionPlacementSandbox = Disposable & {
 };
 
 export type SessionPlacementAdmissionProvider = {
-  withRequiredSession?: <T>(
-    identity: Omit<LocalTurnPlacementClaim, "runId">,
-    task: (assertPlacementCurrent: () => void) => Promise<T>,
-    assertCurrent?: () => void,
-    signal?: AbortSignal,
-    preparation?: { waitForReady: false },
-  ) => Promise<T>;
+  withRequiredSession?: RequiredSessionPlacementAdmission;
   usesWorkerInference?: (identity: Omit<LocalTurnPlacementClaim, "runId">) => boolean;
   resolveRuntimeOverride?: (
     identity: Omit<LocalTurnPlacementClaim, "runId">,

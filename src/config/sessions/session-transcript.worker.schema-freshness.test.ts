@@ -66,6 +66,7 @@ it("borrows canonical writer proof without a native reader and still fences fore
     const validation = {
       agentId: retained.agentId,
       identity: retained.identity,
+      receiptId: retained.receiptId,
       valid: retained.valid,
       canonicalReady: retained.canonicalReady,
     };

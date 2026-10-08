@@ -1,13 +1,17 @@
-import type { SessionRowFacts } from "../../sessions/session-row-changes.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { SessionRowChange, SessionRowFacts } from "../../sessions/session-row-changes.js";
 import { readSessionTranscriptUpdateVersion } from "../../sessions/transcript-events.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { findOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   projectSessionSharingEntry,
+  type CreationRecord,
   type PendingSessionEntryPublication,
   type PreparedSessionEntryChanges,
   type SessionEntryCacheDatabase,
+  type SessionEntryCreationOperation,
+  type SessionEntryPublicationRecord,
   type SessionEntryReplacementPublication,
   type SessionSharingEntry,
 } from "./session-accessor.sqlite-entry-cache.types.js";
@@ -291,6 +295,17 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
           (!membership || !publication.sharingUnchanged.has(params.sessionKey))) ||
           (membership && publication.membershipInvalidated.has(params.sessionKey))),
     );
+  // Generation readers compare only sessionId and lifecycleRevision, so a publication
+  // whose committed rows prove both unchanged cannot alter a synchronous generation read.
+  // prepareRead still joins every pending publication: owners order effects after it.
+  const generationPending = () =>
+    read.pending.size > 0 ||
+    [...(pendingSessionEntryPublications.get(key) ?? [])].some(
+      (publication) =>
+        !publication.settled &&
+        !publication.superseded.has(params.sessionKey) &&
+        !publication.generationUnchanged.has(params.sessionKey),
+    );
   return {
     hasPendingPublication: () => pending(false, read.predicate?.pending),
     prepareRead: (): Promise<void> | undefined => {
@@ -311,7 +326,7 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
       read.facts = reconcileSessionSharingAcquisition(acquisition, snapshot);
       read.acquisition = undefined;
     },
-    readGeneration: () => (active && !pending(false) ? read.generation?.current : undefined),
+    readGeneration: () => (active && !generationPending() ? read.generation?.current : undefined),
     readCurrent: () => (pending(true) ? undefined : read.facts),
     release: () => {
       if (!active) {
@@ -400,4 +415,61 @@ export function retainedSharingReads(
   return typeof identity === "string"
     ? preparedSharingReads.get(`file:${identity}\0${sessionKey}`)
     : undefined;
+}
+
+type PreparedSharingChangeRegistry = {
+  changes: WeakMap<object, SessionEntryPublicationRecord>;
+  operations: WeakMap<SessionEntryCreationOperation, CreationRecord>;
+  current: AsyncLocalStorage<CreationRecord>;
+};
+
+export const preparedSharingChanges: PreparedSharingChangeRegistry = resolveGlobalSingleton(
+  Symbol.for("openclaw.preparedSessionSharingChanges"),
+  () => ({
+    changes: new WeakMap<object, SessionEntryPublicationRecord>(),
+    operations: new WeakMap<SessionEntryCreationOperation, CreationRecord>(),
+    current: new AsyncLocalStorage<CreationRecord>(),
+  }),
+);
+
+/** Private owner metadata follows the original event object without changing its public fields. */
+export function isPreparedSessionSharingChange(change: SessionRowChange): boolean {
+  const record = preparedSharingChanges.changes.get(change);
+  return record !== undefined && record.kind !== "source";
+}
+
+export function readPreparedSessionSharingChange(change: object) {
+  const record = preparedSharingChanges.changes.get(change);
+  return record && "sharingChange" in record ? record.sharingChange : undefined;
+}
+
+/** Physical publication facts are captured by the writer, never resolved by observers. */
+export function readPreparedSessionEntryPublicationSource(change: object) {
+  const record = preparedSharingChanges.changes.get(change);
+  const source = record?.kind === "metadata" ? record.prepared.source : undefined;
+  return {
+    identity: record?.databaseIdentity ?? source?.identity,
+    canonicalPath: record?.canonicalPath ?? source?.canonicalPath,
+  };
+}
+
+/** Commit metadata follows the same original row or identity event through preparation. */
+export function readPreparedSessionEntryChange(change: object, sessionKey: string) {
+  const record = preparedSharingChanges.changes.get(change);
+  if (record?.kind !== "metadata") {
+    return undefined;
+  }
+  const { prepared } = record;
+  const current = record.readCurrent?.(sessionKey);
+  const entry = record.readCurrent ? current?.entry : prepared.entries.get(sessionKey);
+  // A withheld postimage must still identify the store that committed the change.
+  return {
+    source: prepared.source,
+    entry,
+    sharing: record.readCurrent
+      ? current && projectSessionSharingEntry(current.entry)
+      : (prepared.sharing?.get(sessionKey) ??
+        (entry ? projectSessionSharingEntry(entry) : undefined)),
+    projection: record.readCurrent ? current?.projection : prepared.projection?.get(sessionKey),
+  };
 }

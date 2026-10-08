@@ -8,17 +8,24 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../../infra/sqlite-worker-identity.js";
-import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
+import type {
+  OpenClawAgentDatabase,
+  OpenClawAgentDatabaseOptions,
+} from "../../state/openclaw-agent-db-contract.js";
 import { assertOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   openOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentReadOnlyDatabaseHandle,
 } from "../../state/openclaw-agent-db-readonly-open.js";
+import { readSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
+import type { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
+import type { SessionColdLockedGuard } from "./session-cold-storage-guard.types.js";
 import type {
   SessionSourcePredicate,
   SessionSourceValidation,
 } from "./session-source-authority.js";
 import { readSessionSourceValidation } from "./session-source-predicate.worker.js";
+import type { TranscriptAppendRefusal } from "./session-transcript-writer-claim-error.js";
 import type { InternalSessionEntry } from "./types.js";
 
 type SourceRefusal = NonNullable<ReturnType<typeof readSessionSourceValidation>["refusedSource"]>;
@@ -138,4 +145,39 @@ export function prepareSessionColdSourceGuard(
     },
     [Symbol.dispose]: close,
   };
+}
+
+/** Keep the write-owner predicate out of the shared read worker's import closure. */
+export function readSessionColdLockedValidation(
+  params: {
+    database: OpenClawAgentDatabase;
+    sessionId: string;
+    guard: SessionColdLockedGuard;
+    sourceGuard: ReturnType<typeof prepareSessionColdSourceGuard> | undefined;
+  },
+  resolveWriterRefusal: typeof resolveTranscriptAppendRefusal,
+): { sourceValidation: SessionSourceValidation; writerRefusal?: TranscriptAppendRefusal } {
+  const { database, sessionId, guard, sourceGuard } = params;
+  const { agentId, sessionKey, fence, sources } = guard;
+  const fenced =
+    fence.expectedOwner !== undefined ||
+    fence.expectedLifecycleRevision !== undefined ||
+    fence.expectedWriterRunId !== undefined;
+  // Unfenced locks can read historical or orphaned windows without a current entry.
+  const entry = fenced ? readSessionEntryRow(database, sessionKey)?.entry : undefined;
+  const entries = fenced ? new Map([[sessionKey, entry]]) : undefined;
+  const sourceValidation = sourceGuard
+    ? sourceGuard.read(database, entries)
+    : readSessionSourceValidation(database, sources, undefined, entries);
+  if (sourceValidation.refusedSource) {
+    return { sourceValidation };
+  }
+  if (fenced) {
+    const target = { agentId, sessionKey, sessionId };
+    const refusal = resolveWriterRefusal(entry, target, { ...target, ...fence });
+    if (refusal) {
+      return { sourceValidation, writerRefusal: refusal };
+    }
+  }
+  return { sourceValidation };
 }
