@@ -8,13 +8,11 @@ import type {
   PluginInstanceConsumer,
   PluginInstanceDisposalResult,
   PluginInstanceExecution,
-} from "./plugin-instance.types.js";
-import type {
   PluginRetentionSnapshot,
   PluginRetentionReason,
   PluginRetentionOwner,
   PluginWorkRelease,
-} from "./plugin-retention-diagnostics.js";
+} from "./plugin-instance.types.js";
 import type { PluginRecord, PluginRegistry, PluginRegistryGatewayOwner } from "./registry-types.js";
 
 /** Runtime consumers retain capabilities, never the concrete loader implementation. */

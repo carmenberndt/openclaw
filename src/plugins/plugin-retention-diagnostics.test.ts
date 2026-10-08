@@ -70,6 +70,8 @@ describe("plugin retained reference diagnostics", () => {
       omitted: 6,
     });
     expect(instance.retentionSnapshot().references).toHaveLength(64);
+    expect(instance.retentionSnapshot({ limit: Number.NaN }).references).toHaveLength(64);
+    expect(instance.retentionSnapshot({ limit: 0.5 }).references).toHaveLength(0);
     expect(instance.retentionSnapshot().references[0]).toMatchObject({
       owner: "unknown",
       reason: "unknown",

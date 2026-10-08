@@ -1,9 +1,10 @@
 import type { PluginInstanceHandle } from "../plugins/plugin-instance-scope.js";
-import { collectRegistryInvocationInstances } from "../plugins/plugin-invocation-scope.js";
 import type {
+  PluginRetainedReference,
   PluginRetentionReason,
   PluginWorkRelease,
-} from "../plugins/plugin-retention-diagnostics.js";
+} from "../plugins/plugin-instance.types.js";
+import { collectRegistryInvocationInstances } from "../plugins/plugin-invocation-scope.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { hasRetainedPluginRuntimeCloseError } from "../plugins/runtime-close-error.js";
 
@@ -16,7 +17,7 @@ export function retainRuntimePluginWork(
   const release: PluginWorkRelease = Object.assign(
     () => releases.splice(0).forEach((close) => close()),
     {
-      setCleanupState: (state: Parameters<NonNullable<PluginWorkRelease["setCleanupState"]>>[0]) =>
+      setCleanupState: (state: PluginRetainedReference["cleanupState"]) =>
         releases.forEach((close) => close.setCleanupState?.(state)),
     },
   );

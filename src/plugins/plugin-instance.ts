@@ -27,14 +27,12 @@ import type {
   PluginInstanceDisposalResult,
   PluginInstanceLifecycle,
   PluginModuleLoaderRecovery,
+  PluginRetentionSnapshot,
+  PluginRetentionReason,
+  PluginRetentionOwner,
+  PluginWorkRelease,
 } from "./plugin-instance.types.js";
-import {
-  PluginReferenceDiagnostics,
-  type PluginRetentionSnapshot,
-  type PluginRetentionReason,
-  type PluginRetentionOwner,
-  type PluginWorkRelease,
-} from "./plugin-retention-diagnostics.js";
+import { PluginReferenceDiagnostics } from "./plugin-retention-diagnostics.js";
 import { mapPluginReturnPromise, resolvePluginReturnPromise } from "./plugin-return-value.js";
 import { releasePluginInstanceRegistry } from "./registry-lifecycle.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";

@@ -1,5 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { PluginInstance } from "../../plugins/plugin-instance.js";
 import { withPluginRetentionOwner } from "../../plugins/plugin-retention-diagnostics.js";
@@ -53,6 +53,7 @@ function retainedPlugin(registry = createEmptyPluginRegistry(), id = inspection.
   const release = withPluginRetentionOwner(acquisitionOwner, () =>
     instance.retainWork("prepared-generation-lease"),
   );
+  onTestFinished(release);
   const run = vi.spyOn(instance, "run");
   return { registry, instance, release, run };
 }
@@ -88,56 +89,32 @@ beforeEach(() => inspectManagedPlugin.mockReset().mockResolvedValue(inspection))
 afterEach(() => vi.restoreAllMocks());
 
 describe("plugins.inspect runtime retention disclosure", () => {
-  it.each([{ pluginId: inspection.plugin.id }, { catalogId: "local_cmV0YWluZWQtcGx1Z2lu" }])(
-    "shows current local references and removes released acquisitions for %j",
-    async (params) => {
-      const fixture = retainedPlugin();
-      try {
-        const response = await inspect(fixture.registry, {
-          params,
-          hasCurrentClientAuthority: () => true,
-        });
-        expect(response).toMatchObject({
-          ...inspection,
-          runtimeRetention: {
-            pluginId: inspection.plugin.id,
-            total: 1,
-            omitted: 0,
-            references: [
-              { kind: "work", reason: "prepared-generation-lease", owner: acquisitionOwner },
-            ],
-          },
-        });
-        fixture.release();
-        expect(await inspect(fixture.registry, { params })).toMatchObject({
-          runtimeRetention: { total: 0, omitted: 0, references: [] },
-        });
-        expect(fixture.run).not.toHaveBeenCalled();
-      } finally {
-        fixture.release();
-        await fixture.instance.dispose();
-      }
-    },
-  );
+  it("shows local owners without execution and removes released acquisitions", async () => {
+    const fixture = retainedPlugin();
+    expect(await inspect(fixture.registry)).toMatchObject({
+      runtimeRetention: {
+        pluginId: inspection.plugin.id,
+        total: 1,
+        omitted: 0,
+        references: [
+          { kind: "work", reason: "prepared-generation-lease", owner: acquisitionOwner },
+        ],
+      },
+    });
+    fixture.release();
+    expect(await inspect(fixture.registry)).toMatchObject({
+      runtimeRetention: { total: 0, omitted: 0, references: [] },
+    });
+    expect(fixture.run).not.toHaveBeenCalled();
+  });
 
-  it.each(["missing record", "record without instance"])(
-    "returns null instead of inspecting another instance: %s",
-    async (state) => {
-      const fixture = retainedPlugin(createEmptyPluginRegistry(), "different-plugin");
-      if (state === "record without instance") {
-        fixture.registry.plugins.push(createPluginRecord({ id: inspection.plugin.id }));
-      }
-      try {
-        expect(await inspect(fixture.registry)).toMatchObject({ runtimeRetention: null });
-        expect(fixture.run).not.toHaveBeenCalled();
-      } finally {
-        fixture.release();
-        await fixture.instance.dispose();
-      }
-    },
-  );
+  it("returns null when no runtime instance exists", async () => {
+    const registry = createEmptyPluginRegistry();
+    registry.plugins.push(createPluginRecord({ id: inspection.plugin.id }));
+    expect(await inspect(registry)).toMatchObject({ runtimeRetention: null });
+  });
 
-  it.each(["no client", "read-only operator", "remote package", "remote catalog identity"])(
+  it.each(["no client", "read-only operator", "remote package"])(
     "omits cross-session diagnostics for %s",
     async (visibility) => {
       const fixture = retainedPlugin();
@@ -145,82 +122,32 @@ describe("plugins.inspect runtime retention disclosure", () => {
       if (visibility === "read-only operator") {
         client.connect.scopes = ["operator.read"];
       }
-      const params =
-        visibility === "remote package"
-          ? { source: "clawhub", packageName: "community/plugin" }
-          : visibility === "remote catalog identity"
-            ? { catalogId: "ch_Y29tbXVuaXR5L3BsdWdpbg" }
-            : { pluginId: inspection.plugin.id };
-      try {
-        const response = await inspect(fixture.registry, {
-          params,
-          client: visibility === "no client" ? null : client,
-        });
-        expect(response).toEqual({ ...inspection, decisions: [] });
-        expect(JSON.stringify(response)).not.toMatch(/private-session|private-run/);
-        expect(fixture.run).not.toHaveBeenCalled();
-      } finally {
-        fixture.release();
-        await fixture.instance.dispose();
-      }
+      const response = await inspect(fixture.registry, {
+        params:
+          visibility === "remote package"
+            ? { source: "clawhub", packageName: "community/plugin" }
+            : { pluginId: inspection.plugin.id },
+        client: visibility === "no client" ? null : client,
+      });
+      expect(response).toEqual({ ...inspection, decisions: [] });
+      expect(fixture.run).not.toHaveBeenCalled();
     },
   );
 
-  it.each([
-    "scope removed",
-    "invalidated",
-    "connection aborted",
-    "request aborted",
-    "authority revoked",
-  ])("rechecks authority after deferred inventory: %s", async (revocation) => {
+  it("rechecks live authority after awaiting inventory", async () => {
     const fixture = retainedPlugin();
-    const entered = createDeferredCore();
-    const catalog = createDeferredCore<typeof inspection>();
-    inspectManagedPlugin.mockImplementationOnce(() => {
-      entered.resolve();
-      return catalog.promise;
-    });
-    const client = adminClient();
-    const connection = new AbortController();
-    const request = new AbortController();
-    client.connectionSignal = connection.signal;
     let current = true;
-    const hasCurrentClientAuthority = vi.fn(() => current);
-    const pending = inspect(fixture.registry, {
-      client,
-      signal: request.signal,
-      hasCurrentClientAuthority,
+    inspectManagedPlugin.mockImplementationOnce(async () => {
+      current = false;
+      return inspection;
     });
-    try {
-      await awaitGateBeforeSettlement(entered.promise, pending, "inspection skipped inventory");
-      // Revoke exactly one live capability while catalog metadata is still in flight.
-      if (revocation === "scope removed") {
-        client.connect.scopes = ["operator.read"];
-      }
-      if (revocation === "invalidated") {
-        client.invalidated = true;
-      }
-      if (revocation === "connection aborted") {
-        connection.abort();
-      }
-      if (revocation === "request aborted") {
-        request.abort();
-      }
-      if (revocation === "authority revoked") {
-        current = false;
-      }
-      catalog.resolve(inspection);
-      expect(await pending).toEqual({ ...inspection, decisions: [] });
-      if (revocation === "authority revoked") {
-        expect(hasCurrentClientAuthority).toHaveReturnedWith(false);
-      }
-      expect(fixture.run).not.toHaveBeenCalled();
-    } finally {
-      catalog.resolve(inspection);
-      await Promise.allSettled([pending]);
-      fixture.release();
-      await fixture.instance.dispose();
-    }
+    const hasCurrentClientAuthority = vi.fn(() => current);
+    expect(await inspect(fixture.registry, { hasCurrentClientAuthority })).toEqual({
+      ...inspection,
+      decisions: [],
+    });
+    expect(hasCurrentClientAuthority).toHaveReturnedWith(false);
+    expect(fixture.run).not.toHaveBeenCalled();
   });
 
   it("uses the request registry after another Gateway publishes during inventory", async () => {

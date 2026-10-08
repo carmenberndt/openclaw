@@ -1,10 +1,10 @@
 import { createDeferredCore } from "../shared/deferred.js";
-import type { PluginInstanceConsumer } from "./plugin-instance.types.js";
 import type {
-  PluginReferenceDiagnostics,
+  PluginInstanceConsumer,
   PluginRetentionOwner,
   PluginRetentionReason,
-} from "./plugin-retention-diagnostics.js";
+} from "./plugin-instance.types.js";
+import type { PluginReferenceDiagnostics } from "./plugin-retention-diagnostics.js";
 import type { PluginRegistry } from "./registry-types.js";
 
 type ConsumerToken = {
