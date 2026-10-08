@@ -36,6 +36,7 @@ import {
 } from "./session-cold-storage-codec.js";
 import { readSessionColdStorageProtection } from "./session-cold-storage-eligibility.js";
 import type { SessionColdRestorationGuard } from "./session-cold-storage-guard.types.js";
+import type { SessionColdMutationResult } from "./session-cold-storage-guard.types.js";
 import { readSessionColdStorageInventory } from "./session-cold-storage-inventory.js";
 import {
   readSessionAdmissionProtectionKeys,
@@ -57,12 +58,10 @@ import {
   deleteSessionTranscriptFtsRowsInTransaction,
   selectSessionTranscriptFtsRows,
 } from "./session-transcript-fts.js";
-import type { TranscriptAppendRefusal } from "./session-transcript-writer-claim-error.js";
 import {
   createSessionTranscriptTurnKernel,
   sqliteSessionTranscriptTurnRebound,
 } from "./session-turn.kernel.js";
-import type { SqliteExpectedSessionTranscriptTurnResult } from "./session-turn.types.js";
 import { resolveSessionWorkStartError } from "./session-work-start.js";
 import { prepareTranscriptPayload, transcriptEventJsonSql } from "./transcript-payload.js";
 export type { SessionColdRestorationGuard } from "./session-cold-storage-guard.types.js";
@@ -95,15 +94,6 @@ export type SessionColdBatchPrepared = {
   externalizations: SessionColdExternalization[];
   oversizedSessionIds: string[];
   envelopeBytes: number;
-};
-export type SessionColdMutationResult = {
-  archivedTranscripts: number;
-  externalizedTranscripts: number;
-  restored: boolean;
-  sessionKey?: string;
-  turnRebound?: SqliteExpectedSessionTranscriptTurnResult;
-  refusedSource?: NonNullable<SessionSourceValidation["refusedSource"]>;
-  writerRefusal?: TranscriptAppendRefusal;
 };
 export type SessionColdMutationPlan = { databaseOptions: SessionColdPlan["databaseOptions"] } & (
   | { kind: "cold-maintain" }

@@ -1,7 +1,24 @@
 import type { SessionGoalOperation } from "./goals-operations.types.js";
 import type { SessionTranscriptWriteScope } from "./session-accessor.types.js";
-import type { SessionSourcePredicate } from "./session-source-authority.js";
-import type { SqliteSessionTurnOptions } from "./session-turn.types.js";
+import type {
+  SessionSourcePredicate,
+  SessionSourceValidation,
+} from "./session-source-authority.js";
+import type { TranscriptAppendRefusal } from "./session-transcript-writer-claim-error.js";
+import type {
+  SqliteExpectedSessionTranscriptTurnResult,
+  SqliteSessionTurnOptions,
+} from "./session-turn.types.js";
+
+export type SessionColdMutationResult = {
+  archivedTranscripts: number;
+  externalizedTranscripts: number;
+  restored: boolean;
+  sessionKey?: string;
+  turnRebound?: SqliteExpectedSessionTranscriptTurnResult;
+  refusedSource?: NonNullable<SessionSourceValidation["refusedSource"]>;
+  writerRefusal?: TranscriptAppendRefusal;
+};
 
 type SessionColdTurnGuard = {
   kind: "turn";
