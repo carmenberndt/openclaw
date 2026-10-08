@@ -1,6 +1,10 @@
 // Exercises control-command reachability without relaxing ordinary reply admission.
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { createDeferred, raceWithTimeoutResult } from "../../../test/helpers/promise.js";
+import {
+  createDeferred,
+  raceWithTimeoutResult,
+  withinTest,
+} from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.js";
 import * as controllerWait from "../../sessions/session-controller.wait.js";
@@ -269,6 +273,37 @@ describe("dispatch active command admission", () => {
       }
     },
   );
+
+  it("lets an authorized text /steer reach queue policy beside the turn it steers", async ({
+    signal,
+  }) => {
+    const sessionKey = "agent:main:steer-active";
+    const activeOperation = startOperation(sessionKey);
+    onTestFinished(() => activeOperation.complete());
+    const reachedWhileActive = createDeferred<boolean>();
+    const replyResolver = vi.fn<NonNullable<DispatchFromConfigParams["replyResolver"]>>(
+      async () => {
+        reachedWhileActive.resolve(activeOperation.result === null);
+        return undefined;
+      },
+    );
+    const dispatchPromise = dispatchReplyFromConfig({
+      ctx: commandContext("text", "/steer use the corrected approach", "steer", {
+        SessionKey: sessionKey,
+      }),
+      cfg: structuredClone(cfg),
+      dispatcher: createDispatcher(),
+      replyResolver,
+    });
+
+    try {
+      expect(await withinTest(reachedWhileActive.promise, signal)).toBe(true);
+      expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
+    } finally {
+      activeOperation.complete();
+      await dispatchPromise;
+    }
+  });
 
   it("delivers directive control output without claiming the active target turn", async () => {
     const sessionKey = "agent:main:directive-reply-active";

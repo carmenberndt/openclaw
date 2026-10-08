@@ -54,6 +54,7 @@ import {
 import { createReplyTurnLedger } from "./dispatch-from-config.turn-ledger.js";
 import type { DispatchFromConfigParams } from "./dispatch-from-config.types.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
+import { isExplicitSteerCommandTurn } from "./explicit-steer-routing.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
 import type { ReplyDispatcher } from "./reply-dispatcher.types.js";
@@ -383,6 +384,8 @@ export function createDispatchReplyOperationCoordinator(params: {
     const activeReplyOperation = input
       ? input.mailbox.owner.active
       : getSessionControllerOperation(dispatchOperationSessionKey);
+    // An explicit /steer becomes queue input for the active turn, so it must reach
+    // queue policy like an ordinary message rather than wait for that turn to end.
     const commandRequiresTurn =
       (isExplicitCommandTurnContext(params.ctx, params.cfg) ||
         isUnauthorizedTextSlashCommand(params.ctx)) &&
@@ -390,7 +393,8 @@ export function createDispatchReplyOperationCoordinator(params: {
         commandTurn: resolveCommandTurnContext(params.ctx),
         cfg: params.cfg,
         provider: params.ctx.Provider ?? params.ctx.Surface,
-      });
+      }) &&
+      !isExplicitSteerCommandTurn(params.ctx);
     const allowQueuePreparation = replyTurnKind === "visible" && !commandRequiresTurn;
     const allowActiveResolution =
       replyTurnKind === "visible" && (phase === "pre_dispatch" || phase === "command_resolution");
