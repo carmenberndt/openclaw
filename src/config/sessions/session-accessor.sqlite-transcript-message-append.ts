@@ -99,6 +99,8 @@ type TranscriptMessageEnvelope = {
   id: string;
   parentId: string | null;
   appendMode?: "side";
+  /** Entry id this branch-rewrite copy replaces; absent on ordinary appends. */
+  supersedesEntryId?: string;
   timestamp: string;
 };
 
@@ -155,6 +157,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
   options: TranscriptMessageAppendOptions<TMessage> & {
     messageAlreadyRedacted?: boolean;
     appendMode?: "side";
+    supersedesEntryId?: string;
   },
   preparedMessage?: PreparedTranscriptMessageAppend<TMessage>,
   projection?: { scheduleProjectionReconcile?: boolean; onProjectionReconcileNeeded?: () => void },
@@ -272,6 +275,7 @@ export function appendTranscriptMessageInTransaction<TMessage>(
     id: messageId,
     parentId: parentId ?? null,
     ...(options.appendMode ? { appendMode: options.appendMode } : {}),
+    ...(options.supersedesEntryId ? { supersedesEntryId: options.supersedesEntryId } : {}),
     timestamp: resolveTimestampMsToIsoString(now),
     message: storagePreparation?.persistedMessage ?? finalMessage,
   };

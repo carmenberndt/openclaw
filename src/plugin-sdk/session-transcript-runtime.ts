@@ -188,6 +188,8 @@ export type SessionTranscriptMessageEntry = {
   createdAt?: string;
   /** Message idempotency key, when the persisted message has one. */
   idempotencyKey?: string;
+  /** Entry id this message replaced when a transcript rewrite re-appended it. */
+  supersedesEntryId?: string;
 };
 
 export type SessionTranscriptTarget = SessionTranscriptIdentity & {
@@ -682,6 +684,7 @@ function projectVisibleMessageEntry(entry: {
   }
   const createdAt = readNonEmptyString(event.timestamp);
   const idempotencyKey = readNonEmptyString(message.idempotencyKey);
+  const supersedesEntryId = readNonEmptyString(event.supersedesEntryId);
   return [
     {
       entryId,
@@ -691,6 +694,7 @@ function projectVisibleMessageEntry(entry: {
       role: message.role,
       ...(createdAt ? { createdAt } : {}),
       ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(supersedesEntryId ? { supersedesEntryId } : {}),
     },
   ];
 }
