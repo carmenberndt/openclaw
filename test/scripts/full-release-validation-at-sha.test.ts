@@ -63,6 +63,9 @@ describe("full-release-validation-at-sha", () => {
     const callsBefore = fixture.calls().length;
     const reopened = fixture.run(["--reconcile-request", fixture.requestPath()], true);
     expect(reopened.status, reopened.stderr).toBe(0);
+    expect(reopened.stdout).toContain(
+      "release_profile=stable rerun_group=all soak=true telegram_waiver=omitted",
+    );
     expect(readFileSync(fixture.requestPath())).toEqual(before);
     expect(
       fixture
@@ -850,18 +853,22 @@ describe("full-release-validation-at-sha", () => {
     }
   });
 
-  it.each(["provider"])("does not adopt a run with a different %s input witness", (key) => {
-    const fixture = createDispatchFixture({ witnessInputs: { [key]: "__different_input__" } });
-    const result = fixture.run();
-    expect(result.status, result.stdout).toBe(1);
-    expect(result.stderr).toContain(
-      "Dispatch input witness does not match the complete retained request",
-    );
-    expect(fixture.calls("DELETE")).toEqual([]);
-  });
+  it.each(["provider", "release_profile", "telegram_waiver", "rerun_group", "run_release_soak"])(
+    "does not adopt a run with a different %s input witness",
+    (key) => {
+      const fixture = createDispatchFixture({ witnessInputs: { [key]: "__different_input__" } });
+      const result = fixture.run();
+      expect(result.status, result.stdout).toBe(1);
+      expect(result.stderr).toContain(
+        "Dispatch input witness does not match the complete retained request",
+      );
+      expect(fixture.calls("DELETE")).toEqual([]);
+    },
+  );
 
   it.each([
     ["beta", false],
+    ["stable", true],
     ["full", true],
   ] as const)(
     "retains raw defaults separately from effective %s soak",
@@ -881,6 +888,9 @@ describe("full-release-validation-at-sha", () => {
         },
         wireInputs: { run_release_soak: "false", fail_fast: "false", reuse_evidence: "true" },
       });
+      expect(result.stdout).toContain(
+        `release_profile=${profile} rerun_group=all soak=${effectiveSoak} telegram_waiver=omitted`,
+      );
       expect(record.run).toEqual({ id: 123, attempt: 1 });
       expect(record.error).toBe("none");
     },
@@ -905,8 +915,18 @@ describe("full-release-validation-at-sha", () => {
 
   it("does not retain or mutate a request in dry-run mode", () => {
     const fixture = createDispatchFixture();
-    const result = fixture.run(["--dry-run"]);
+    const result = fixture.run([
+      "--dry-run",
+      "-f",
+      "release_profile=stable",
+      "-f",
+      "telegram_waiver=private-waiver-selection",
+    ]);
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      "release_profile=stable rerun_group=all soak=true telegram_waiver=selected (redacted)",
+    );
+    expect(result.stdout).not.toContain("private-waiver-selection");
     expect(result.stdout).toContain("(dry run; not written)");
     expect(result.stdout).toContain(`Validation SHA fetchable by bare SHA: ${fixture.targetSha}`);
     expect(result.stdout).not.toContain("validation/target-");
