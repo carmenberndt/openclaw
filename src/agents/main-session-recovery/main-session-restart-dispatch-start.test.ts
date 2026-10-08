@@ -76,6 +76,7 @@ describe("restart recovery startup ownership", () => {
     const preparation = createDeferred();
     const registered = createDeferred();
     const finish = createDeferred();
+    const executing = createDeferred();
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const timeoutMs = 60_000;
     const target = captureSessionTarget({
@@ -169,6 +170,7 @@ describe("restart recovery startup ownership", () => {
               await lanes.enqueueSession(() =>
                 lanes.enqueueGlobal(async () => {
                   expect(registration.markExecutionStarted()).toBe(true);
+                  executing.resolve();
                   if (stage !== "cached queue") {
                     io.emitExecutionStarted?.();
                   }
@@ -221,6 +223,9 @@ describe("restart recovery startup ownership", () => {
         setCommandLaneConcurrency(blockedLane, 1);
       }
       if (stage === "cached queue") {
+        // Cached acceptance has no start callback; recovery sees the start on its next
+        // owner poll. Lane admission awaits real writer I/O, so wait for the start first.
+        await executing.promise;
         await vi.advanceTimersByTimeAsync(10_000);
       }
       expect(onSettled).not.toHaveBeenCalled();
