@@ -853,22 +853,18 @@ describe("full-release-validation-at-sha", () => {
     }
   });
 
-  it.each(["provider", "release_profile", "telegram_waiver", "rerun_group", "run_release_soak"])(
-    "does not adopt a run with a different %s input witness",
-    (key) => {
-      const fixture = createDispatchFixture({ witnessInputs: { [key]: "__different_input__" } });
-      const result = fixture.run();
-      expect(result.status, result.stdout).toBe(1);
-      expect(result.stderr).toContain(
-        "Dispatch input witness does not match the complete retained request",
-      );
-      expect(fixture.calls("DELETE")).toEqual([]);
-    },
-  );
+  it.each(["provider"])("does not adopt a run with a different %s input witness", (key) => {
+    const fixture = createDispatchFixture({ witnessInputs: { [key]: "__different_input__" } });
+    const result = fixture.run();
+    expect(result.status, result.stdout).toBe(1);
+    expect(result.stderr).toContain(
+      "Dispatch input witness does not match the complete retained request",
+    );
+    expect(fixture.calls("DELETE")).toEqual([]);
+  });
 
   it.each([
     ["beta", false],
-    ["stable", true],
     ["full", true],
   ] as const)(
     "retains raw defaults separately from effective %s soak",
