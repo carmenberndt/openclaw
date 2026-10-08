@@ -5,8 +5,9 @@ import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { resolveControlUiAssetHealth } from "./control-ui-assets.js";
 import { hasErrnoCode } from "./errno.js";
 import { readPackageManagerSpec } from "./package-json.js";
-import { DEV_BRANCH, resolveDevUpstreamRefs } from "./update-channels.js";
+import { DEV_BRANCH } from "./update-channels.js";
 import { resolveDevUpdateTargetRevision, type DevUpdateTarget } from "./update-dev-target.js";
+import { readGitUpdateFetchTarget, resolveGitUpdateTrackingRef } from "./update-git-metadata.js";
 import {
   parsePnpmPackageManagerVersion,
   resolveUpdateBuildManager,
@@ -134,50 +135,30 @@ async function resolveUpstreamCandidates(params: {
 > {
   const step = createGitStepFactory(params.gitRoot, params.step);
   let localDevBranchExists: boolean | null = null;
-  let remoteBranchRefs: string[] = [];
   if (params.needsCheckoutMain) {
     const localMainStep = await runStep(
       step("git-show-branch", "show-ref", "--verify", `refs/heads/${DEV_BRANCH}`),
     );
     localDevBranchExists = localMainStep.exitCode === 0;
   }
-  if (params.needsCheckoutMain && localDevBranchExists === false) {
-    remoteBranchRefs = params.refreshedRemotes.map(
-      (remote) => `refs/remotes/${remote}/${DEV_BRANCH}`,
-    );
+  const readGit = async (...args: string[]) => {
+    const result = await runStep(step("upstream-check", ...args));
+    return !isFailedUpdateStep(result) ? result.stdoutTail?.trim() || null : null;
+  };
+  const source = await readGitUpdateFetchTarget(readGit, DEV_BRANCH, params.needsCheckoutMain);
+  if (!source || (source.remote !== "." && !params.refreshedRemotes.includes(source.remote))) {
+    return { status: "skipped", reason: "no-upstream" };
   }
-  const upstreamRefs = resolveDevUpstreamRefs(params.needsCheckoutMain, remoteBranchRefs);
-  let upstreamSha: string | null = null;
-  let selectedDevUpstream: string | null = null;
-  let sawResolvableUpstreamRef = false;
-  for (const upstreamRef of upstreamRefs) {
-    let resolvedUpstreamRef = upstreamRef;
-    if (upstreamRef.endsWith("@{upstream}")) {
-      const upstreamStep = await runStep(
-        step("upstream-check", "rev-parse", "--symbolic-full-name", upstreamRef),
-      );
-      if (isFailedUpdateStep(upstreamStep)) {
-        continue;
-      }
-      sawResolvableUpstreamRef = true;
-      resolvedUpstreamRef = upstreamStep.stdoutTail?.trim() ?? upstreamRef;
-    }
-    const shaStep = await runStep(step("git-resolve-upstream", "rev-parse", upstreamRef));
-    const sha = shaStep.stdoutTail?.trim();
-    if (!isFailedUpdateStep(shaStep) && sha) {
-      upstreamSha = sha;
-      selectedDevUpstream = /^refs\/remotes\/(.+)$/u.exec(resolvedUpstreamRef)?.[1] ?? null;
-      break;
-    }
-    if (!isFailedUpdateStep(shaStep)) {
-      sawResolvableUpstreamRef = true;
-    }
+  const upstreamRef = await resolveGitUpdateTrackingRef(readGit, DEV_BRANCH, source);
+  if (!upstreamRef) {
+    return { status: "skipped", reason: "no-upstream" };
   }
+  const upstreamSha = await readGit("rev-parse", "--verify", `${upstreamRef}^{commit}`);
   if (!upstreamSha) {
-    return sawResolvableUpstreamRef
-      ? { status: "error", reason: "no-upstream-sha" }
-      : { status: "skipped", reason: "no-upstream" };
+    return { status: "error", reason: "no-upstream-sha" };
   }
+  // Local branches are operator state, not remote cache refs to publish after admission.
+  const selectedDevUpstream = upstreamRef.startsWith("refs/heads/") ? null : upstreamRef;
   const revListStep = await runStep(
     step("git-rev-list", "rev-list", `--max-count=${PREFLIGHT_MAX_COMMITS}`, upstreamSha),
   );

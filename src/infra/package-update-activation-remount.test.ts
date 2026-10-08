@@ -39,7 +39,7 @@ describe.skipIf(process.platform === "win32")("completed package receipt remount
     "active",
     "non-linux",
   ] as const)(
-    "admits only completed device drift, preserving %s receipt safety",
+    "keeps completed receipts non-blocking while preserving %s recovery safety",
     async (scenario) => {
       const first = await prepare();
       if (scenario === "settled") {
@@ -100,7 +100,7 @@ describe.skipIf(process.platform === "win32")("completed package receipt remount
         .spyOn(process, "platform", "get")
         .mockReturnValue(scenario === "non-linux" ? "darwin" : "linux");
       try {
-        if (scenario !== "completed" && scenario !== "settled") {
+        if (scenario === "installation-key" || scenario === "active") {
           expect(() => assertNoPendingPackageActivation(first.packageRoot)).toThrow(
             "does not match its installation",
           );
@@ -110,12 +110,17 @@ describe.skipIf(process.platform === "win32")("completed package receipt remount
         for (let reboot = 0; reboot < 2; reboot++) {
           const originalIntent = readPersistedIntent();
           expect(() => assertNoPendingPackageActivation(first.packageRoot)).not.toThrow();
-          const settled = openPackageActivationJournal(first.anchor).read();
+          const settled = openPackageActivationJournal(first.anchor).readForAdmission(
+            first.packageRoot,
+          );
           expect(settled).toMatchObject({
             phase: scenario === "settled" ? "superseded" : "anchor-retired",
           });
+          if (scenario !== "settled") {
+            expect(fs.readFileSync(journalPath)).toEqual(before);
+          }
           expect(readPersistedIntent()).toEqual(
-            originalIntent && "replacementIdentity" in originalIntent
+            scenario === "settled" && originalIntent && "replacementIdentity" in originalIntent
               ? {
                   ...originalIntent,
                   replacementIdentity: packageActivationIdentity(first.packageRoot, true),
@@ -127,8 +132,10 @@ describe.skipIf(process.platform === "win32")("completed package receipt remount
           });
           expect(fs.existsSync(resolvePackageActivationHelper(first.anchor))).toBe(false);
           expect(() => assertNoPendingPackageActivation(first.packageRoot)).not.toThrow();
-          expect(openPackageActivationJournal(first.anchor).read()).toEqual(settled);
-          if (reboot === 0) {
+          expect(
+            openPackageActivationJournal(first.anchor).readForAdmission(first.packageRoot),
+          ).toEqual(settled);
+          if (reboot === 0 && scenario === "settled") {
             remount(settled);
           }
         }

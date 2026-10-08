@@ -515,22 +515,33 @@ Retirement records removal of the disposable directory before recording the
 helper's final unlink intent. The helper is then removed. The bounded last
 receipt remains in the control directory and is readable through
 `openclaw update status --json` as `packageActivation`, even after helper removal.
-A completed receipt is replaced only when the next update is admitted through
-the same original executor store; it is not authority to mutate an installation.
+A fully retired receipt is historical evidence, not authority to mutate an
+installation. Once its helper and disposable recovery directory are gone, saved
+device, inode, or executor-store identities do not block the next update. Status
+keeps that history unchanged; a newly admitted updater replaces it under current
+installation ownership.
+
+The installed updater controls this first admission check. An older updater can
+still reject a stale receipt before it stages a newer candidate. In that case,
+use the [manual update method](/install/updating/update-methods) for your existing
+installation and account, preserving its state and recovery artifacts. The
+replacement updater uses the non-blocking history behavior on subsequent updates.
 
 On Linux, a filesystem remount can change device numbers without moving files.
-Update admission reconciles this change for completed receipts when the recorded
-inodes, installation path, and ownership still match. It refreshes verified
+For completed supersession records that still retain recovery artifacts, update
+admission reconciles this change when the recorded inodes, installation path,
+and ownership still match. It refreshes verified
 identities while preserving the original journal format and completion intent,
 so older CLI versions can still read the completed receipt. The warning
 `filesystem device id changed; receipt identities refreshed` reports the repair
 without adding a new persisted intent. Active recovery operations and replaced
 files retain their existing identity checks.
 
-Missing, legacy or identity-mismatched recovery artifacts block the next mutable
-update. They are not silently migrated or deleted. Preserve them and use their
-original recovery owner; do not recreate the journal or remove them to bypass
-the refusal.
+Unfinished operations, unrecognized journals, and changed artifacts still held
+for recovery require their original owner. They are not silently migrated or
+deleted. Preserve them; do not recreate the journal or remove retained artifacts
+to bypass an unresolved recovery. Fully retired history does not grant recovery
+authority and does not need its old identities repaired before a new update.
 
 For an external-helper operation stuck at `publication-complete`, run
 `openclaw update repair` from an independent terminal. Repair verifies the

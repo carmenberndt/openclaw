@@ -491,12 +491,9 @@ export function completeUpdateCommandRun(
   }
   // A process-local result cannot complete an operationally pending update or
   // authorize package retirement. Only the durable finalizer may close it.
-  const inspected = inspectUpdateRecoveries({ env: run.env }).find(
-    (entry) => entry.record.runId === run.runId,
-  );
-  // A matching historical record can only project its saved outcome or remain
-  // pending below. The mutable fallback still uses strict execution admission;
-  // unrelated legacy evidence must not become an absent/clean recovery state.
+  const inspected = inspectUpdateRecoveries({ env: run.env }, run.runId)[0];
+  // Only this run's historical record can project its saved outcome or remain
+  // pending below. Unrelated retained evidence grants no authority over this run.
   const recovery =
     inspected?.format === "legacy-serving"
       ? inspected.record

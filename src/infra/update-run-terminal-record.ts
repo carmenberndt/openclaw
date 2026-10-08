@@ -2,7 +2,7 @@ import { runExistingOpenClawStateWriteTransaction } from "../state/openclaw-stat
 import type { UpdateRunLedgerOptions as LedgerOptions } from "./update-run-codec.js";
 import { readUpdateRunRecord as readRun } from "./update-run-read.kernel.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
-import { readRecoveries } from "./update-run-recovery-store.js";
+import { readUpdateRecovery } from "./update-run-recovery-store.js";
 import { updateRunLedgerSchema as schema } from "./update-run-write.js";
 
 /** Retain a completed outcome while its updater still owns the existing state.
@@ -16,9 +16,9 @@ export function captureCompletedUpdateRun(
   return runExistingOpenClawStateWriteTransaction(
     ({ db }) => {
       assertCurrent();
-      // Decode all retained evidence. Unknown or malformed recovery is never an
-      // empty namespace, and any retained record keeps its existing finalizer.
-      if (readRecoveries(db).length > 0) {
+      // This run's retained recovery keeps its existing finalizer. Unrelated
+      // historical receipts cannot revoke its completed, owner-held outcome.
+      if (readUpdateRecovery(db, runId)) {
         return undefined;
       }
       const record = readRun(db, runId);

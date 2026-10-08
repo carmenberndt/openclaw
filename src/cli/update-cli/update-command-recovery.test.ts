@@ -336,18 +336,30 @@ describe("historical terminal completion diagnostics", () => {
     expect(getUpdateRun(f.run.runId, f.options)?.status).toBe("running");
   });
 
-  it("does not turn unrelated legacy inspection into permission for the writing fallback", async () => {
-    const f = await historical(false);
-    const other = createUpdateRun({ trigger: "cli" }, f.options);
-    closeOpenClawStateDatabaseForTest();
-    const before = await f.family();
-    expect(() =>
-      completeUpdateCommandRun(
+  it.each(["terminal-legacy", "corrupt"] as const)(
+    "completes a separate run without changing unrelated %s recovery",
+    async (kind) => {
+      const f = await historical(false);
+      const other = createUpdateRun({ trigger: "cli" }, f.options);
+      const key = "update.recovery." + f.run.runId;
+      const saved = kind === "corrupt" ? '{"revision":1}' : f.saved;
+      const db = openOpenClawStateDatabase(f.options).db;
+      db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?").run(saved, key);
+      const original = getUpdateRun(f.run.runId, f.options);
+      closeOpenClawStateDatabaseForTest();
+      const result = completeUpdateCommandRun(
         { status: "ok", mode: "npm", steps: [], durationMs: 1 },
         { runId: other.runId, env: f.opts.run!.env },
-      ),
-    ).toThrow();
-    expect(await f.family()).toEqual(before);
-    expect(getUpdateRun(other.runId, f.options)?.status).toBe("running");
-  });
+      );
+      expect(result).toMatchObject({ status: "ok", runId: other.runId });
+      expect(getUpdateRun(other.runId, f.options)?.status).toBe("succeeded");
+      expect(getUpdateRun(f.run.runId, f.options)).toEqual(original);
+      expect(
+        openOpenClawStateDatabase(f.options)
+          .db.prepare("SELECT value_json FROM config_machine_state WHERE state_key=?")
+          .get(key)?.value_json,
+      ).toBe(saved);
+      expect(() => loadUpdateRecovery(f.run.runId, f.options)).toThrow();
+    },
+  );
 });

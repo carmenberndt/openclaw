@@ -32,7 +32,6 @@ enum ManagedNodeGatewayMigration {
     }
 
     enum Outcome {
-        case coreRepairRequired
         case versionUpdated
         case migrated(BundledRuntime)
     }
@@ -59,20 +58,18 @@ enum ManagedNodeGatewayMigration {
     private static let serviceInstallTimeout = GatewayChildSupervisor.shutdownTimeoutSeconds + 10 +
         GatewayLaunchAgentManager.startupMigrationTolerance
 
-    static func shutdownTimeout(candidate: Candidate, targetVersion: String?) -> TimeInterval {
-        let runtimeBudget = 2 * self.serviceInstallTimeout +
+    static var shutdownTimeout: TimeInterval {
+        // Same-version recovery can run the core updater too. Drain its admitted
+        // work before runtime installation or restoration releases service custody.
+        CLIInstaller.managedUpdateTimeout + 2 * self.serviceInstallTimeout +
             2 * GatewayLaunchAgentManager.startupMigrationTolerance + 45
-        if candidate.version != targetVersion {
-            return CLIInstaller.managedUpdateTimeout + (candidate.snapshot == nil ? runtimeBudget : 45)
-        }
-        return runtimeBudget
     }
 
-    static func requiresCoreRepair(
+    private static func requiresCoreRepair(
         receipt: PostAppUpdateReceipt?,
         hasVerifiedCoreRepair: Bool = false) -> Bool
     {
-        receipt?.coreUpdatePending == true && !hasVerifiedCoreRepair
+        (receipt?.coreUpdate == .gateway || receipt?.coreUpdate == .legacyCanonical) && !hasVerifiedCoreRepair
     }
 
     static func run(
@@ -82,20 +79,17 @@ enum ManagedNodeGatewayMigration {
         operations: Operations) async throws -> Outcome
     {
         try operations.checkCurrent()
-        // An updated version is not proof that core finished its schema and repair work.
-        // PostUpdate must resume that work with the retained Node CLI before switching runtimes.
-        if self.requiresCoreRepair(
-            receipt: pendingSetupRecovery,
-            hasVerifiedCoreRepair: candidate.hasVerifiedCoreRepair)
-        {
-            return .coreRepairRequired
-        }
         var current = try await operations.recapture(candidate, false)
         try operations.checkCurrent()
         guard current == candidate else {
             throw Failure(message: "The managed Node Gateway changed before migration; retry.")
         }
-        if current.version != targetVersion {
+        // A pending checkpoint requests best-effort core repair; it cannot veto
+        // this independently admitted update or authorize the runtime switch.
+        if current.version != targetVersion || self.requiresCoreRepair(
+            receipt: pendingSetupRecovery?.toVersion == targetVersion ? pendingSetupRecovery : nil,
+            hasVerifiedCoreRepair: current.hasVerifiedCoreRepair)
+        {
             let updating = current
             try await Task { @MainActor in
                 try await operations.updateVersion(updating, targetVersion)
@@ -227,13 +221,6 @@ enum ManagedNodeGatewayMigration {
         checkCurrent: @MainActor @Sendable () throws -> Void) async throws
     {
         try checkCurrent()
-        guard !self.requiresCoreRepair(
-            receipt: PostAppUpdateReceiptStore.pendingSetupRecovery() ?? PostAppUpdateReceiptStore
-                .pending(currentVersion: GatewayEnvironment.appVersionString()),
-            hasVerifiedCoreRepair: expected.hasVerifiedCoreRepair)
-        else {
-            throw Failure(message: "The managed Node Gateway update needs repair before switching runtimes.")
-        }
         let current = try await self.recaptureEligibleCandidate(
             retainedCLI: resolveLegacyCLI(),
             allowNamedServiceRetry: expected.allowsNamedServiceRetry,
@@ -243,11 +230,7 @@ enum ManagedNodeGatewayMigration {
               try await self.captureServiceCustody(requireService: expected.snapshot != nil) == custody
         else { throw Failure(message: "The Node Gateway changed before dispatch; the newer selection was preserved.") }
         try checkCurrent()
-        guard !self.requiresCoreRepair(
-            receipt: PostAppUpdateReceiptStore.pendingSetupRecovery() ?? PostAppUpdateReceiptStore
-                .pending(currentVersion: GatewayEnvironment.appVersionString()),
-            hasVerifiedCoreRepair: expected.hasVerifiedCoreRepair),
-            self.policyAllowsMigration(
+        guard self.policyAllowsMigration(
                 onboardingSeen: AppStateStore.shared.onboardingSeen,
                 installPolicy: CLIInstallPolicy.storedPolicy(),
                 gatewayUpdateChannel: OpenClawConfigFile.gatewayUpdateChannel(),
@@ -424,9 +407,11 @@ enum ManagedNodeGatewayMigration {
             updateVersion: { candidate, version in
                 let original = try await self.captureServiceCustody(requireService: candidate.snapshot != nil)
                 try checkCurrent()
+                var dispatchedReceipt: PostAppUpdateReceipt?
                 let outcome = await CLIInstaller.updateManaged(
                     targetVersion: version,
                     restartGateway: candidate.snapshot != nil,
+                    repair: candidate.version == version,
                     installedCLI: candidate.cli,
                     checkCurrent: {
                         try await self.checkCandidateAtDispatch(
@@ -437,13 +422,14 @@ enum ManagedNodeGatewayMigration {
                     },
                     onDispatch: {
                         if candidate.snapshot == nil {
-                            try PostAppUpdateReceiptStore.recordSetupRecovery(
+                            dispatchedReceipt = PostAppUpdateReceiptStore.recordSetupRecovery(
                                 fromVersion: candidate.version, toVersion: version)
                         } else {
                             let receipt = PostAppUpdateReceiptStore.pending(currentVersion: version) ??
                                 PostAppUpdateReceipt(
                                     fromVersion: candidate.version, toVersion: version, recordedAt: Date())
-                            try PostAppUpdateReceiptStore.recordCoreUpdateDispatch(receipt: receipt, owner: .gateway)
+                            dispatchedReceipt = PostAppUpdateReceiptStore.recordCoreUpdateDispatch(
+                                receipt: receipt, owner: .gateway)
                         }
                     },
                     statusHandler: statusHandler)
@@ -455,10 +441,8 @@ enum ManagedNodeGatewayMigration {
                         throw Failure(
                             message: "The Node update did not verify the app's exact version; retry recovery.")
                     }
-                    guard let completed = PostAppUpdateReceiptStore.completeCoreRepair(
-                        currentVersion: version, owner: .gateway), !completed.coreUpdatePending
-                    else {
-                        throw Failure(message: "Another managed runtime update still needs repair.")
+                    if let dispatchedReceipt {
+                        PostAppUpdateReceiptStore.completeCoreRepair(receipt: dispatchedReceipt, owner: .gateway)
                     }
                 }
             },

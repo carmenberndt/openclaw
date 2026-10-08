@@ -292,7 +292,11 @@ export function openPackageActivationJournal(anchor: string) {
       if (completedInstallKey === undefined) {
         throw new Error("Package publication journal does not match its installation");
       }
-      reconcileCompletedPackageActivationRecord(anchor, record);
+      // A retired operation owns no package or helper. Its historical file
+      // identities cannot veto a new update admitted against today's installation.
+      if (record.phase !== "anchor-retired" || !isPackageActivationComplete(anchor, record)) {
+        reconcileCompletedPackageActivationRecord(anchor, record);
+      }
     }
     return record;
   };
@@ -329,7 +333,8 @@ export function openPackageActivationJournal(anchor: string) {
     }
     return rows[0];
   };
-  const read = () => withDatabase(false, (db) => decode(readRow(db)));
+  const read = (completedInstallKey?: string) =>
+    withDatabase(false, (db) => decode(readRow(db), completedInstallKey));
   const assertRecord = (expected: PackageActivationRecord, actual: PackageActivationRecord) => {
     if (JSON.stringify(expected) !== JSON.stringify(actual)) {
       throw new Error("Package publication intent is no longer current");
@@ -383,8 +388,8 @@ export function openPackageActivationJournal(anchor: string) {
   return {
     read,
     readForAdmission(installKey: string) {
-      const initial = withDatabase(false, (db) => decode(readRow(db), installKey));
-      if (matchesInstallation(initial.descriptor)) {
+      const initial = read(installKey);
+      if (matchesInstallation(initial.descriptor) || initial.phase === "anchor-retired") {
         return initial;
       }
       const reconciled = reconcileCompletedPackageActivationRecord(anchor, initial);
@@ -451,7 +456,7 @@ export function openPackageActivationJournal(anchor: string) {
           () => {
             assertFiles();
             assertCurrent();
-            const previous = decode(readRow(db));
+            const previous = decode(readRow(db), descriptor.authority.installKey);
             assertRecord(expected, previous);
             if (
               !isPackageActivationComplete(anchor, previous) ||
@@ -460,13 +465,14 @@ export function openPackageActivationJournal(anchor: string) {
                 descriptor.anchorIdentity ||
               packageActivationIdentity(preparationSource(descriptor, "helper"), false) !==
                 descriptor.helperIdentity ||
-              previous.descriptor.authority.databasePath !== descriptor.authority.databasePath ||
-              (previous.intent?.kind !== "recovery-lease-identity-changed" &&
-                previous.intent?.kind !== "recovery-lease-missing" &&
-                (previous.descriptor.authority.databaseIdentity !==
-                  descriptor.authority.databaseIdentity ||
-                  previous.descriptor.authority.parentIdentity !==
-                    descriptor.authority.parentIdentity))
+              (previous.phase !== "anchor-retired" &&
+                (previous.descriptor.authority.databasePath !== descriptor.authority.databasePath ||
+                  (previous.intent?.kind !== "recovery-lease-identity-changed" &&
+                    previous.intent?.kind !== "recovery-lease-missing" &&
+                    (previous.descriptor.authority.databaseIdentity !==
+                      descriptor.authority.databaseIdentity ||
+                      previous.descriptor.authority.parentIdentity !==
+                        descriptor.authority.parentIdentity))))
             ) {
               throw new Error("The previous package receipt is not safely replaceable.");
             }

@@ -164,11 +164,12 @@ export function readPackageActivationReceipt(installKey: string):
     readPackageActivationContinuation(installKey);
     return undefined;
   }
-  const record = openPackageActivationJournal(anchor).read();
+  const record = openPackageActivationJournal(anchor).read(installKey);
   const receipt = status(record);
   if (
     receipt.phase !== "complete" ||
-    (record.intent?.kind !== "recovery-lease-identity-changed" &&
+    (record.phase !== "anchor-retired" &&
+      record.intent?.kind !== "recovery-lease-identity-changed" &&
       record.intent?.kind !== "recovery-lease-missing")
   ) {
     assertManagedUpdateLeaseDatabaseIdentity(record.descriptor.authority);

@@ -4,7 +4,6 @@ export function createDevGitStatus(params?: {
   currentSha?: string;
   branch?: string | null;
   upstream?: string | null;
-  upstreamSource?: "tracking" | "receipt";
   upstreamSha?: string | null;
   repositoryUrl?: string;
   commitAtMs?: number | null;
@@ -23,11 +22,6 @@ export function createDevGitStatus(params?: {
       tag: null,
       branch: params?.branch === undefined ? "main" : params.branch,
       upstream,
-      ...(params?.upstreamSource
-        ? { upstreamSource: params.upstreamSource }
-        : upstream
-          ? { upstreamSource: "tracking" as const }
-          : {}),
       upstreamSha: params?.upstreamSha === undefined ? "upstream-sha" : params.upstreamSha,
       ...(params?.repositoryUrl ? { repositoryUrl: params.repositoryUrl } : {}),
       commitAtMs: params?.commitAtMs ?? null,

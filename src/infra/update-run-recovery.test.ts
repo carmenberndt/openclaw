@@ -14,12 +14,21 @@ import {
   retainedReadinessRecord,
   retainedTerminalRecord,
 } from "./update-retained-recovery.test-support.js";
+import { captureUpdateRunRedactionFacts } from "./update-run-codec.js";
 import {
   createUpdateRun,
+  finishInterruptedUpdateBeforeActivation,
+  finishInterruptedUpdatePreview,
   finishUpdateRun,
   getUpdateRun,
+  reconcilePackageOwnerRefusal,
   recordUpdateRunStep,
 } from "./update-run-ledger.js";
+import {
+  openUpdateRunWriter,
+  recordUpdateRunMutationInWorker,
+} from "./update-run-mutation.worker.js";
+import { assertUpdateRecoveryAdmission } from "./update-run-recovery-admission.js";
 import { legacyRecord } from "./update-run-recovery-legacy.test-support.js";
 import {
   decodeUpdateRecovery,
@@ -266,6 +275,192 @@ describe("retained recovery read-only compatibility", () => {
       JSON.stringify(f.record),
     );
   });
+  it.each([false, true])(
+    "admits a terminal legacy receipt without rewriting or granting execution authority (rollback=%s)",
+    async (rollback) => {
+      const f = setup();
+      const record = retainedTerminalRecord(f.record, rollback);
+      const raw = JSON.stringify(legacyRecord(record), null, 2);
+      openOpenClawStateDatabase(f.options)
+        .db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?")
+        .run(raw, "update.recovery." + record.runId);
+      closeOpenClawStateDatabaseForTest();
+      const before = snapshot(f.root);
+      await expect(assertUpdateRecoveryAdmission(f.options)).resolves.toBeUndefined();
+      expect(() => loadUpdateRecovery(record.runId, f.options)).toThrow(/legacy.*readiness/i);
+      expect(snapshot(f.root)).toEqual(before);
+    },
+  );
+
+  it("keeps terminal legacy recovery with an unfinished effect pending", async () => {
+    const f = setup();
+    const record = legacyRecord(retainedTerminalRecord(f.record));
+    record.effects.push({
+      effectId: randomUUID(),
+      kind: "retirement",
+      resourceId: f.from.root,
+      runtime: "previous",
+      state: "intent",
+      observedIdentity: null,
+    });
+    const raw = JSON.stringify(record, null, 2);
+    expect(inspectUpdateRecovery(raw, record.runId).format).toBe("legacy-serving");
+    openOpenClawStateDatabase(f.options)
+      .db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?")
+      .run(raw, "update.recovery." + record.runId);
+    closeOpenClawStateDatabaseForTest();
+    const before = snapshot(f.root);
+    await expect(assertUpdateRecoveryAdmission(f.options)).rejects.toThrow();
+    expect(snapshot(f.root)).toEqual(before);
+  });
+
+  it.each(["terminal-legacy", "corrupt"] as const)(
+    "loads only the selected recovery beside unrelated %s evidence",
+    (kind) => {
+      const f = setup();
+      const other = createUpdateRun({ trigger: "cli" }, f.options);
+      const selected = createRetainedUpdateRecovery(
+        { runId: other.runId, from: f.from, to: f.to },
+        f.options,
+      );
+      const raw =
+        kind === "corrupt"
+          ? '{"revision":1}'
+          : JSON.stringify(legacyRecord(retainedTerminalRecord(f.record)), null, 2);
+      openOpenClawStateDatabase(f.options)
+        .db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?")
+        .run(raw, "update.recovery." + f.run.runId);
+      closeOpenClawStateDatabaseForTest();
+      const before = snapshot(f.root);
+      expect(loadUpdateRecovery(other.runId, f.options)).toEqual(selected);
+      expect(loadUpdateRecovery(randomUUID(), f.options)).toBeUndefined();
+      expect(() => loadUpdateRecovery(f.run.runId, f.options)).toThrow();
+      expect(snapshot(f.root)).toEqual(before);
+    },
+  );
+
+  it.each(["terminal-legacy", "corrupt"] as const)(
+    "records selected run progress beside unrelated %s recovery without changing it",
+    (kind) => {
+      const f = setup();
+      const other = createUpdateRun({ trigger: "cli" }, f.options);
+      const raw =
+        kind === "corrupt"
+          ? '{"revision":1}'
+          : JSON.stringify(legacyRecord(retainedTerminalRecord(f.record)), null, 2);
+      const key = "update.recovery." + f.run.runId;
+      openOpenClawStateDatabase(f.options)
+        .db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?")
+        .run(raw, key);
+      closeOpenClawStateDatabaseForTest();
+      const stages: string[] = [];
+      const writer = openUpdateRunWriter(f.options);
+      const command = (runId: string) => ({
+        type: "updateRuns.recordStep" as const,
+        input: {
+          runId,
+          redactionFacts: captureUpdateRunRedactionFacts(f.options.env),
+          requireNoRecovery: true as const,
+          step: { step: "candidate-admission", status: "completed" as const },
+        },
+      });
+      try {
+        expect(
+          recordUpdateRunMutationInWorker(
+            command(other.runId),
+            f.options,
+            (stage) => stages.push(stage),
+            writer,
+          ),
+        ).toMatchObject({ kind: "recorded", record: { runId: other.runId } });
+        expect(stages).toEqual(["transaction", "commit"]);
+        expect(() =>
+          recordUpdateRunMutationInWorker(command(f.run.runId), f.options, () => {}, writer),
+        ).toThrow();
+      } finally {
+        writer.close();
+      }
+      expect(getUpdateRun(other.runId, f.options)?.steps).toContainEqual(
+        expect.objectContaining({ step: "candidate-admission", status: "completed" }),
+      );
+      expect(
+        openOpenClawStateDatabase(f.options)
+          .db.prepare("SELECT value_json FROM config_machine_state WHERE state_key=?")
+          .get(key)?.value_json,
+      ).toBe(raw);
+    },
+  );
+
+  it.each(
+    (["repair", "preview", "interruption"] as const).flatMap((operation) =>
+      (["terminal-legacy", "pending", "corrupt"] as const).map((kind) => ({ operation, kind })),
+    ),
+  )("keeps $operation global pending exclusion beside $kind recovery", ({ operation, kind }) => {
+    const f = setup();
+    finishUpdateRun(f.run.runId, { status: "succeeded" }, f.options);
+    const other = createUpdateRun(
+      { runId: "ffffffff-ffff-4fff-bfff-ffffffffffff", trigger: "cli" },
+      f.options,
+    );
+    const expected =
+      operation === "repair"
+        ? finishUpdateRun(
+            other.runId,
+            { status: "skipped", reason: "unmanaged-package-install" },
+            f.options,
+          )
+        : other;
+    const raw =
+      kind === "corrupt"
+        ? '{"revision":1}'
+        : JSON.stringify(
+            kind === "terminal-legacy" ? legacyRecord(retainedTerminalRecord(f.record)) : f.record,
+            null,
+            2,
+          );
+    const key = "update.recovery." + f.run.runId;
+    openOpenClawStateDatabase(f.options)
+      .db.prepare("UPDATE config_machine_state SET value_json=? WHERE state_key=?")
+      .run(raw, key);
+    closeOpenClawStateDatabaseForTest();
+    const settle = () => {
+      if (operation === "repair") {
+        return reconcilePackageOwnerRefusal(expected, f.options);
+      }
+      if (operation === "preview") {
+        return finishInterruptedUpdatePreview(expected, f.options);
+      }
+      return finishInterruptedUpdateBeforeActivation(expected, () => {}, f.options);
+    };
+    if (kind === "corrupt") {
+      expect(settle).toThrow();
+    } else {
+      const settled = settle();
+      if (operation === "repair") {
+        expect(settled).toBe(kind === "terminal-legacy");
+      }
+    }
+    const actual = getUpdateRun(other.runId, f.options);
+    if (kind !== "terminal-legacy") {
+      expect(actual).toEqual(expected);
+    } else if (operation === "repair") {
+      expect(actual?.steps).toContainEqual(
+        expect.objectContaining({ step: "reconcile:acknowledged", status: "completed" }),
+      );
+    } else {
+      expect(actual).toMatchObject({
+        status: operation === "preview" ? "skipped" : "failed",
+        phase: "finished",
+        reason: "interrupted",
+      });
+    }
+    expect(
+      openOpenClawStateDatabase(f.options)
+        .db.prepare("SELECT value_json FROM config_machine_state WHERE state_key=?")
+        .get(key)?.value_json,
+    ).toBe(raw);
+  });
+
   it("keeps missing-state reads non-creating", () => {
     const root = dirs.make("retained-empty-");
     const options = { env: { OPENCLAW_STATE_DIR: root } };

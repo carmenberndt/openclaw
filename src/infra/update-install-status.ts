@@ -23,10 +23,6 @@ export async function resolveStartupInstallStatus(
     }),
     readVerifiedGitUpdateReceipt(),
   ]);
-  const gitUpstreamFallback =
-    installReceipt?.upstreamRef && root && updateInstallRootsMatch(root, installReceipt.root)
-      ? { currentSha: installReceipt.sha, upstreamRef: installReceipt.upstreamRef }
-      : undefined;
   const timeoutMs = resolveGatewayStartupTiming().deadlineMs;
   const options = {
     root,
@@ -35,7 +31,6 @@ export async function resolveStartupInstallStatus(
     fetchGit: fetchRemoteGit,
     includeRegistry: false,
     ...(fetchRemoteGit ? { useDetachedDevUpstream: true } : {}),
-    ...(gitUpstreamFallback ? { gitUpstreamFallback } : {}),
   };
   for (let attempt = 0; ; attempt++) {
     let status: UpdateCheckResult | undefined;

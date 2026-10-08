@@ -230,43 +230,59 @@ struct ManagedNodeGatewayMigrationTests {
         #expect(fixture.calls == ["capture", "service", "seed", "capture", "bun", "health"])
     }
 
-    @Test(arguments: [true, false])
-    func `same version Node migration waits for unfinished core setup repair`(serviceExists: Bool) async throws {
-        let suite = "ManagedNodeGatewayMigrationTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+    @Test(arguments: [true, false], [true, false])
+    func `same version recovery attempts core repair before runtime work`(serviceExists: Bool, repairFails: Bool) async throws {
         let fixture = Fixture()
         fixture.serviceExists = serviceExists
-        try PostAppUpdateReceiptStore.recordSetupRecovery(
-            fromVersion: "2026.8.1", toVersion: fixture.version, defaults: defaults)
-        let receipt = try #require(PostAppUpdateReceiptStore.pendingSetupRecovery(defaults: defaults))
-        _ = try await ManagedNodeGatewayMigration.run(
-            candidate: fixture.candidate,
-            targetVersion: fixture.version,
-            pendingSetupRecovery: receipt,
-            operations: fixture.operations)
-        #expect(fixture.calls.isEmpty)
-        #expect(PostAppUpdateReceiptStore.pendingSetupRecovery(defaults: defaults) == receipt)
+        fixture.updateFails = repairFails
+        let pending = PostAppUpdateReceipt(
+            fromVersion: "2026.8.1", toVersion: fixture.version, recordedAt: .distantPast,
+            gatewayUpdateIncomplete: true, coreUpdate: .gateway, setupRecovery: true)
+        if repairFails {
+            await #expect(throws: ManagedNodeGatewayMigration.Failure.self) {
+                try await ManagedNodeGatewayMigration.run(
+                    candidate: fixture.candidate, targetVersion: fixture.version,
+                    pendingSetupRecovery: pending, operations: fixture.operations)
+            }
+            #expect(fixture.calls == ["capture", "update"])
+            #expect(fixture.restoredCLI == nil)
+            return
+        }
+        let outcome = try await ManagedNodeGatewayMigration.run(
+            candidate: fixture.candidate, targetVersion: fixture.version,
+            pendingSetupRecovery: pending, operations: fixture.operations)
+        if serviceExists {
+            guard case .versionUpdated = outcome else {
+                Issue.record("Installed Node service must verify repair before a later runtime activation")
+                return
+            }
+            #expect(fixture.calls == ["capture", "update", "capture"])
+        } else {
+            guard case .migrated = outcome else {
+                Issue.record("Resume must continue through runtime health after successful core repair")
+                return
+            }
+            #expect(fixture.calls == ["capture", "update", "capture", "service", "seed", "capture", "bun", "health"])
+        }
     }
 
-    @Test func `absent Resume leaves an ordinary incomplete update receipt to core repair`() async throws {
+    @Test(arguments: ["other-target", "other-owner"])
+    func `Resume ignores checkpoints for another target or runtime owner`(_ foreign: String) async throws {
         let fixture = Fixture()
         fixture.serviceExists = false
         let pending = PostAppUpdateReceipt(
             fromVersion: "2026.8.1",
-            toVersion: fixture.version,
-            recordedAt: .distantPast,
-            gatewayUpdateIncomplete: true,
-            coreUpdate: .gateway)
+            toVersion: foreign == "other-target" ? "2026.9.7" : fixture.version,
+            recordedAt: .distantPast, gatewayUpdateIncomplete: true,
+            coreUpdate: foreign == "other-target" ? .gateway : .node)
         let outcome = try await ManagedNodeGatewayMigration.run(
-            candidate: fixture.candidate,
-            targetVersion: fixture.version,
-            pendingSetupRecovery: pending,
-            operations: fixture.operations)
-        guard case .coreRepairRequired = outcome else { Issue.record("Expected core repair before Resume")
+            candidate: fixture.candidate, targetVersion: fixture.version,
+            pendingSetupRecovery: pending, operations: fixture.operations)
+        guard case .migrated = outcome else {
+            Issue.record("A foreign checkpoint must not request core repair or prevent the runtime switch")
             return
         }
-        #expect(fixture.calls.isEmpty)
+        #expect(fixture.calls == ["capture", "service", "seed", "capture", "bun", "health"])
     }
 
     @Test func `verified core repair admits the runtime step while notification work remains pending`() async throws {
@@ -397,9 +413,11 @@ struct ManagedNodeGatewayMigrationTests {
                 }
                 PostAppUpdateReceiptStore.record(fromVersion: "2026.8.1", toVersion: "2026.9.6")
                 let dispatched = try #require(PostAppUpdateReceiptStore.pending(currentVersion: "2026.9.6"))
-                try PostAppUpdateReceiptStore.recordCoreUpdateDispatch(receipt: dispatched, owner: .gateway)
-                let pending = try #require(PostAppUpdateReceiptStore.completeCoreRepair(
-                    currentVersion: "2026.9.6", owner: .gateway))
+                PostAppUpdateReceiptStore.recordCoreUpdateDispatch(receipt: dispatched, owner: .gateway)
+                let pending = PostAppUpdateReceiptStore.completeCoreRepair(
+                    receipt: try #require(PostAppUpdateReceiptStore.pending(
+                        currentVersion: "2026.9.6")),
+                    owner: .gateway)
                 #expect(pending.hasPendingRuntimeMigration)
                 let manager = GatewayProcessManager()
                 manager.desiredActive = true
@@ -424,8 +442,7 @@ struct ManagedNodeGatewayMigrationTests {
             }
     }
 
-    @Test(arguments: ["memory", "receipt", "pause"])
-    func `automatic service ensure cannot bypass a failed managed version update`(failureSource: String) async throws {
+    @Test func `automatic service ensure cannot bypass a live managed version update failure`() async throws {
         let directory = try makeTempDirForTests()
         defer { try? FileManager.default.removeItem(at: directory) }
         // A named process keeps its port reservation for its lifetime, beyond this fixture's config.
@@ -448,18 +465,6 @@ struct ManagedNodeGatewayMigrationTests {
             manager.retainedServiceCLI = Fixture().candidate.cli
             manager.desiredActive = true
             manager.nodeMigrationFailure = "The Node update needs repair."
-            if failureSource != "memory" {
-                try PostAppUpdateReceiptStore.recordSetupRecovery(fromVersion: "2026.8.1", toVersion: "2026.9.6")
-                if failureSource == "pause" {
-                    manager.nodeMigrationAttempted = true
-                    manager.stop()
-                    await manager.waitForPendingLaunchAgentDisable()
-                    #expect(!manager.nodeMigrationAttempted)
-                    manager.desiredActive = true
-                } else {
-                    manager.nodeMigrationFailure = nil
-                }
-            }
             defer { manager.desiredActive = false }
             GatewayLaunchAgentManager.clearTestingDaemonCommandCalls()
             let result = await manager.enableLaunchAgentIfNeeded(port: port)

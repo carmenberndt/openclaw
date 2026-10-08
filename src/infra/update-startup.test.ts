@@ -641,7 +641,6 @@ describe("update-startup", () => {
   it("announces and applies a dev git campaign without consulting npm", async () => {
     mockDevGitStatus({
       branch: "HEAD",
-      upstreamSource: "tracking",
       repositoryUrl: "https://github.com/example/openclaw",
     });
     const longSubject = "x".repeat(140);
@@ -781,7 +780,7 @@ describe("update-startup", () => {
     expect(runUpdateFailureTriageMock).not.toHaveBeenCalled();
   });
 
-  it("continues automatic dev campaigns from a failed handoff receipt", async () => {
+  it("continues automatic dev campaigns despite a failed handoff receipt", async () => {
     runOpenClawStateWriteTransaction(({ db }) => {
       writeUpdateInstallReceiptRowSync(db, {
         kind: "update",
@@ -799,7 +798,7 @@ describe("update-startup", () => {
         },
       });
     });
-    mockDevGitStatus({ branch: "HEAD", upstreamSource: "receipt" });
+    mockDevGitStatus({ branch: "HEAD" });
     const runAutoUpdate = createAutoUpdateSuccessMock();
 
     await runGatewayUpdateCheck({
@@ -814,7 +813,6 @@ describe("update-startup", () => {
       fetchGit: true,
       includeRegistry: false,
       useDetachedDevUpstream: true,
-      gitUpstreamFallback: { currentSha: "current-sha", upstreamRef: "origin/main" },
     });
     expect(getUpdateSchedule()?.campaign?.state).toBe("countdown");
     await clock.advanceBy(60_000);
@@ -877,11 +875,10 @@ describe("update-startup", () => {
       expected: { status: "unavailable", reason: "no-upstream" },
     },
     {
-      name: "missing receipt-backed upstream ref",
+      name: "missing configured upstream ref",
       git: {
         branch: "HEAD",
         upstream: "origin/missing",
-        upstreamSource: "receipt" as const,
         upstreamSha: null,
         ahead: null,
         behind: null,

@@ -458,9 +458,7 @@ export async function updateGitCheckout(params: {
         return selected;
       }
       if (!publishedCandidate) {
-        const upstreamRef = selected.selectedDevUpstream
-          ? `refs/remotes/${selected.selectedDevUpstream}`
-          : undefined;
+        const upstreamRef = selected.selectedDevUpstream ?? undefined;
         const imported = await importCandidate(selected.candidateSha, upstreamRef);
         if (imported.status !== "ok") {
           return imported;

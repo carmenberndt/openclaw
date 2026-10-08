@@ -14,37 +14,51 @@ import {
 
 type RecoveryDatabase = Pick<DB, "update_runs" | "config_machine_state">;
 
-function readRecoveryRows(db: DatabaseSync) {
+function readRecoveryRows(db: DatabaseSync, runId?: string) {
   if (!tableExists(db, "config_machine_state")) {
     return [];
   }
+  const query = getNodeSqliteKysely<RecoveryDatabase>(db)
+    .selectFrom("config_machine_state")
+    .select(["state_key", "value_json"]);
   return executeSqliteQuerySync(
     db,
-    getNodeSqliteKysely<RecoveryDatabase>(db)
-      .selectFrom("config_machine_state")
-      .select(["state_key", "value_json"])
-      .where("state_key", ">=", UPDATE_RECOVERY_KEY_PREFIX)
-      .where("state_key", "<", UPDATE_RECOVERY_KEY_END)
-      .orderBy("state_key", "asc"),
+    runId !== undefined
+      ? query.where("state_key", "=", UPDATE_RECOVERY_KEY_PREFIX + runId)
+      : query
+          .where("state_key", ">=", UPDATE_RECOVERY_KEY_PREFIX)
+          .where("state_key", "<", UPDATE_RECOVERY_KEY_END)
+          .orderBy("state_key", "asc"),
   ).rows;
 }
-export function readRecoveries(db: DatabaseSync): UpdateRecoveryRecord[] {
-  return readRecoveryRows(db).map((row) =>
-    decodeUpdateRecovery(row.value_json, row.state_key.slice(UPDATE_RECOVERY_KEY_PREFIX.length)),
+/** Select before decoding so unrelated historical damage cannot veto this run. */
+export function readUpdateRecovery(
+  db: DatabaseSync,
+  runId: string,
+): UpdateRecoveryRecord | undefined {
+  const row = readRecoveryRows(db, runId)[0];
+  return row ? decodeUpdateRecovery(row.value_json, runId) : undefined;
+}
+
+/** Historical inspection shares the caller's transaction; it never grants execution authority. */
+export function inspectUpdateRecoveryRows(
+  db: DatabaseSync,
+  runId?: string,
+): UpdateRecoveryInspection[] {
+  return readRecoveryRows(db, runId).map(({ value_json, state_key }) =>
+    inspectUpdateRecovery(value_json, state_key.slice(UPDATE_RECOVERY_KEY_PREFIX.length)),
   );
 }
 /** Private read-only compatibility surface for diagnostics and retained-pair
  * inspection. Legacy receipts remain exact historical evidence, never authority.
- * Execution loaders below deliberately reject them instead of upgrading them. */
+ * The execution loader deliberately rejects them instead of upgrading them. */
 export function inspectUpdateRecoveries(
   options: OpenClawStateDatabaseOptions = {},
+  runId?: string,
 ): UpdateRecoveryInspection[] {
   return (
     withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
-      ({ db }) =>
-        readRecoveryRows(db).map(({ value_json, state_key }) =>
-          inspectUpdateRecovery(value_json, state_key.slice(UPDATE_RECOVERY_KEY_PREFIX.length)),
-        ),
+      ({ db }) => inspectUpdateRecoveryRows(db, runId),
       options,
     ) ?? []
   );

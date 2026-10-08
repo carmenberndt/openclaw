@@ -34,7 +34,6 @@ extension GatewayProcessManager {
               self.isCurrentGatewayStart(generation)
         else { return }
         self.nodeMigrationAttempted = true
-        self.nodeMigrationNeedsCoreRepair = false
         do {
             guard let candidate = try await ManagedNodeGatewayMigration.candidate(
                 onboardingSeen: AppStateStore.shared.onboardingSeen,
@@ -73,8 +72,7 @@ extension GatewayProcessManager {
     private func recordNodeMigrationFailure(_ message: String) {
         self.nodeMigrationFailure = message
         guard let version = GatewayEnvironment.appVersionString() else { return }
-        let receipt = PostAppUpdateReceiptStore.pendingSetupRecovery() ??
-            PostAppUpdateReceiptStore.pending(currentVersion: version) ??
+        let receipt = PostAppUpdateReceiptStore.pending(currentVersion: version) ??
             PostAppUpdateReceipt(fromVersion: version, toVersion: version, recordedAt: Date())
         // Publish pending runtime work before startup drain waiters can resume notifications.
         PostAppUpdateReceiptStore.recordMigrationFailure(receipt: receipt)
@@ -84,7 +82,6 @@ extension GatewayProcessManager {
         _ candidate: ManagedNodeGatewayMigration.Candidate,
         generation: UInt64) async -> LaunchAgentEnableResult
     {
-        self.nodeMigrationNeedsCoreRepair = false
         do {
             guard let targetVersion = GatewayEnvironment.appVersionString() else {
                 throw GatewayHostingError(message: "The bundled Gateway version could not be read.")
@@ -121,19 +118,10 @@ extension GatewayProcessManager {
             let outcome = try await ManagedNodeGatewayMigration.run(
                 candidate: candidate,
                 targetVersion: targetVersion,
-                pendingSetupRecovery: PostAppUpdateReceiptStore.pendingSetupRecovery() ??
-                    PostAppUpdateReceiptStore.pending(currentVersion: targetVersion),
+                pendingSetupRecovery: PostAppUpdateReceiptStore.pending(currentVersion: targetVersion),
                 operations: operations)
             guard self.isCurrentGatewayStart(generation) else { throw CancellationError() }
             switch outcome {
-            case .coreRepairRequired:
-                self.nodeMigrationNeedsCoreRepair = true
-                if candidate.snapshot == nil {
-                    let failure = "The managed Node update needs repair before resuming the Gateway. " +
-                        "Use Retry in the update window."
-                    if self.isCurrentGatewayStart(generation) { self.recordNodeMigrationFailure(failure) }
-                    return .failed(failure)
-                }
             case .versionUpdated:
                 self.nodeMigrationVersionUpdated = true
             case .migrated:
@@ -196,7 +184,6 @@ extension GatewayProcessManager {
             }
             self.nodeMigrationAttempted = true
             self.nodeMigrationFailure = nil
-            self.nodeMigrationNeedsCoreRepair = false
             self.nodeMigrationVersionUpdated = false
             self.nodeMigrationCompleted = false
             self.gatewayStartGeneration &+= 1
@@ -225,7 +212,6 @@ extension GatewayProcessManager {
         }
         self.nodeMigrationAttempted = false
         self.nodeMigrationFailure = nil
-        self.nodeMigrationNeedsCoreRepair = false
         self.nodeMigrationVersionUpdated = false
         self.nodeMigrationCompleted = false
         self.status = .stopped

@@ -145,6 +145,12 @@ default. Declining or cancelling preserves the failed update's nonzero exit
 status. JSON, non-interactive, `--yes`, and managed-service handoff invocations do
 not prompt after rollback.
 
+Valid completed recovery records from earlier runs do not block a new update.
+Progress and completion inspect the selected run, so unrelated historical
+receipts cannot change its outcome. Retained history is not upgraded into
+permission to restore data or restart a service; unfinished recovery still
+requires its owning recovery path.
+
 Update completion prints the terminal outcome and a local Markdown report path before exiting, including unexpected failures. Failed runs keep rollback-facing diagnostic JSON within the released 8 KiB limit. That file links a separate artifact containing every individually bounded Doctor finding; the Markdown report also retains the complete inventory. JSON output includes `reportPath`; a report-write failure prints a warning and preserves the update outcome.
 
 Exit always waits for accepted state operations, pending database opens, and live

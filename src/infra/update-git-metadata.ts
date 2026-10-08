@@ -1,5 +1,6 @@
 import hostedGitInfo from "hosted-git-info";
 import { executeGitCommand } from "./git-exec.js";
+import { DEV_BRANCH } from "./update-channels.js";
 
 export type GitFetchTarget = { remote: string; mergeRef: string };
 
@@ -8,9 +9,10 @@ const DEV_COMMIT_SUBJECT_MAX_LENGTH = 120;
 const DEV_COMMIT_LOG_MAX_OUTPUT_BYTES = 8 * 1024;
 
 /** Select source authority before requiring its local tracking ref to exist. */
-export async function readGitBranchFetchTarget(
+export async function readGitUpdateFetchTarget(
   readGit: (...args: string[]) => Promise<string | null>,
   branch: string,
+  useDevDefault = false,
 ): Promise<GitFetchTarget | null> {
   const [remote, mergeRefs] = await Promise.all([
     readGit("config", "--get", `branch.${branch}.remote`),
@@ -20,104 +22,39 @@ export async function readGitBranchFetchTarget(
   if (remote && mergeRef) {
     return { remote, mergeRef };
   }
-  return null;
-}
-
-function matchRefspec(pattern: string, ref: string): string | undefined {
-  const star = pattern.indexOf("*");
-  if (star < 0) {
-    return pattern === ref ? "" : undefined;
+  if (!useDevDefault || remote || mergeRefs) {
+    return null;
   }
-  const prefix = pattern.slice(0, star);
-  const suffix = pattern.slice(star + 1);
-  return ref.startsWith(prefix) &&
-    ref.endsWith(suffix) &&
-    ref.length >= prefix.length + suffix.length
-    ? ref.slice(prefix.length, ref.length - suffix.length)
-    : undefined;
+  const currentBranch = await readGit("rev-parse", "--abbrev-ref", "HEAD");
+  // A named checkout with an existing untracked main is intentionally unmanaged.
+  // Detached installs and new main branches use origin, never an arbitrary remote.
+  if (
+    !currentBranch ||
+    (currentBranch !== "HEAD" &&
+      (await readGit("show-ref", "--verify", `refs/heads/${DEV_BRANCH}`)))
+  ) {
+    return null;
+  }
+  return (await readGit("remote", "get-url", "--", "origin"))
+    ? { remote: "origin", mergeRef: `refs/heads/${DEV_BRANCH}` }
+    : null;
 }
 
-/** Receipts retain only a destination; require one configured source before fetching it. */
-export async function readGitReceiptFetchTarget(
+/** Apply the selected source’s fetch mapping without changing repository configuration. */
+export async function resolveGitUpdateTrackingRef(
   readGit: (...args: string[]) => Promise<string | null>,
-  display: string,
-  fetchRemote: boolean,
-): Promise<(GitFetchTarget & { revision: string }) | null> {
-  const resolved = await readGit(
+  branch: string,
+  target: GitFetchTarget,
+): Promise<string | null> {
+  return readGit(
+    "-c",
+    `branch.${branch}.remote=${target.remote}`,
+    "-c",
+    `branch.${branch}.merge=${target.mergeRef}`,
     "rev-parse",
     "--symbolic-full-name",
-    "--verify",
-    "--end-of-options",
-    display,
+    `${branch}@{upstream}`,
   );
-  // Published receipts retain Git display names. Missing cache refs use only
-  // gitrevisions' documented namespaces, validated without requiring an object.
-  const revisions = resolved
-    ? [resolved]
-    : (
-        await Promise.all(
-          (display.startsWith("refs/")
-            ? [display]
-            : [
-                `refs/${display}`,
-                `refs/tags/${display}`,
-                `refs/heads/${display}`,
-                `refs/remotes/${display}`,
-                `refs/remotes/${display}/HEAD`,
-              ]
-          ).map((ref) => readGit("check-ref-format", "--normalize", ref)),
-        )
-      ).filter((ref): ref is string => ref !== null);
-  const refspecs =
-    (await readGit("config", "--get-regexp", "^remote\\..*\\.fetch$"))?.split("\n") ?? [];
-  const targets = refspecs.flatMap((line) => {
-    const [, remote, source, destination] =
-      /^remote\.(.+)\.fetch \+?([^:]+):(.+)$/.exec(line) ?? [];
-    return revisions.flatMap((revision) => {
-      const matched = destination ? matchRefspec(destination, revision) : undefined;
-      return remote && source && matched !== undefined
-        ? [{ remote, mergeRef: source.replace("*", matched), revision }]
-        : [];
-    });
-  });
-  // Excluded aliases are not competing sources. Retain positive mappings below
-  // so an excluded remote destination cannot masquerade as a local upstream.
-  const eligible = targets.filter((target) => {
-    const prefix = `remote.${target.remote}.fetch ^`;
-    return !refspecs.some(
-      (line) =>
-        line.startsWith(prefix) &&
-        matchRefspec(line.slice(prefix.length), target.mergeRef) !== undefined,
-    );
-  });
-  let unique = [...new Map(eligible.map((target) => [JSON.stringify(target), target])).values()];
-  if (targets.length === 0 && resolved?.startsWith("refs/heads/")) {
-    return { remote: ".", mergeRef: resolved, revision: resolved };
-  }
-  if (!resolved && !display.startsWith("refs/") && unique.length > 1) {
-    // Disambiguate missing spellings on one configured remote, never competing
-    // sources for one destination or different remotes. Local probes stay offline.
-    const remotes = new Set(unique.map((target) => target.remote));
-    const [remote] = remotes;
-    if (
-      !fetchRemote ||
-      !remote ||
-      remotes.size !== 1 ||
-      new Set(unique.map((target) => target.revision)).size !== unique.length
-    ) {
-      return null;
-    }
-    const advertised = await readGit(
-      "ls-remote",
-      "--refs",
-      "--",
-      remote,
-      ...new Set(unique.map((target) => target.mergeRef)),
-    );
-    const refs = new Set(advertised?.split("\n").map((line) => line.split("\t")[1]));
-    unique = unique.filter((target) => refs.has(target.mergeRef));
-  }
-  return unique.length === 1 ? (unique[0] ?? null) : null;
 }
 
 export async function resolveGitRepositoryMetadata(

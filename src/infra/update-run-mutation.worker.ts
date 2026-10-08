@@ -7,7 +7,7 @@ import type {
   UpdateRunWriteCommand,
   UpdateRunWriteOperations,
 } from "./update-run-mutation.types.js";
-import { readRecoveries } from "./update-run-recovery-store.js";
+import { readUpdateRecovery } from "./update-run-recovery-store.js";
 import {
   applyUpdateRunPhase,
   applyUpdateRunStep,
@@ -41,7 +41,7 @@ export function recordUpdateRunMutationInWorker(
   return writer.run(({ db }) => {
     assertCurrent("transaction");
     if (input.requireNoRecovery) {
-      const recovery = readRecoveries(db).find((record) => record.runId === input.runId);
+      const recovery = readUpdateRecovery(db, input.runId);
       if (recovery) {
         assertCurrent("commit");
         return { kind: "recovery-required", recovery };

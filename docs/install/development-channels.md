@@ -73,6 +73,13 @@ displayed list previews up to five commits from the exact target installed even
 if `main` advances during the countdown. A manual
 `openclaw update --channel dev` still targets the current upstream `main`.
 
+Dev checks, previews, and updates select their source from current Git tracking
+configuration, not saved update receipts. A detached checkout without `main`
+tracking uses `origin/main`; configured fork or custom-branch tracking remains
+authoritative. An unrelated remote is never substituted for a missing `origin`.
+Saved install history supplies the installation time when it matches the current
+checkout, but missing or outdated history does not select or suppress an update.
+
 <Tip>
 To keep stable and dev in parallel, use two separate checkouts and point each gateway at its own.
 </Tip>
