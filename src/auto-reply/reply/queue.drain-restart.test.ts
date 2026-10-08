@@ -16,6 +16,13 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../../process/gateway-work-admission.js";
+import { withSessionControllerOwner } from "../../sessions/session-controller.context.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import {
+  releaseSessionControllerClaim,
+  reserveSessionControllerSource,
+  tryClaimSessionControllerTask,
+} from "../../sessions/session-controller.mailbox.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
@@ -25,6 +32,7 @@ import {
   installQueueRuntimeErrorSilencer,
 } from "./queue.test-helpers.js";
 import { clearSessionQueues } from "./queue/cleanup.js";
+import { rememberFollowupDrainCallback } from "./queue/drain.js";
 import { resetRecentQueuedMessageIdDedupe } from "./queue/enqueue.test-support.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 
@@ -569,6 +577,31 @@ describe("followup queue drain restart after idle window", () => {
     await nextTurn();
     expect(staleCalls).toHaveLength(0);
     expect(getExistingFollowupQueue(key)?.items).toHaveLength(1);
+  });
+  it("cancels the input of a claimed turn that begins restart drain itself", async () => {
+    const input = reserveSessionControllerSource(key, { policy: defaults });
+    // Registering a drain callback binds the restart-drain listener under test.
+    rememberFollowupDrainCallback(key, async () => {});
+    const claim = tryClaimSessionControllerTask(input);
+    if (!claim) {
+      throw new Error("expected turn claim");
+    }
+    const operation = createReplyOperation({
+      sessionKey: key,
+      sessionId: "restarting-session",
+      resetTriggered: false,
+      mailboxClaim: claim,
+      upstreamAbortSignal: claim.abortController.signal,
+    });
+    try {
+      // Restart is process-wide; the turn whose tool emitted it gets no exemption.
+      withSessionControllerOwner(operation, () => markGatewayRestartDraining());
+      expect(input.abortSignal.aborted).toBe(true);
+    } finally {
+      operation.complete();
+      releaseSessionControllerClaim(claim);
+      await claim.settlement.promise;
+    }
   });
   it.each([
     { mode: "collect", kind: "external_user", senderIsOwner: true, owner: true },

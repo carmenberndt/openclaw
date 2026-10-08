@@ -10,6 +10,7 @@ import {
   runWithGatewayDetachedWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
+import { runWithSessionControllerCleanup } from "../../../sessions/session-controller.context.js";
 import { deferSessionControllerClaimBeforeExecution } from "../../../sessions/session-controller.mailbox-claim.js";
 import {
   detachSessionControllerSources,
@@ -77,9 +78,12 @@ function bindRestart(): void {
     "abort",
     () => {
       // Capture owners before cleanup can mutate the registry or publish a successor.
-      for (const mailbox of Array.from(sessionControllerMailboxes())) {
-        clearFollowupQueue(mailbox.key, mailbox);
-      }
+      // Restart clears every input, including a claimed turn whose work requested it.
+      runWithSessionControllerCleanup(() => {
+        for (const mailbox of Array.from(sessionControllerMailboxes())) {
+          clearFollowupQueue(mailbox.key, mailbox);
+        }
+      });
     },
     { once: true },
   );

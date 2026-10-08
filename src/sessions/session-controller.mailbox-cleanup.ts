@@ -1,6 +1,7 @@
 /** Captured mailbox batch cleanup and summary bookkeeping. */
 import type { FollowupRun } from "../auto-reply/reply/queue/types.js";
 import { defaultRuntime } from "../runtime.js";
+import { isCurrentSessionControllerTurnInput } from "./session-controller.context.js";
 import {
   inputCancellation,
   abortSessionControllerInput,
@@ -18,7 +19,12 @@ export function captureSessionControllerMailboxSummarySources(
   return [...mailbox.summaryElisions.flatMap((part) => part.sources), ...mailbox.summarySources];
 }
 
-/** Captures and detaches only this generation before invoking reentrant cancellation effects. */
+/**
+ * Captures and detaches only this generation before invoking reentrant cancellation effects.
+ * A clear requested from inside a turn never selects the input that turn claimed: the
+ * turn settles it, and Stop or interruption cancels it. An uncaptured clear still aborts
+ * the mailbox generation signal, which a turn drained from the followup queue observes.
+ */
 export function clearSessionControllerMailbox(
   mailbox: SessionControllerMailbox,
   settleSource: (source: FollowupRun) => void,
@@ -30,9 +36,10 @@ export function clearSessionControllerMailbox(
           input.mailbox === mailbox &&
           mailbox.entries.includes(input) &&
           !input.retirementRequested &&
-          input.phase !== "consumed",
+          input.phase !== "consumed" &&
+          !isCurrentSessionControllerTurnInput(input),
       )
-    : [...mailbox.entries];
+    : mailbox.entries.filter((input) => !isCurrentSessionControllerTurnInput(input));
   const selected = new Set(inputs);
   const selectedSource = (source: FollowupRun) =>
     Boolean(source.controllerInput && selected.has(source.controllerInput));

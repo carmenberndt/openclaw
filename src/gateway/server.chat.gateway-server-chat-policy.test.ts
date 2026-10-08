@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDeferred } from "../../test/helpers/promise.js";
+import * as harnessRegistry from "../agents/harness/registry.js";
 import { loadSessionEntry, updateSessionEntry } from "../config/sessions/session-accessor.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
@@ -196,6 +197,53 @@ describe("gateway server chat", () => {
       });
     } finally {
       runSpy.mockRestore();
+    }
+  });
+
+  test("chat.send /reset on an idle session finishes post-commit cleanup and records the turn", async () => {
+    const { getReplyFromConfig } = await import("../auto-reply/reply/get-reply.js");
+    const { withFullRuntimeReplyConfig } =
+      await import("../auto-reply/reply/get-reply-fast-path.js");
+    // Observe the harness reset that initSessionState runs after the reset commits.
+    const harnessReset = vi.spyOn(harnessRegistry, "resetRegisteredAgentHarnessSessions");
+    mockGetReplyFromConfigOnce((ctx, opts, cfg) =>
+      getReplyFromConfig(ctx, opts, cfg ? withFullRuntimeReplyConfig(cfg) : cfg),
+    );
+    try {
+      await withMainSessionStore(async () => {
+        const runId = "idem-admin-reset-idle";
+        const terminal = onceMessage(
+          ws,
+          (event) =>
+            event.type === "event" &&
+            event.event === "chat" &&
+            event.payload?.runId === runId &&
+            (event.payload?.state === "final" || event.payload?.state === "error"),
+        );
+        const [sendRes, settled] = await Promise.all([
+          rpcReq(ws, "chat.send", { sessionKey: "main", message: "/reset", idempotencyKey: runId }),
+          terminal,
+        ]);
+        expect(sendRes.ok).toBe(true);
+        await waitForAgentRunDrained(runId);
+
+        expect(settled.payload?.state).toBe("final");
+        expect(extractFirstTextBlock(settled.payload?.message) ?? "").toContain("Session reset");
+        expect(harnessReset).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: "sess-main", sessionKey: "agent:main:main" }),
+        );
+        const history = await rpcReq<{ messages?: Array<{ role?: string; content?: unknown }> }>(
+          ws,
+          "chat.history",
+          { sessionKey: "main" },
+        );
+        expect(history.ok).toBe(true);
+        expect(
+          history.payload?.messages?.filter((message) => message.role === "user"),
+        ).toMatchObject([{ content: "/reset" }]);
+      });
+    } finally {
+      harnessReset.mockRestore();
     }
   });
 

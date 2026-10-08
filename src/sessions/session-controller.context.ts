@@ -9,7 +9,10 @@ import {
   selectedOperations,
 } from "./session-controller.lifecycle-projections.js";
 import type { OwnerContext } from "./session-controller.lifecycle.types.js";
-import type { SessionControllerMailboxClaim } from "./session-controller.mailbox.js";
+import type {
+  SessionControllerInput,
+  SessionControllerMailboxClaim,
+} from "./session-controller.mailbox.js";
 import { assertSessionControllerOperation } from "./session-controller.state.js";
 import { targetFrom, type SessionTarget } from "./session-controller.target.js";
 
@@ -67,12 +70,23 @@ export function withSessionControllerClaim<T>(
     run,
   );
 }
+/** True when the input is claimed by the turn executing in this async context. */
+export function isCurrentSessionControllerTurnInput(input: SessionControllerInput): boolean {
+  const current = ownerContext.getStore();
+  const claim = input.claim;
+  return Boolean(
+    claim &&
+    current &&
+    (claim === current.claim ||
+      (current.operation !== undefined && claim.operation === current.operation)),
+  );
+}
+
 export function sourceSettlements(
   target: SessionTarget,
   requiredSessionId?: string,
   selection: "all" | "admissions" | "retiring" = "all",
 ): Promise<void>[] {
-  const current = ownerContext.getStore();
   return matchingEntries(target).flatMap(
     (entry) =>
       entry.mailbox?.entries
@@ -81,8 +95,7 @@ export function sourceSettlements(
             inputMatchesSessionId(input, requiredSessionId) &&
             (selection !== "admissions" || (input.claim !== undefined && !input.claim.operation)) &&
             (selection !== "retiring" || input.retirementRequested) &&
-            (!current?.claim || input.claim !== current.claim) &&
-            (!current?.operation || input.claim?.operation !== current.operation),
+            !isCurrentSessionControllerTurnInput(input),
         )
         .map((input) => input.settlement.promise) ?? [],
   );

@@ -12,13 +12,23 @@ import {
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
+import { withSessionControllerOwner } from "../../sessions/session-controller.context.js";
 import {
   createReplyOperation,
   getSessionControllerOperation,
   isSessionRunActiveForKey,
 } from "../../sessions/session-controller.js";
+import {
+  releaseSessionControllerClaim,
+  reserveSessionControllerSource,
+  tryClaimSessionControllerTask,
+} from "../../sessions/session-controller.mailbox.js";
+import { clearFollowupQueue } from "./queue/state.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
-import { clearSessionResetRuntimeState } from "./session-reset-cleanup.js";
+import {
+  clearCommittedSessionResetRuntimeState,
+  clearSessionResetRuntimeState,
+} from "./session-reset-cleanup.js";
 
 afterEach(() => {
   clearEmbeddedSessionPromptStates(["old-session"]);
@@ -187,5 +197,49 @@ describe("clearSessionResetRuntimeState", () => {
 
     expect(operation.phase).toBe("queued");
     expect(getSessionControllerOperation("agent:main:slack:room:1")).toBe(operation);
+  });
+
+  it("clears queued sources without cancelling the executing reset turn that requested it", async () => {
+    const sessionKey = "agent:main:dashboard:reset-self";
+    enqueueSystemEvent("stale", withSystemEventOwner({ sessionKey }, "main"));
+    // A `/new` or `/reset` chat turn owns a claimed controller input and runs
+    // initSessionState as that claim's operation; its reply signal is the input's.
+    const resetTurn = reserveSessionControllerSource(sessionKey, { policy: { mode: "followup" } });
+    const claim = tryClaimSessionControllerTask(resetTurn);
+    if (!claim) {
+      throw new Error("expected reset turn claim");
+    }
+    const operation = createReplyOperation({
+      sessionKey,
+      sessionId: "old-session",
+      resetTriggered: true,
+      mailboxClaim: claim,
+      upstreamAbortSignal: claim.abortController.signal,
+    });
+    const queued = reserveSessionControllerSource(sessionKey, { policy: { mode: "followup" } });
+    const onError = vi.fn();
+    try {
+      withSessionControllerOwner(operation, () =>
+        clearCommittedSessionResetRuntimeState({
+          previousSessionEntry: { sessionId: "old-session" },
+          agentId: "main",
+          sessionKey,
+          signal: resetTurn.abortSignal,
+          onError,
+        }),
+      );
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(resetTurn.abortSignal.aborted).toBe(false);
+      expect(queued.abortSignal.aborted).toBe(true);
+      expect(peekSystemEvents(sessionKey)).toStrictEqual([]);
+      // A clear outside that turn still cancels its claimed input.
+      clearFollowupQueue(sessionKey);
+      expect(resetTurn.abortSignal.aborted).toBe(true);
+    } finally {
+      operation.complete();
+      releaseSessionControllerClaim(claim);
+      await claim.settlement.promise;
+    }
   });
 });

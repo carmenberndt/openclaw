@@ -233,11 +233,13 @@ result commits wait.
 
 A mutation closes competing admission, targets exact current owners, waits for
 real settlement, and then acquires its mutation boundary. In-band commands must
-not wait for their own admitted stack. A mutation body that owns no turn and
-requests one for its own session, such as `sessions.compact` or a native
-`/compact`, receives that turn under its own fence, ahead of the inputs it keeps
-waiting. Mutations queued behind it do not block that turn; admission closures and
-retained foreign operations still do. Multi-identity and cross-store ordering belongs to the lifecycle owner.
+not wait for their own admitted stack, and a mailbox clear they request does not
+select their own claimed input. Restart drain still cancels every input. A
+mutation body that owns no turn and requests one for its own session, such as
+`sessions.compact` or a native `/compact`, receives that turn under its own fence,
+ahead of the inputs it keeps waiting. Mutations queued behind it do not block that
+turn; admission closures and retained foreign operations still do. Multi-identity
+and cross-store ordering belongs to the lifecycle owner.
 Physical transaction, writer, and worker-placement fences remain subordinate
 effect custody, not competing turn selectors.
 
