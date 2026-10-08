@@ -1,4 +1,3 @@
-import "./session-entry-patch.test-support.js";
 import { MessageChannel } from "node:worker_threads";
 import { expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
