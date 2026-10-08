@@ -7,6 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   UPGRADE_SURVIVOR_ASSERTION_SCENARIOS,
+  usesCronOwnerAtBaseline,
   usesStructuredToolSearchAtBaseline,
 } from "../../../lib/upgrade-survivor-policy.mjs";
 import {
@@ -277,6 +278,11 @@ async function seedLegacyCronScheduledAuthority(stateDir, packageRoot) {
       payload: { kind: "agentTurn", message: "mismatch", toolsAllow: ["write"] },
     },
   ];
+  if (!usesCronOwnerAtBaseline(requireEnv("OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION"))) {
+    for (const job of jobs) {
+      delete job.owner;
+    }
+  }
   const saved = await seedPublishedCronJobs(stateDir, packageRoot, jobs);
   assertStrict.deepEqual(saved, jobs, "published cron authority fixture round-trip changed");
 }
@@ -909,16 +915,34 @@ function assertCronScheduledAuthorityMigrated(stateDir, stage) {
     const rows = db
       .prepare("SELECT job_id, job_json FROM cron_jobs WHERE job_id LIKE 'cron-%'")
       .all();
-    const jobs = new Map(rows.map((row) => [row.job_id, JSON.parse(row.job_json)]));
+    const jobs = new Map(
+      rows.map((row) => {
+        assert(typeof row.job_id === "string", "persisted cron fixture ID must be a string");
+        return [row.job_id, JSON.parse(row.job_json)];
+      }),
+    );
     assert(jobs.size === 5, `cron authority fixture row count changed: ${jobs.size}`);
-    assert(
-      jobs.get("cron-encoded-account")?.scheduledToolPolicy?.ownerAccountId === "personal",
-      "session-encoded account authority was not recovered",
+    const persistedOwner = usesCronOwnerAtBaseline(
+      requireEnv("OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION"),
     );
-    assert(
-      jobs.get("cron-encoded-account")?.owner?.accountId === "personal",
-      "session-encoded account was not projected onto the owner",
-    );
+    if (persistedOwner) {
+      assert(
+        jobs.get("cron-encoded-account")?.scheduledToolPolicy?.ownerAccountId === "personal",
+        "session-encoded account authority was not recovered",
+      );
+      assert(
+        jobs.get("cron-encoded-account")?.owner?.accountId === "personal",
+        "session-encoded account was not projected onto the owner",
+      );
+    } else {
+      for (const job of jobs.values()) {
+        assert(job.owner === undefined, "ownerless baseline unexpectedly gained an owner");
+        assert(
+          job.scheduledToolPolicy === undefined,
+          "ownerless baseline unexpectedly gained scheduled authority",
+        );
+      }
+    }
     for (const id of [
       "cron-pre-cap",
       "cron-ownerless-cap",
