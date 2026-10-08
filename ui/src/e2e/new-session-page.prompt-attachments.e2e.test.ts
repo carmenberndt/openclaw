@@ -120,6 +120,8 @@ suite.define(() => {
       await restoredPage.waitForURL(
         (url) => url.pathname === controlUiSessionPath("agent:main:restart-draft"),
       );
+      // Navigation opens chat before the accepted draft's durable cleanup settles.
+      await waitForCommittedNewSessionDraft(restoredPage, null, 0);
       await restoredPage.close();
 
       const clearedPage = await context.newPage();
