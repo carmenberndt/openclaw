@@ -1,15 +1,18 @@
+import { StatementSync } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
   withinTest,
 } from "../../test/helpers/promise.js";
+import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
 import {
   authorizeClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
 } from "./client-voice-confirmation.js";
 import { noteClientVoiceConfirmationUtteranceForTest as noteClientVoiceConfirmationUtterance } from "./client-voice-confirmation.test-support.js";
+import { resolveOpenClientVoiceSessionId } from "./client-voice-session-read.js";
 import {
   completeRun,
   recordMutation,
@@ -24,7 +27,6 @@ import {
   flushClientVoiceSessionWrites,
   isClientVoiceSessionConfirmable,
   registerClientVoiceConsultRun,
-  resolveOpenClientVoiceSessionId,
 } from "./client-voice-session.js";
 import { clientVoiceSessionTesting } from "./client-voice-session.test-support.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";

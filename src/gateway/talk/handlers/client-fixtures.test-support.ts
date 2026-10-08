@@ -12,6 +12,7 @@ export function createTrustedInternalChatSendFixture(chatSend: (...args: unknown
       beforeDispatch?: (params: {
         runId: string;
         assertCurrent: () => void;
+        assertWorkAdmissionCurrent: () => void;
       }) => Promise<void | (() => void)>;
     },
   ) => {
@@ -30,6 +31,7 @@ export function createTrustedInternalChatSendFixture(chatSend: (...args: unknown
             registration = options.beforeDispatch?.({
               runId: acknowledgement.runId,
               assertCurrent() {},
+              assertWorkAdmissionCurrent() {},
             });
           }
           if (registration) {

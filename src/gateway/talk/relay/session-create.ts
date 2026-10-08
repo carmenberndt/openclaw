@@ -172,7 +172,7 @@ export function createTalkRealtimeRelaySession(
     initialItems: params.initialItems ?? [],
     runIdPrefix: "talk-realtime-relay-consult",
     surface: "a gateway-relay Talk session",
-    registerRun: async ({ runId }) => {
+    registerRun: async ({ runId, assertCurrent }) => {
       if (!getActiveRelay()) {
         throw new Error("Realtime gateway-relay session is closed");
       }
@@ -181,6 +181,7 @@ export function createTalkRealtimeRelaySession(
         connId: params.connId,
         sessionKey: canonicalKey,
         runId,
+        assertCurrent,
       });
       if (!getActiveRelay()) {
         release();

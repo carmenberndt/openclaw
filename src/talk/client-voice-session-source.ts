@@ -139,6 +139,7 @@ export async function prepareClientVoiceSessionSourceChecks(
       });
     }
     return {
+      nativeSource: true,
       checks,
       assertCurrent: () => {
         assertAuthoritiesCurrent();

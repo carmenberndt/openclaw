@@ -201,7 +201,10 @@ export function createTalkClientAgentConsultRunner(params: {
   initialItems: Array<{ role: "user" | "assistant"; text: string }>;
   runIdPrefix?: string;
   surface?: string;
-  registerRun?: (params: { runId: string }) => void | (() => void) | Promise<void | (() => void)>;
+  registerRun?: (params: {
+    runId: string;
+    assertCurrent: () => void;
+  }) => void | (() => void) | Promise<void | (() => void)>;
   isRunCurrent?: (runId: string) => boolean;
 }) {
   const { agentId, sessionKey, canonicalKey, storePath } = params.sessionTarget;
@@ -331,6 +334,7 @@ export function createTalkClientAgentConsultRunner(params: {
           abortSignal: signal,
           onRunStarted: async ({ runId, sessionId, timeoutMs }) => {
             const assertRegistrationCurrent = () => {
+              assertCurrent?.();
               signal?.throwIfAborted();
               if (
                 owner &&
@@ -342,12 +346,14 @@ export function createTalkClientAgentConsultRunner(params: {
                 throw new Error("The active Talk consult admission is no longer current");
               }
             };
-            assertCurrent?.();
             assertRegistrationCurrent();
             let releaseVoice: void | (() => void) = undefined;
             try {
               if (params.registerRun) {
-                releaseVoice = await params.registerRun({ runId });
+                releaseVoice = await params.registerRun({
+                  runId,
+                  assertCurrent: assertRegistrationCurrent,
+                });
               } else {
                 releaseVoice = await registerClientVoiceConsultRun({
                   agentId,
@@ -359,7 +365,6 @@ export function createTalkClientAgentConsultRunner(params: {
                 });
               }
               assertRegistrationCurrent();
-              assertCurrent?.();
               confirmationObservation = observeClientVoiceConfirmationRun({
                 agentId,
                 voiceSessionId,

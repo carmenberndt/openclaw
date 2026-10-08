@@ -81,10 +81,16 @@ vi.mock("../src/gateway/talk/client-gateway-control.js", async (importOriginal) 
     close: async () => undefined,
   }),
 }));
+vi.mock("../src/talk/client-voice-session-read.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/talk/client-voice-session-read.js")>()),
+  resolveClientVoiceAgentSessionId: () => undefined,
+}));
+vi.mock("../src/talk/client-voice-session-write.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/talk/client-voice-session-write.js")>()),
+  ensureClientVoiceAgentSessionEntry: async () => "test-agent-session",
+}));
 vi.mock("../src/talk/client-voice-session.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/talk/client-voice-session.js")>()),
-  resolveClientVoiceAgentSessionId: () => undefined,
-  ensureClientVoiceAgentSessionEntry: async () => "test-agent-session",
   createOrResumeClientVoiceSession: () => "test-voice-session",
   closeStaleClientVoiceSessions: async () => 0,
 }));

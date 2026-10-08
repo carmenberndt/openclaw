@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
+import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
+import type { SessionPendingInputAuthorityFacts } from "../config/sessions/session-pending-input-authority.js";
 import {
   prepareSessionSourceAuthority,
   releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
   type SessionSourcePredicateFacts,
+  type SessionSourceWriteGrant,
 } from "../config/sessions/session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
 import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
@@ -20,6 +23,8 @@ import { captureSessionStoreReadCandidates } from "../config/sessions/session-st
 import { mergeSessionEntry, type InternalSessionEntry } from "../config/sessions/types.js";
 import { assertDatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+import type { OpenClawAgentDatabaseAdmissionExecution } from "../state/openclaw-agent-db-admission.js";
+import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db-contract.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import type { AgentDatabaseRequestExecutionSource } from "../state/openclaw-agent-execution-contract.js";
@@ -85,6 +90,12 @@ export function captureClientVoiceSessionWriter(params: {
         admission: createSqliteWorkerOperationAdmission((request, grant) => {
           binding.authorize(request);
           const facts = isRecord(request.facts) ? request.facts.publication : undefined;
+          if (isRecord(facts) && facts.kind === "voice-session-authority") {
+            if (!authority?.transaction) {
+              throw new Error("Voice session authority omitted its prepared assertion");
+            }
+            authority.transaction.assertCurrent(facts.facts as SessionPendingInputAuthorityFacts);
+          }
           if (
             isRecord(facts) &&
             facts.kind === "voice-session-source" &&
@@ -109,6 +120,7 @@ export function captureClientVoiceSessionWriter(params: {
   function mutate<T>(
     input: VoiceSessionMutation,
     publish: (record: ClientVoiceSessionRecord | undefined, entry?: InternalSessionEntry) => T,
+    authority?: PreparedSessionSourceAuthority,
   ): Promise<T>;
   async function mutate<T>(
     input: VoiceSessionMutation,
@@ -126,6 +138,15 @@ export function captureClientVoiceSessionWriter(params: {
           type: "voice.session.mutate",
           input: {
             ...mutation,
+            ...(authority?.transaction
+              ? {
+                  transactionSource: {
+                    source: authority.transaction.source,
+                    agentId: authority.transaction.agentId,
+                    sessionKey: authority.transaction.sessionKey,
+                  },
+                }
+              : {}),
             ...(authority?.checks.length
               ? { sources: authority.checks.map((check) => check.predicate) }
               : {}),
@@ -170,6 +191,9 @@ export function captureClientVoiceSessionWriter(params: {
       throw new Error("Voice session creation has not been acknowledged");
     },
     assertCurrent,
+    get admissionExecution(): OpenClawAgentDatabaseAdmissionExecution {
+      return execution;
+    },
     adoptNativeDatabase: execution.adoptNativeDatabase,
     release: () => execution.release(),
     read(voiceSessionId: string) {
@@ -198,6 +222,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   deadlineAt?: number;
   assertCommitAllowed?: () => void;
   onCommitted?: (entry: InternalSessionEntry) => void;
+  onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: InternalSessionEntry) => void;
   creation?: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
 }): Promise<string> {
   const created = await patchSessionEntryCore(
@@ -218,6 +243,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
     {
       fallbackEntry: mergeSessionEntry(undefined, {}),
       onCommitted: params.onCommitted,
+      onCommittedSource: params.onCommittedSource,
       assertCommitAllowed: () => {
         // Provider startup can end while this write is queued or being prepared.
         // Revalidate at commit so it cannot leave an unusable empty chat.
@@ -234,9 +260,272 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   return created.sessionId;
 }
 
+export type ClientVoiceSessionMutationAuthority = {
+  assertCurrent?: () => void;
+  requester?: SessionSourceAssertion;
+  source?: {
+    assertCurrent: SessionSourceAssertion;
+    storePath: string;
+    prepareWorkerGrant?: () => Promise<SessionSourceWriteGrant>;
+    retainWorkerGrant?: (grant: SessionSourceWriteGrant) => void;
+  };
+};
+
+/** Prepare authority once, then mutate and publish under the existing physical-store FIFO. */
+export async function mutateAuthorizedClientVoiceSession<T>(
+  params: ClientVoiceSessionMutationAuthority & { agentId: string },
+  writer: ClientVoiceSessionWriter,
+  prepareMutation: () => Extract<VoiceSessionMutation, { kind: "create" | "consult" }>,
+  publish: (record: ClientVoiceSessionRecord | undefined) => T,
+): Promise<T> {
+  const resources: Array<Pick<PreparedSessionSourceAuthority, "release">> = [];
+  const errors: unknown[] = [];
+  try {
+    const sourceCandidates = params.source
+      ? captureSessionStoreReadCandidates(params.source.storePath)
+      : [];
+    const sourceIdentities = captureSessionStoreCandidateIdentities(sourceCandidates);
+    const assertSourceLocatorsCurrent = () => {
+      if (!sourceCandidates.every(isSessionStoreReadCandidateCurrent)) {
+        throw new Error("Voice session source changed");
+      }
+    };
+    // Reserve accepted order before authority preparation yields, without a native write lock.
+    return await runOpenClawAgentWriteAdmission(
+      writer.options,
+      async () => {
+        writer.assertCurrent();
+        params.assertCurrent?.();
+        const requester = await prepareSessionSourceAuthority(params.requester);
+        resources.push(requester);
+        params.assertCurrent?.();
+        requester.assertCurrent();
+        const mutation = prepareMutation();
+        let assertSourceIdentityCurrent: (() => void) | undefined;
+        let authority: PreparedSessionSourceAuthority | undefined;
+        let workerGrant: SessionSourceWriteGrant | undefined;
+        if (params.source) {
+          if (
+            params.source.prepareWorkerGrant &&
+            !requester.nativeSource &&
+            !requester.opaqueCommitGuard &&
+            [...sourceIdentities.values()].every(
+              (identity) =>
+                !identity.key.startsWith("file:") ||
+                (identity.key === writer.identity.key &&
+                  identity.birthtime === writer.identity.birthtime),
+            )
+          ) {
+            workerGrant = await params.source.prepareWorkerGrant();
+            resources.push(workerGrant);
+          }
+          authority = workerGrant?.transaction
+            ? {
+                checks: [],
+                assertCurrent: workerGrant.assertLifetimeCurrent,
+                transaction: workerGrant.transaction,
+              }
+            : await prepareSessionSourceAuthority(params.source.assertCurrent);
+          if (!workerGrant?.transaction) {
+            resources.push(authority);
+          }
+          const preparedSources = [
+            ...authority.checks.map(({ predicate }) => predicate.source),
+            ...(authority.transaction ? [authority.transaction.source] : []),
+          ].filter((source) =>
+            [...sourceIdentities.values()].some(
+              (identity) =>
+                typeof source.databaseIdentity === "string" &&
+                identity.key === `file:${source.databaseIdentity}` &&
+                identity.birthtime === source.databaseBirthtime,
+            ),
+          );
+          const preparedSource = preparedSources.every(
+            (source) => source.databaseIdentity === preparedSources[0]?.databaseIdentity,
+          )
+            ? preparedSources[0]
+            : undefined;
+          const canonical = resolveUnsuffixedSqliteTargetFromSessionStorePath(
+            params.source.storePath,
+          );
+          // Reuse the prepared physical owner; opaque SDK sources resolve their original selector.
+          const sourceTarget =
+            preparedSource ??
+            (canonical.agentId ||
+            (authority.nativeSource &&
+              isIncognitoOpenClawAgentSqlitePath(canonical.path, writer.options))
+              ? { ...canonical, agentId: canonical.agentId ?? params.agentId }
+              : await prepareSqliteTargetFromSessionStorePath(params.source.storePath, {
+                  agentId: params.agentId,
+                  env: writer.options.env,
+                }));
+          const sourcePath = assertSessionStoreReadCandidate(sourceTarget.path, sourceCandidates);
+          const sourceIdentity = sourceIdentities.get(sourcePath);
+          if (!sourceTarget.agentId || !sourceIdentity) {
+            throw new Error("Voice session source changed its captured database owner");
+          }
+          const assertSourceCurrent = () => {
+            assertSourceLocatorsCurrent();
+            assertSessionStoreReadCandidate(sourceTarget.path, sourceCandidates);
+            assertDatabasePathIdentity(sourcePath, sourceIdentity);
+          };
+          writer.assertCurrent();
+          params.assertCurrent?.();
+          requester.assertCurrent();
+          assertSourceCurrent();
+          authority.assertCurrent();
+          assertSourceCurrent();
+          assertSourceIdentityCurrent = assertSourceCurrent;
+          if (
+            (sourceIdentity.key !== writer.identity.key ||
+              sourceIdentity.birthtime !== writer.identity.birthtime) &&
+            (requester.nativeSource ||
+              requester.opaqueCommitGuard ||
+              authority.nativeSource ||
+              authority.opaqueCommitGuard ||
+              authority.checks.length === 0)
+          ) {
+            const native = retainOpenClawAgentDatabaseReadOnly({
+              ...writer.options,
+              agentId: sourceTarget.agentId,
+              path: sourcePath,
+            });
+            if (!native.found) {
+              throw new Error("Voice session source is unavailable");
+            }
+            resources.push(native.claim);
+            assertSourceIdentityCurrent = () => {
+              assertSourceCurrent();
+              native.claim.assertCurrent();
+            };
+          }
+        }
+        const sources = await prepareClientVoiceSessionSourceChecks(
+          writer,
+          authority ? [requester, authority] : [requester],
+        );
+        resources.push(sources);
+        let committed: T;
+        if (
+          sources.nativeSource ||
+          requester.nativeSource ||
+          requester.opaqueCommitGuard ||
+          authority?.nativeSource ||
+          authority?.opaqueCommitGuard
+        ) {
+          // Released synchronous SDK writers require cross-store event-loop atomicity until the next major.
+          const [
+            { withOpenClawAgentDatabaseAsync, withOpenClawAgentDatabaseRuntimeFromExecution },
+            { runOpenClawAgentWriteWithYieldingAdmission },
+            { hasSqliteSessionOwnerColumns },
+            { readRefusedSessionSource },
+            { readSessionPendingInputAuthorityFactsInTransaction },
+            kernel,
+          ] = await Promise.all([
+            import("../state/openclaw-agent-db.js"),
+            import("../state/openclaw-agent-db-transaction.js"),
+            import("../config/sessions/session-accessor.sqlite-owner-projection.js"),
+            import("../config/sessions/session-source-predicate.worker.js"),
+            import("../config/sessions/session-pending-input-authority.kernel.js"),
+            import("./client-voice-session-write.kernel.js"),
+          ]);
+          const opaqueGuard = requester.opaqueCommitGuard || authority?.opaqueCommitGuard;
+          const predicates = sources.checks.map((check) => check.predicate);
+          const assertPreparationCurrent = () => {
+            assertSourceLocatorsCurrent();
+            assertSourceIdentityCurrent?.();
+            writer.assertCurrent();
+            params.assertCurrent?.();
+          };
+          const assertNativeCurrent = (transaction?: OpenClawAgentDatabase) => {
+            // An SDK guard need not check a source alias, even when it shares the writer's file.
+            assertPreparationCurrent();
+            sources.assertCurrent();
+            if (transaction) {
+              const refused = readRefusedSessionSource(transaction, predicates);
+              if (refused) {
+                sources.checks[refused.index]!.refuse(refused.facts);
+              }
+              if (authority?.transaction) {
+                authority.transaction.assertCurrent(
+                  readSessionPendingInputAuthorityFactsInTransaction(
+                    transaction,
+                    authority.transaction.sessionKey,
+                    authority.transaction.agentId,
+                  ),
+                );
+              }
+            }
+            assertSourceIdentityCurrent?.();
+          };
+          committed = await runOpenClawAgentWriteAdmission(
+            writer.options,
+            async () => {
+              assertDatabasePathIdentity(writer.options.path, writer.identity);
+              const mutate = async (database: OpenClawAgentDatabase) => {
+                assertNativeCurrent();
+                await writer.adoptNativeDatabase(database);
+                assertNativeCurrent();
+                if (predicates.length > 0 || authority?.transaction) {
+                  hasSqliteSessionOwnerColumns(database.db);
+                }
+                return runOpenClawAgentWriteWithYieldingAdmission(
+                  (transaction) => {
+                    assertNativeCurrent(transaction);
+                    const committedRecord = kernel.mutateVoiceSessionInDatabase(
+                      transaction,
+                      mutation,
+                    );
+                    assertNativeCurrent(transaction);
+                    return committedRecord;
+                  },
+                  writer.options,
+                  { operationLabel: `voice.session.${mutation.kind}` },
+                );
+              };
+              const record = opaqueGuard
+                ? await withOpenClawAgentDatabaseAsync(writer.options, mutate, assertNativeCurrent)
+                : await withOpenClawAgentDatabaseRuntimeFromExecution(
+                    writer.options,
+                    writer.admissionExecution,
+                    mutate,
+                    assertPreparationCurrent,
+                  );
+              return publish(record);
+            },
+            true,
+          );
+        } else {
+          committed = await writer.mutate(mutation, publish, {
+            checks: sources.checks,
+            transaction: authority?.transaction,
+            assertCurrent: () => {
+              assertSourceLocatorsCurrent();
+              assertSourceIdentityCurrent?.();
+              params.assertCurrent?.();
+              sources.assertCurrent();
+            },
+          });
+        }
+        if (workerGrant?.transaction && params.source?.retainWorkerGrant) {
+          params.source.retainWorkerGrant(workerGrant);
+          resources.splice(resources.indexOf(workerGrant), 1);
+        }
+        return committed;
+      },
+      true,
+    );
+  } catch (error) {
+    errors.push(error);
+    throw error;
+  } finally {
+    await releaseSessionSourceAuthorities(resources, errors);
+  }
+}
+
 /** Create a call record or resume the same open call across transport restarts. */
 export async function createOrResumeClientVoiceSession(
-  input: {
+  input: ClientVoiceSessionMutationAuthority & {
     agentId: string;
     sessionKey: string;
     provider?: string;
@@ -244,9 +533,6 @@ export async function createOrResumeClientVoiceSession(
     transcriptCapable?: boolean;
     voiceSessionId?: string;
     now?: number;
-    assertCurrent?: () => void;
-    requester?: SessionSourceAssertion;
-    source?: { assertCurrent: SessionSourceAssertion; storePath: string };
   },
   retainedWriter?: ClientVoiceSessionWriter,
 ): Promise<string> {
@@ -255,192 +541,29 @@ export async function createOrResumeClientVoiceSession(
     async () => {
       const voiceSessionId = params.voiceSessionId?.trim() || randomUUID();
       const writer = retainedWriter ?? captureClientVoiceSessionWriter({ agentId: params.agentId });
-      const resources: Array<Pick<PreparedSessionSourceAuthority, "release">> = retainedWriter
-        ? []
-        : [writer];
       const errors: unknown[] = [];
       try {
-        const sourceCandidates = params.source
-          ? captureSessionStoreReadCandidates(params.source.storePath)
-          : [];
-        const sourceIdentities = captureSessionStoreCandidateIdentities(sourceCandidates);
-        const assertSourceLocatorsCurrent = () => {
-          if (!sourceCandidates.every(isSessionStoreReadCandidateCurrent)) {
-            throw new Error("Voice session source changed");
-          }
-        };
-        // Reserve accepted order before authority preparation yields, without a native write lock.
-        await runOpenClawAgentWriteAdmission(
-          writer.options,
-          async () => {
-            writer.assertCurrent();
-            params.assertCurrent?.();
-            const requester = await prepareSessionSourceAuthority(params.requester);
-            resources.push(requester);
-            params.assertCurrent?.();
-            requester.assertCurrent();
-            const mutation: VoiceSessionMutation = {
-              kind: "create",
-              agentId: params.agentId,
-              sessionKey: params.sessionKey,
-              voiceSessionId,
-              provider: params.provider?.trim() || undefined,
-              origin: params.origin,
-              transcriptCapable: params.transcriptCapable,
-              now: params.now ?? Date.now(),
-            };
-            let assertSourceIdentityCurrent: (() => void) | undefined;
-            let authority: PreparedSessionSourceAuthority | undefined;
-            if (params.source) {
-              authority = await prepareSessionSourceAuthority(params.source.assertCurrent);
-              resources.push(authority);
-              const preparedSources = authority.checks
-                .map(({ predicate }) => predicate.source)
-                .filter((source) =>
-                  [...sourceIdentities.values()].some(
-                    (identity) =>
-                      typeof source.databaseIdentity === "string" &&
-                      identity.key === `file:${source.databaseIdentity}` &&
-                      identity.birthtime === source.databaseBirthtime,
-                  ),
-                );
-              const preparedSource = preparedSources.every(
-                (source) => source.databaseIdentity === preparedSources[0]?.databaseIdentity,
-              )
-                ? preparedSources[0]
-                : undefined;
-              const canonical = resolveUnsuffixedSqliteTargetFromSessionStorePath(
-                params.source.storePath,
-              );
-              // Reuse the prepared physical owner; opaque SDK sources resolve their original selector.
-              const sourceTarget =
-                preparedSource ??
-                (canonical.agentId ||
-                (authority.nativeSource &&
-                  isIncognitoOpenClawAgentSqlitePath(canonical.path, writer.options))
-                  ? { ...canonical, agentId: canonical.agentId ?? params.agentId }
-                  : await prepareSqliteTargetFromSessionStorePath(params.source.storePath, {
-                      agentId: params.agentId,
-                      env: writer.options.env,
-                    }));
-              const sourcePath = assertSessionStoreReadCandidate(
-                sourceTarget.path,
-                sourceCandidates,
-              );
-              const sourceIdentity = sourceIdentities.get(sourcePath);
-              if (!sourceTarget.agentId || !sourceIdentity) {
-                throw new Error("Voice session source changed its captured database owner");
-              }
-              const assertSourceCurrent = () => {
-                assertSourceLocatorsCurrent();
-                assertSessionStoreReadCandidate(sourceTarget.path, sourceCandidates);
-                assertDatabasePathIdentity(sourcePath, sourceIdentity);
-              };
-              writer.assertCurrent();
-              params.assertCurrent?.();
-              requester.assertCurrent();
-              assertSourceCurrent();
-              authority.assertCurrent();
-              assertSourceCurrent();
-              assertSourceIdentityCurrent = assertSourceCurrent;
-              if (
-                (sourceIdentity.key !== writer.identity.key ||
-                  sourceIdentity.birthtime !== writer.identity.birthtime) &&
-                (requester.nativeSource ||
-                  authority.opaqueCommitGuard ||
-                  authority.checks.length === 0)
-              ) {
-                const native = retainOpenClawAgentDatabaseReadOnly({
-                  ...writer.options,
-                  agentId: sourceTarget.agentId,
-                  path: sourcePath,
-                });
-                if (!native.found) {
-                  throw new Error("Voice session source is unavailable");
-                }
-                resources.push(native.claim);
-                assertSourceIdentityCurrent = () => {
-                  assertSourceCurrent();
-                  native.claim.assertCurrent();
-                };
-              }
-            }
-            if (requester.nativeSource || authority?.opaqueCommitGuard) {
-              // v2026.9.8 GatewayRequestHandlerOptions permits synchronous SQLite-reading SDK guards.
-              const [
-                { withOpenClawAgentDatabaseAsync },
-                { runOpenClawAgentWriteWithYieldingAdmission },
-                kernel,
-              ] = await Promise.all([
-                import("../state/openclaw-agent-db.js"),
-                import("../state/openclaw-agent-db-transaction.js"),
-                import("./client-voice-session-write.kernel.js"),
-              ]);
-              const assertNativeCurrent = () => {
-                // An SDK guard need not check a source alias, even when it shares the writer's file.
-                assertSourceLocatorsCurrent();
-                assertSourceIdentityCurrent?.();
-                writer.assertCurrent();
-                params.assertCurrent?.();
-                requester.assertCurrent();
-                // Prepared native guards are live; typed predicates still need a native row check.
-                if (requester.checks.length > 0) {
-                  params.requester?.();
-                }
-                assertSourceIdentityCurrent?.();
-                authority?.assertCurrent();
-                if (authority && authority.checks.length > 0) {
-                  params.source?.assertCurrent();
-                }
-                assertSourceIdentityCurrent?.();
-              };
-              await runOpenClawAgentWriteAdmission(
-                writer.options,
-                async () => {
-                  assertDatabasePathIdentity(writer.options.path, writer.identity);
-                  await withOpenClawAgentDatabaseAsync(
-                    writer.options,
-                    async (database) => {
-                      await writer.adoptNativeDatabase(database);
-                      return runOpenClawAgentWriteWithYieldingAdmission(
-                        (database) => {
-                          assertNativeCurrent();
-                          kernel.mutateVoiceSessionInDatabase(database, mutation);
-                          assertNativeCurrent();
-                        },
-                        writer.options,
-                        { operationLabel: "voice.session.create" },
-                      );
-                    },
-                    assertNativeCurrent,
-                  );
-                },
-                true,
-              );
-            } else {
-              const sources = await prepareClientVoiceSessionSourceChecks(
-                writer,
-                authority ? [requester, authority] : [requester],
-              );
-              resources.push(sources);
-              await writer.mutate(mutation, undefined, {
-                checks: sources.checks,
-                assertCurrent: () => {
-                  assertSourceLocatorsCurrent();
-                  assertSourceIdentityCurrent?.();
-                  params.assertCurrent?.();
-                  sources.assertCurrent();
-                },
-              });
-            }
-          },
-          true,
+        return await mutateAuthorizedClientVoiceSession(
+          params,
+          writer,
+          () => ({
+            kind: "create",
+            agentId: params.agentId,
+            sessionKey: params.sessionKey,
+            voiceSessionId,
+            provider: params.provider?.trim() || undefined,
+            origin: params.origin,
+            transcriptCapable: params.transcriptCapable,
+            now: params.now ?? Date.now(),
+          }),
+          () => voiceSessionId,
         );
       } catch (error) {
         errors.push(error);
+        throw error;
+      } finally {
+        await releaseSessionSourceAuthorities(retainedWriter ? [] : [writer], errors);
       }
-      await releaseSessionSourceAuthorities(resources, errors);
-      return voiceSessionId;
     },
     undefined,
     retainedWriter?.settlementContext,

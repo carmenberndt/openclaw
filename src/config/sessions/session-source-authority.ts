@@ -1,5 +1,6 @@
 import { throwSqliteLifecycleErrors } from "../../infra/sqlite-lifecycle-errors.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
@@ -18,7 +19,23 @@ export type SessionSourcePredicateFacts = {
   members?: readonly string[];
 };
 
+/** Current source facts supplied by the mutation's own transaction. */
+export type SessionSourceTransactionGrant = {
+  source: CapturedSessionEntryReadSource;
+  agentId: string;
+  sessionKey: string;
+  assertCurrent: (facts: SessionPendingInputAuthorityFacts) => void;
+};
+
+export type SessionSourceWriteGrant = {
+  assertCurrent: () => void;
+  assertLifetimeCurrent: () => void;
+  release: () => void | Promise<void>;
+  transaction?: SessionSourceTransactionGrant;
+};
+
 export type PreparedSessionSourceAuthority = {
+  transaction?: SessionSourceTransactionGrant;
   /** Process-held sources require native atomicity when writing a durable target. */
   nativeSource?: boolean;
   /** Released SDK callbacks can perform arbitrary synchronous SQLite reads. */

@@ -21,6 +21,7 @@ import {
   captureClientVoiceSessionSettlement,
   prepareClientVoiceSessionClose,
 } from "./client-voice-session-lifecycle.js";
+import { resolveClientVoiceAgentSessionId } from "./client-voice-session-read.js";
 import * as voiceSessionReads from "./client-voice-session-read.js";
 import { ensureClientVoiceAgentSessionEntry } from "./client-voice-session-write.js";
 import {
@@ -35,7 +36,6 @@ import {
   closeStaleClientVoiceSessions,
   createOrResumeClientVoiceSession,
   flushClientVoiceSessionWrites,
-  resolveClientVoiceAgentSessionId,
   registerClientVoiceConsultRun,
   resolveClientVoiceRunBinding,
 } from "./client-voice-session.js";

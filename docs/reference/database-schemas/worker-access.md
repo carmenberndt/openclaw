@@ -1783,16 +1783,33 @@ readers inside a grant. Opaque synchronous `sessionMutationCommitGuard` callback
 from the released v2026.9.8 Gateway SDK, including guards retained by voice replacement,
 keep native voice admission through the same FIFO and mutation kernel. These callbacks
 may read SQLite and remain live throughout native preparation and commit. Ordinary
-prepared Gateway requests use the worker; process-held requester authority retains
-native admission. Foreign file predicates use a fresh read scope on each retained
-connection at the grants. These final native authority checks remain until raw
-synchronous writers are removed at the next Plugin SDK major and owner publications
-cover revocation completely.
+prepared same-store Gateway requests use the worker; process-held or foreign-store requester
+and session-source authority retain native admission. Foreign file predicates use a
+fresh read scope on each retained connection before and after the native mutation;
+same-store predicates use that transaction's connection. This preserves event-loop
+atomicity with synchronous SDK writers without reopening source readers or
+discovering schema capabilities under the write lock. These final native authority
+checks remain until raw synchronous writers are removed at the next Plugin SDK
+major and owner publications cover revocation completely.
 Native SDK opening hands its admitted file identity to that same executor; refused
 worker preparations finish cleanup before the handoff. Fixed stores retain their
 physical schema owner independently of logical agent routing. Each create/resume
 operation checks its own current authority even when reusing a writer.
-Consult registration settles before execution starts.
+Non-opaque native operations use the existing runtime admission owner to prepare
+cold targets in the worker. Bootstrap grants carry only physical and lifetime
+fences; full source authority is rechecked after admission and before native writes.
+Same-store Talk creation and consult registration consume entry and membership
+facts from their voice transaction through the existing sharing grant, without a
+separate planning read.
+Creation retains its grant and borrows the admitted native handle for a fresh exact
+authority check after the worker settles, immediately before the ACK. This final
+guard observes foreign commits; transaction facts and display projections cannot
+replace it. Newly created sessions pass the committing writer's physical source
+to authorization before publication instead of rediscovering it after a wait.
+Consult registration retains requester, session-source, and accepted-work authority
+through the queue and commit, then publishes its run binding before execution
+starts. Chat-backed relays use that same registration once, carrying the relay's
+live cancellation fence. Lifetime-only registrations keep the direct worker path.
 Transcript failure reservations remain durable before the
 fallible append. Same-store append and success bookkeeping commit together, then
 observers consume the acknowledged transcript and voice facts. Gateway

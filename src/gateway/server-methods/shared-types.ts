@@ -515,6 +515,7 @@ export type SessionMutationAuthorization = {
     assertCurrent: () => void;
     assertLifetimeCurrent: () => void;
     release: () => void | Promise<void>;
+    transaction?: import("../../config/sessions/session-source-authority.js").SessionSourceTransactionGrant;
   }>;
   /** Original host/session authority for committed input custody, without the selection precondition. */
   assertAdmittedInputCurrent?: () => void;
@@ -527,6 +528,7 @@ export type SessionMutationAuthorization = {
     storePath: string;
     sessionId: string;
     lifecycleRevision?: string;
+    readSource?: import("../../config/sessions/session-entry-read-source.types.js").CapturedSessionEntryReadSource;
   }) => void;
   assertTargetCurrent: (target: {
     sessionKey: string;

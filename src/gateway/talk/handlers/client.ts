@@ -21,6 +21,7 @@ import {
   bindAuthorizedClientVoiceConfirmation,
   type ClientVoiceConfirmationGrant,
 } from "../../../talk/client-voice-confirmation.js";
+import { resolveOpenClientVoiceSessionId } from "../../../talk/client-voice-session-read.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import {
   appendClientVoiceTranscript,
@@ -28,7 +29,6 @@ import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
   registerClientVoiceConsultRun,
-  resolveOpenClientVoiceSessionId,
 } from "../../../talk/client-voice-session.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
@@ -195,14 +195,23 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         args: params.args ?? {},
         relaySessionId: normalizeOptionalString(params.relaySessionId),
         connId,
-        onRunStarted: async (runId) => {
+        onRunStarted: async (runId, { assertWorkAdmissionCurrent }) => {
           const release = await registerClientVoiceConsultRun({
             agentId,
             sessionKey: params.sessionKey,
             voiceSessionId,
             runId,
             config: request.context.getRuntimeConfig(),
-            assertCurrent: readGatewayRequestMutationAuthority(request).assertPreparationCurrent,
+            requester: readGatewayRequestMutationAuthority(request).assertCurrent,
+            source: {
+              storePath: target.storePath,
+              assertCurrent: request.sessionMutationAuthorization?.assertCurrent ?? (() => {}),
+              prepareWorkerGrant: request.sessionMutationAuthorization?.prepareWorkerGrant,
+            },
+            assertCurrent: () => {
+              assertWorkAdmissionCurrent();
+              readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
+            },
           });
           try {
             request.sessionMutationAuthorization?.assertCurrent();

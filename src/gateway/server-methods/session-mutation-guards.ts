@@ -441,15 +441,25 @@ export function withSessionMutationCommitGuard(
             assertExpectedProfile?.();
             assertCommitAllowed?.();
             const prepared = await authorization.prepareWorkerGrant!();
-            const wrap = (assertSource: () => void) => () => {
-              assertExpectedProfile?.();
-              assertCommitAllowed?.();
-              assertSource();
-            };
+            const wrap =
+              <Args extends unknown[]>(assertSource: (...args: Args) => void) =>
+              (...args: Args) => {
+                assertExpectedProfile?.();
+                assertCommitAllowed?.();
+                assertSource(...args);
+              };
             return {
               ...prepared,
               assertCurrent: wrap(prepared.assertCurrent),
               assertLifetimeCurrent: wrap(prepared.assertLifetimeCurrent),
+              ...(prepared.transaction
+                ? {
+                    transaction: {
+                      ...prepared.transaction,
+                      assertCurrent: wrap(prepared.transaction.assertCurrent),
+                    },
+                  }
+                : {}),
             };
           },
         }

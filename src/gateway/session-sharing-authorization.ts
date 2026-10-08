@@ -238,6 +238,7 @@ export function createSessionCreationAuthorizationRecorder(params: {
       canonicalKey: created.sessionKey,
       storeKey: created.sessionKey,
       storePath: created.storePath,
+      ...(created.readSource ? { readSource: created.readSource } : {}),
     };
     expected.sessionId = created.sessionId;
     expected.lifecycleRevision = created.lifecycleRevision;

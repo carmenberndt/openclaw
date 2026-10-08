@@ -4,6 +4,7 @@ import type {
   SessionEntryPatchCommit,
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { IncognitoSessionActor } from "./session-incognito-actor.js";
 import { publishIncognitoSessionEntry } from "./session-incognito-binding.js";
 import type { IncognitoEntryPatchResult } from "./session-incognito-entry-patch-contract.js";
@@ -26,6 +27,7 @@ export function patchIncognitoSessionEntry(params: {
   source?: SessionSourceAssertion;
   prepare(snapshot: SqliteLifecycleTargetSnapshot): Promise<SessionEntryPatchCommit | undefined>;
   onCommitted?: (entry: InternalSessionEntry) => void;
+  onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: InternalSessionEntry) => void;
 }): Promise<IncognitoEntryPatchResult> {
   const { actor, sessionKey } = params;
   const selection = structuredClone(params.selection);
@@ -89,6 +91,14 @@ export function patchIncognitoSessionEntry(params: {
             if (result.wrote && result.entry) {
               try {
                 params.onCommitted?.(structuredClone(result.entry));
+                params.onCommittedSource?.(
+                  {
+                    agentId: actor.agentId,
+                    path: actor.path,
+                    databaseIdentity: actor.identity.incarnation,
+                  },
+                  structuredClone(result.entry),
+                );
               } finally {
                 publishIncognitoSessionEntry(actor, sessionKey, prepared[0]?.entry, result.entry);
               }

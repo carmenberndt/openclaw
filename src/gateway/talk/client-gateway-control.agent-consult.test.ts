@@ -989,7 +989,10 @@ describe("Talk client agent consult admission", () => {
     await expect(
       createRunner(registerRun).runArgs({ question: "check", confirmationId }),
     ).resolves.toEqual({ text: "done" });
-    expect(registerRun).toHaveBeenCalledWith({ runId: "run-talk" });
+    expect(registerRun).toHaveBeenCalledWith({
+      runId: "run-talk",
+      assertCurrent: expect.any(Function),
+    });
     expect(mocks.runEmbeddedAgentCore).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
   });

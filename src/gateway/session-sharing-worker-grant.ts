@@ -1,7 +1,10 @@
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { assertCapturedSessionEntryReadSource } from "../config/sessions/session-accessor.sqlite-exact-read.js";
 import { hasSessionMemberInDatabase } from "../config/sessions/session-sharing-store.kernel.js";
-import { releaseSessionSourceAuthorities } from "../config/sessions/session-source-authority.js";
+import {
+  releaseSessionSourceAuthorities,
+  type SessionSourceTransactionGrant,
+} from "../config/sessions/session-source-authority.js";
 import { captureSessionStoreReadCandidate } from "../config/sessions/session-store-read-candidates.js";
 import {
   captureSessionStoreReadCandidates,
@@ -17,6 +20,7 @@ import { prepareOpenClawAgentDatabaseRegistrySnapshotRead } from "../state/openc
 import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
 import {
   sessionMutationTargetChanged,
+  prepareAuthorizedSessionMutationFacts,
   type AuthorizedSessionMutationTarget,
   type PreparedMutationSharing,
   type SessionMutationAuthorizationParams,
@@ -33,6 +37,7 @@ export async function prepareSessionSharingWorkerGrant(params: {
   targets: readonly AuthorizedSessionMutationTarget[];
   request: SessionMutationAuthorizationParams;
   sourceConfig: OpenClawConfig;
+  transactionFacts?: boolean;
   consume: (
     expected: AuthorizedSessionMutationTarget,
     cfg: OpenClawConfig,
@@ -47,9 +52,11 @@ export async function prepareSessionSharingWorkerGrant(params: {
   const changed = (key = targets[0]?.sessionKey ?? "") =>
     sessionMutationTargetChanged(params.request.method, key);
   const assertRouting = captureSessionMutationRouting(params.sourceConfig, changed);
+  const talkAgentId = params.sourceConfig.talk?.agentId;
   let active = true;
   const releases: Array<{ release: () => void }> = [];
   const sourceChecks: Array<() => void> = [];
+  let transaction: SessionSourceTransactionGrant | undefined;
   const release = () => {
     active = false;
     return releaseSessionSourceAuthorities(releases.splice(0));
@@ -59,8 +66,9 @@ export async function prepareSessionSharingWorkerGrant(params: {
       const initialConfig = params.request.context.getRuntimeConfig();
       assertRouting(initialConfig);
       const projected =
-        expected.projection &&
-        readProjectedSessionMutationTarget(expected, initialConfig, expected.projection);
+        !params.transactionFacts && expected.projection
+          ? readProjectedSessionMutationTarget(expected, initialConfig, expected.projection)
+          : undefined;
       if (projected?.status === "ready") {
         return (profiles: PreparedSessionSharingProfiles) => {
           const cfg = params.request.context.getRuntimeConfig();
@@ -116,7 +124,7 @@ export async function prepareSessionSharingWorkerGrant(params: {
         createSessionStoreRegistryMutationFilter({ captured, preparedSources: [] }),
       );
       const retained =
-        typeof source.databaseIdentity === "symbol"
+        params.transactionFacts || typeof source.databaseIdentity === "symbol"
           ? retainOpenClawAgentDatabaseReadOnly(source)
           : retainCachedOpenClawAgentDatabaseReadOnly(source);
       if (!retained.found) {
@@ -139,6 +147,36 @@ export async function prepareSessionSharingWorkerGrant(params: {
       };
       assertSource();
       sourceChecks.push(assertSource);
+      if (
+        params.transactionFacts &&
+        targets.length === 1 &&
+        typeof source.databaseIdentity === "string"
+      ) {
+        transaction = {
+          source,
+          agentId: target.agentId,
+          sessionKey: target.storeKey,
+          assertCurrent(facts) {
+            assertLifetimeCurrent();
+            const prepared = prepareAuthorizedSessionMutationFacts({
+              expected,
+              facts,
+              targetChanged: () => changed(expected.sessionKey),
+            });
+            params.consume(
+              expected,
+              params.request.context.getRuntimeConfig(),
+              {
+                ...prepared,
+                members: facts.members,
+                isMember: (id) => facts.members.some((member) => member.identityId === id),
+                assertCurrent: assertSource,
+              },
+              profiles,
+            );
+          },
+        };
+      }
       return (profiles: PreparedSessionSharingProfiles) => {
         const cfg = params.request.context.getRuntimeConfig();
         assertSource();
@@ -182,6 +220,12 @@ export async function prepareSessionSharingWorkerGrant(params: {
         throw changed();
       }
       assertRouting(params.request.context.getRuntimeConfig());
+      if (
+        params.transactionFacts &&
+        params.request.context.getRuntimeConfig().talk?.agentId !== talkAgentId
+      ) {
+        throw changed();
+      }
       profiles.readCurrent();
       for (const assertSource of sourceChecks) {
         assertSource();
@@ -193,7 +237,12 @@ export async function prepareSessionSharingWorkerGrant(params: {
         read(profiles);
       }
     };
-    return { assertCurrent, assertLifetimeCurrent, release };
+    return {
+      assertCurrent,
+      assertLifetimeCurrent,
+      release,
+      ...(transaction ? { transaction } : {}),
+    };
   } catch (error) {
     active = false;
     await releaseSessionSourceAuthorities(releases.splice(0), [error]);

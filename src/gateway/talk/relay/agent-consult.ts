@@ -65,6 +65,8 @@ export function createRelayAgentRunRegistration(
     sessionKey: string;
     runId: string;
     callId?: string;
+    assertCurrent?: () => void;
+    registerVoice?: (assertCurrent: () => void) => Promise<() => void>;
   }): Promise<() => void> {
     const session = getRelaySession(params.relaySessionId, params.connId);
     const callId = params.callId?.trim();
@@ -79,6 +81,7 @@ export function createRelayAgentRunRegistration(
       }
     };
     const assertCurrent = () => {
+      params.assertCurrent?.();
       if (getRelaySession(params.relaySessionId, params.connId) !== session) {
         throw new Error("Realtime relay session changed during run registration");
       }
@@ -103,13 +106,15 @@ export function createRelayAgentRunRegistration(
       }
       assertCurrent();
       const { agentId, sessionKey } = session.sessionTarget;
-      releaseVoice = await registerClientVoiceConsultRun({
-        agentId,
-        sessionKey,
-        voiceSessionId: session.id,
-        runId: params.runId,
-        assertCurrent,
-      });
+      releaseVoice = params.registerVoice
+        ? await params.registerVoice(assertCurrent)
+        : await registerClientVoiceConsultRun({
+            agentId,
+            sessionKey,
+            voiceSessionId: session.id,
+            runId: params.runId,
+            assertCurrent,
+          });
       assertCurrent();
       return release;
     } catch (error) {

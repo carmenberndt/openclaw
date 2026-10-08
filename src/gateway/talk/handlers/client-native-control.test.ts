@@ -13,11 +13,11 @@ import { readSessionTranscriptMessageEvents } from "../../../config/sessions/ses
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import { prepareClientVoiceSessionClose } from "../../../talk/client-voice-session-lifecycle.js";
+import { resolveOpenClientVoiceSessionId } from "../../../talk/client-voice-session-read.js";
 import * as voiceSessionReads from "../../../talk/client-voice-session-read.js";
 import {
   flushClientVoiceSessionWrites,
   isClientVoiceSessionConfirmable,
-  resolveOpenClientVoiceSessionId,
 } from "../../../talk/client-voice-session.js";
 import { VoiceTranscriptOperationRegistry } from "../../../talk/voice-transcript.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
@@ -478,14 +478,14 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     await withNativePlugin(async ({ invoke }) => {
       const ready = createDeferredCore();
       const release = createDeferredCore();
-      const lookup = voiceSessionReads.lookupClientVoiceSessions;
+      const lookup = voiceSessionReads.resolveOpenClientVoiceSessionId;
       const reader = vi
-        .spyOn(voiceSessionReads, "lookupClientVoiceSessions")
+        .spyOn(voiceSessionReads, "resolveOpenClientVoiceSessionId")
         .mockImplementation(async (request) => {
-          const matches = await lookup(request);
+          const selected = await lookup(request);
           ready.resolve();
           await release.promise;
-          return matches;
+          return selected;
         });
       // Agent execution is downstream of the persisted binding this case protects.
       const consult = vi

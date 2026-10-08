@@ -16,6 +16,7 @@ import {
 } from "../../infra/sqlite-worker-transfer.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import type {
+  AgentDatabaseExecutionFileIdentity,
   AgentDatabaseExecutionScope,
   OpenClawAgentDatabaseExecution,
 } from "../../state/openclaw-agent-execution-contract.js";
@@ -35,6 +36,7 @@ import type {
   SessionEntryPatchReduction,
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import {
   prepareSessionSourceAuthority,
   type PreparedSessionSourceAuthority,
@@ -52,6 +54,7 @@ export async function patchSessionEntryInWorker(params: {
   reduction?: SessionEntryPatchReduction;
   prepare(snapshot: SqliteLifecycleTargetSnapshot): Promise<SessionEntryPatchCommit | undefined>;
   onCommitted?: (entry: SessionEntry) => void;
+  onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: SessionEntry) => void;
 }): Promise<{ entry: SessionEntry | null; wrote: boolean }> {
   let source = params.preparedSource;
   const sourceChecks = source?.checks ?? [];
@@ -118,10 +121,19 @@ export async function patchSessionEntryInWorker(params: {
       }
       return commit(() => worker.execute({ type: "session.entry.patch.commit", input: prepared }));
     },
-    async onCommitted(committed, published, identity) {
+    async onCommitted(committed, published, identity, fileIdentity) {
       try {
         if (committed.publication && committed.entry) {
           params.onCommitted?.(structuredClone(committed.entry));
+          params.onCommittedSource?.(
+            {
+              agentId: params.database.agentId,
+              path: params.database.path,
+              databaseIdentity: fileIdentity.physicalIdentity,
+              databaseBirthtime: fileIdentity.birthtime,
+            },
+            structuredClone(committed.entry),
+          );
         }
       } finally {
         if (published) {
@@ -183,6 +195,7 @@ export async function runSessionEntryWorkerOperation<
     candidate: Candidate,
     published: ReturnType<ReturnType<typeof retainSessionEntryWorkerPublication>["settle"]>,
     identity: string,
+    fileIdentity: AgentDatabaseExecutionFileIdentity,
   ): Result | Promise<Result>;
 }): Promise<Result> {
   let publication: ReturnType<typeof retainSessionEntryWorkerPublication> | undefined;
@@ -263,7 +276,12 @@ export async function runSessionEntryWorkerOperation<
               const published = publication?.settle(committed?.publication, unknown);
               if (committed) {
                 publishedResult = {
-                  value: await params.onCommitted(committed, published, identity.physicalIdentity),
+                  value: await params.onCommitted(
+                    committed,
+                    published,
+                    identity.physicalIdentity,
+                    identity,
+                  ),
                 };
               }
             } catch (error) {

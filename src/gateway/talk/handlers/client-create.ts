@@ -12,7 +12,10 @@ import {
   AgentSelectionRequiredError,
   resolveAgentWorkspaceDir,
 } from "../../../agents/agent-scope.js";
-import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import {
+  composeSessionSourceAssertion,
+  type SessionSourceWriteGrant,
+} from "../../../config/sessions/session-source-authority.js";
 import { toErrorObject } from "../../../infra/errors.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
@@ -392,6 +395,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       };
       let session: Awaited<ReturnType<typeof resolution.provider.createBrowserSession>> | undefined;
       let delivered = false;
+      let mutationGrant: SessionSourceWriteGrant | undefined;
       try {
         assertCommitAllowed();
         session = await resolution.provider.createBrowserSession(browserSessionRequest);
@@ -433,11 +437,12 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
               resolveOperatorSessionCreation(client),
             deadlineAt: sessionEntryDeadlineAt,
             assertCommitAllowed,
-            onCommitted: (entry) =>
+            onCommittedSource: (readSource, entry) =>
               sessionMutationAuthorization?.recordCreatedSession?.({
                 ...sessionTarget,
                 sessionId: entry.sessionId,
                 lifecycleRevision: entry.lifecycleRevision,
+                readSource,
               }),
           });
           sessionMutationCommitGuard?.();
@@ -468,6 +473,12 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
             requester: requester.assertCurrent,
             source: {
               storePath: target.storePath,
+              prepareWorkerGrant: !replacement
+                ? sessionMutationAuthorization?.prepareWorkerGrant
+                : undefined,
+              retainWorkerGrant: (grant) => {
+                mutationGrant = grant;
+              },
               assertCurrent: composeSessionSourceAssertion([
                 sessionMutationAuthorization?.assertCurrent,
                 replacement?.source(target).assertCurrent,
@@ -484,7 +495,14 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           activeVoiceSessionId = voiceSessionId;
           logicalSessionCreated = true;
           sessionMutationCommitGuard?.();
-          sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
+          if (mutationGrant) {
+            mutationGrant.assertCurrent();
+          } else {
+            sessionMutationAuthorization?.assertTargetCurrent({
+              ...sessionTarget,
+              ensuredSessionId,
+            });
+          }
           replacement?.assertCurrent(target);
           gatewayControlOwner?.assertOpen();
           const connId = ownerConnId;
@@ -577,6 +595,13 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
             }
           } catch (error) {
             context.logGateway.warn(`talk browser session cleanup failed: ${formatForLog(error)}`);
+          }
+        }
+        if (mutationGrant) {
+          try {
+            await mutationGrant.release();
+          } catch (error) {
+            context.logGateway.warn(`talk voice source cleanup failed: ${formatForLog(error)}`);
           }
         }
       }

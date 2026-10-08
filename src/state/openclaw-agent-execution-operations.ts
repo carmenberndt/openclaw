@@ -478,6 +478,8 @@ export async function loadAgentVoiceSessionOperations() {
   const keys = await import("../config/sessions/session-accessor.sqlite-scope-helpers.js");
   const canonical = await import("../config/sessions/session-canonical-key.js");
   const { isIncognitoSessionKey } = await import("../shared/incognito-session-key.js");
+  const { readSessionPendingInputAuthorityFactsInTransaction } =
+    await import("../config/sessions/session-pending-input-authority.kernel.js");
   return {
     "voice.session.read": (input: { voiceSessionId: string }, { open }) => {
       const database = open();
@@ -505,10 +507,24 @@ export async function loadAgentVoiceSessionOperations() {
     "voice.session.mutate": (
       input: Parameters<typeof kernel.mutateVoiceSessionInDatabase>[1] & {
         sources?: import("../config/sessions/session-source-authority.js").SessionSourcePredicate[];
+        transactionSource?: Omit<
+          import("../config/sessions/session-source-authority.js").SessionSourceTransactionGrant,
+          "assertCurrent"
+        >;
       },
       { writeTransaction, admit },
     ) =>
       writeTransaction(`voice.session.${input.kind}`, "Voice session", (database) => {
+        const sourceFacts = input.transactionSource
+          ? readSessionPendingInputAuthorityFactsInTransaction(
+              database,
+              input.transactionSource.sessionKey,
+              input.transactionSource.agentId,
+            )
+          : undefined;
+        if (sourceFacts) {
+          admit("transaction", { kind: "voice-session-authority", facts: sourceFacts });
+        }
         const refused = readRefusedSessionSource(database, input.sources);
         if (refused) {
           admit("transaction", { kind: "voice-session-source", ...refused });
@@ -526,7 +542,10 @@ export async function loadAgentVoiceSessionOperations() {
         }
         const result = { record: kernel.mutateVoiceSessionInDatabase(database, input), entry };
         deferSqliteWorkerCommitReceipt(database.db, result);
-        admit("commit");
+        admit(
+          "commit",
+          sourceFacts ? { kind: "voice-session-authority", facts: sourceFacts } : undefined,
+        );
         return result;
       }),
   } satisfies Handlers;

@@ -1,4 +1,4 @@
-import { expectDefined } from "@openclaw/normalization-core";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 /** Tests for talk gateway methods that coordinate speech and audio providers. */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
@@ -25,14 +25,8 @@ import { REALTIME_VOICE_DESCRIBE_VIEW_TOOL_NAME } from "../../../talk/describe-v
 import type { RealtimeVoiceProviderResolveConfigContext } from "../../../talk/provider-types.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { resolveChatSendCallerContext } from "../../server-methods/gateway-client-identity.js";
-import type {
-  GatewayClient,
-  GatewayRequestContext,
-  GatewayRequestHandlerOptions,
-  RespondFn,
-} from "../../server-methods/types.js";
+import type { GatewayClient, GatewayRequestHandlerOptions } from "../../server-methods/types.js";
 import { bindSessionRowProjection } from "../../session-row-projection-access.js";
-import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { preparedTalkSessionProjection as projection } from "../test-helpers.js";
 import { createBrowserProvider, createBrowserSessionMock } from "./client-fixtures.test-support.js";
@@ -43,6 +37,7 @@ import {
   defineRealtimeConfigProjectionTests,
   type TalkConfigProjectionResponse,
 } from "./config-realtime.test-support.js";
+import { createTalkHandlerCaller } from "./handler-invocation.test-support.js";
 import { talkHandlers } from "./index.js";
 import {
   expectRecordFields,
@@ -96,7 +91,15 @@ const mocks = vi.hoisted(() => ({
   acknowledgeTalkRealtimeRelayMark: vi.fn(),
   cancelTalkRealtimeRelayTurn: vi.fn(),
   stopTalkRealtimeRelaySession: vi.fn(),
-  registerTalkRealtimeRelayAgentRun: vi.fn(),
+  registerTalkRealtimeRelayAgentRun: vi.fn(
+    async ({
+      registerVoice,
+      assertCurrent,
+    }: {
+      registerVoice?: (assertCurrent: () => void) => Promise<() => void>;
+      assertCurrent?: () => void;
+    }) => registerVoice?.(assertCurrent ?? (() => {})),
+  ),
   flushTalkRealtimeRelayVoiceWrites: vi.fn(async () => undefined),
   ensureTalkRealtimeRelayVoiceSession: vi.fn(),
   submitTalkRealtimeRelayToolResult: vi.fn(),
@@ -217,6 +220,16 @@ vi.mock("../../session-transcript-preview.js", () => ({
   readSessionPreviewItemsFromTranscriptAsync: mocks.readSessionPreviewItemsFromTranscriptAsync,
 }));
 
+vi.mock("../../../talk/client-voice-session-read.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../../talk/client-voice-session-read.js")>();
+  return {
+    ...actual,
+    resolveClientVoiceAgentSessionId: mocks.resolveClientVoiceAgentSessionId,
+    resolveOpenClientVoiceSessionId: mocks.resolveOpenClientVoiceSessionId,
+  };
+});
+
 vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../talk/client-voice-session.js")>();
   return {
@@ -225,8 +238,6 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
     closeStaleClientVoiceSessions: mocks.closeStaleClientVoiceSessions,
     createOrResumeClientVoiceSession: mocks.createOrResumeClientVoiceSession,
     registerClientVoiceConsultRun: mocks.registerClientVoiceConsultRun,
-    resolveClientVoiceAgentSessionId: mocks.resolveClientVoiceAgentSessionId,
-    resolveOpenClientVoiceSessionId: mocks.resolveOpenClientVoiceSessionId,
   };
 });
 
@@ -302,62 +313,7 @@ function setSourceConfig(config: OpenClawConfig) {
   });
 }
 
-type TalkHandlerCallOptions = {
-  params: Record<string, unknown>;
-  respond: RespondFn;
-  config?: OpenClawConfig;
-  context?: unknown;
-  client?: unknown;
-  id?: string;
-};
-
-async function callTalkHandler(
-  method: keyof typeof talkHandlers,
-  {
-    params,
-    respond,
-    config = {},
-    context = { getRuntimeConfig: () => config },
-    client = { connId: "conn-1" },
-    id = "1",
-  }: TalkHandlerCallOptions,
-) {
-  const admission =
-    method === "talk.client.create" ||
-    method === "talk.session.create" ||
-    method === "talk.client.toolCall"
-      ? resolveSessionMutationAuthorization({
-          client: client as GatewayClient,
-          context: context as GatewayRequestContext,
-          method,
-          requestParams: params,
-        })
-      : undefined;
-  if (admission?.error) {
-    respond(false, undefined, admission.error);
-    return;
-  }
-  await expectDefined(
-    talkHandlers[method],
-    `talkHandlers["${method}"] test invariant`,
-  )({
-    req: { type: "req", id, method },
-    params: params as never,
-    client: client as never,
-    isWebchatConnect: () => false,
-    respond,
-    context: context as never,
-    // Row creation is mocked here; talk-target.test covers the real post-ensure fence.
-    ...(admission?.authorization
-      ? {
-          sessionMutationAuthorization: {
-            ...admission.authorization,
-            assertTargetCurrent: vi.fn(),
-          },
-        }
-      : {}),
-  });
-}
+const callTalkHandler = createTalkHandlerCaller(talkHandlers);
 
 beforeEach(() => {
   setActiveDegradedSecretOwners([]);
@@ -2980,7 +2936,10 @@ describe("talk.client.toolCall handler", () => {
       sessionKey: "agent:main:main",
       runId: "run-voice-1",
       callId: "call-1",
+      assertCurrent: expect.any(Function),
+      registerVoice: expect.any(Function),
     });
+    expect(mocks.registerClientVoiceConsultRun).toHaveBeenCalledOnce();
     expectRespondOk(respond, { runId: "run-voice-1" });
   });
 

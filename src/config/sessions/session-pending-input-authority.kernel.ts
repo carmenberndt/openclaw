@@ -11,24 +11,33 @@ export function readSessionPendingInputAuthorityFacts(
   sessionKey: string,
   agentId = database.agentId,
 ): SessionPendingInputAuthorityFacts {
-  return runSqliteDeferredTransactionSync(database.db, () => {
-    const identity = readOpenClawAgentDatabaseIdentity(database);
-    return {
-      agentId,
-      storePath: database.path,
-      // Authority uses the logical agent key; SQLite keeps the original stored key.
-      sessionKey: toAgentStoreSessionKey({ agentId, requestKey: sessionKey }),
-      entry: readSessionEntryRow(database, sessionKey, "list")?.entry,
-      readSource:
-        typeof identity.identity === "string"
-          ? {
-              agentId: database.agentId,
-              path: database.path,
-              databaseIdentity: identity.identity,
-              databaseBirthtime: identity.birthtime,
-            }
-          : undefined,
-      members: listSessionMembersInDatabase(database, sessionKey),
-    };
-  });
+  return runSqliteDeferredTransactionSync(database.db, () =>
+    readSessionPendingInputAuthorityFactsInTransaction(database, sessionKey, agentId),
+  );
+}
+
+/** The caller already owns the coherent SQLite transaction. */
+export function readSessionPendingInputAuthorityFactsInTransaction(
+  database: Pick<OpenClawAgentDatabase, "db" | "path" | "agentId">,
+  sessionKey: string,
+  agentId = database.agentId,
+): SessionPendingInputAuthorityFacts {
+  const identity = readOpenClawAgentDatabaseIdentity(database);
+  return {
+    agentId,
+    storePath: database.path,
+    // Authority uses the logical agent key; SQLite keeps the original stored key.
+    sessionKey: toAgentStoreSessionKey({ agentId, requestKey: sessionKey }),
+    entry: readSessionEntryRow(database, sessionKey, "list")?.entry,
+    readSource:
+      typeof identity.identity === "string"
+        ? {
+            agentId: database.agentId,
+            path: database.path,
+            databaseIdentity: identity.identity,
+            databaseBirthtime: identity.birthtime,
+          }
+        : undefined,
+    members: listSessionMembersInDatabase(database, sessionKey),
+  };
 }

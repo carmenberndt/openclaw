@@ -44,7 +44,10 @@ export async function startTalkRealtimeAgentConsult(
     args: unknown;
     relaySessionId?: string;
     connId?: string;
-    onRunStarted?: (runId: string) => void | (() => void) | Promise<void | (() => void)>;
+    onRunStarted: (
+      runId: string,
+      context: { assertWorkAdmissionCurrent: () => void },
+    ) => Promise<() => void>;
   },
 ): Promise<{ ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }> {
   let message: string;
@@ -129,7 +132,7 @@ export async function startTalkRealtimeAgentConsult(
       toolsAllow: authority.toolsAllow,
       transcript: { display: false, excludeFromContext: true },
       prepareAssistantTranscriptMessage: prepareTalkAgentConsultTranscript,
-      beforeDispatch: async ({ runId, assertCurrent }) => {
+      beforeDispatch: async ({ runId, assertCurrent, assertWorkAdmissionCurrent }) => {
         let releaseRelay: (() => void) | undefined;
         let releaseClient: void | (() => void);
         const release = () => {
@@ -145,10 +148,13 @@ export async function startTalkRealtimeAgentConsult(
               sessionKey: params.sessionTarget.canonicalKey,
               runId,
               callId: params.callId,
+              assertCurrent: assertWorkAdmissionCurrent,
+              registerVoice: (assertRelayCurrent) =>
+                params.onRunStarted(runId, { assertWorkAdmissionCurrent: assertRelayCurrent }),
             });
+          } else {
+            releaseClient = await params.onRunStarted(runId, { assertWorkAdmissionCurrent });
           }
-          assertCurrent();
-          releaseClient = await params.onRunStarted?.(runId);
           assertCurrent();
           return release;
         } catch (error) {

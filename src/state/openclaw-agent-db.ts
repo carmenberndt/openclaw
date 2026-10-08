@@ -190,6 +190,7 @@ export const {
   runOpenClawAgentWriteTransaction,
   withOpenClawAgentDatabaseAsync,
   withOpenClawAgentDatabaseRuntime,
+  withOpenClawAgentDatabaseRuntimeFromExecution,
   withOpenClawAgentDatabaseAdmission,
 } = createOpenClawAgentDatabaseAdmissionOwner(openOpenClawAgentDatabaseSteps);
 

@@ -14,6 +14,7 @@ export type ChatSendInternalOptions = {
   beforeDispatch?: (params: {
     runId: string;
     assertCurrent: () => void;
+    assertWorkAdmissionCurrent: () => void;
   }) => Promise<void | (() => void)>;
   skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
 };

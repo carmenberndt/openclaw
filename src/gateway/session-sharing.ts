@@ -446,7 +446,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           targetChanged(targetRef.sessionKey),
         );
         const projected =
-          !prepared && expected?.projection
+          !prepared && !consuming.sharing && expected?.projection
             ? readProjectedSessionMutationTarget(targetRef, currentCfg, expected.projection)
             : undefined;
         if (expected?.projection && projected?.status === "unavailable") {
@@ -548,13 +548,19 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
         }
       };
       const authorization: SessionMutationAuthorization = {
-        ...(params.method === "sessions.move" || params.method === "sessions.dispatch"
+        ...(params.method === "sessions.move" ||
+        params.method === "sessions.dispatch" ||
+        ((params.method === "talk.client.create" || params.method === "talk.client.toolCall") &&
+          !authorizedTargets.some((target) => isIncognitoSessionKey(target.sessionKey)))
           ? {
               prepareWorkerGrant: () =>
                 prepareSessionSharingWorkerGrant({
                   targets: authorizedTargets,
                   request: params,
                   sourceConfig: getCfg(),
+                  transactionFacts:
+                    params.method === "talk.client.create" ||
+                    params.method === "talk.client.toolCall",
                   consume: (expected, cfg, prepared, profiles) =>
                     consumeSharing(
                       prepared,

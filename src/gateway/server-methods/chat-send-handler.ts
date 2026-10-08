@@ -548,6 +548,10 @@ async function handleChatSendWithOptions(
       releaseBeforeDispatch = await options.beforeDispatch({
         runId: clientRunId,
         assertCurrent: assertInputAdmissionCurrent,
+        assertWorkAdmissionCurrent: () => {
+          admission.assertClientUploadAllowed?.();
+          admission.assertWorkAdmissionCurrent();
+        },
       });
       assertInputAdmissionCurrent();
     }

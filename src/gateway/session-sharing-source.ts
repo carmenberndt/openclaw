@@ -10,6 +10,7 @@ import {
 import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import {
   assertSessionStoreReadCandidate,
+  captureSessionStoreReadCandidate,
   captureSessionStoreCandidateIdentities,
   isSessionStoreReadCandidateCurrent,
 } from "../config/sessions/session-store-read-candidates.js";
@@ -21,6 +22,7 @@ import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
 import {
   assertIncognitoAgentDatabasePathAvailable,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -55,8 +57,23 @@ function captureSessionSharingStore(
   assertCallerCurrent: () => void,
 ) {
   const candidates = captureSessionStoreReadCandidates(target.storePath);
-  const identities = captureSessionStoreCandidateIdentities(candidates);
   const { agentId, storePath, readSource } = target;
+  if (readSource) {
+    const known = captureSessionStoreReadCandidate(readSource.path);
+    if (
+      !candidates.some((candidate) =>
+        matchesAgentDatabaseReadCandidatePath(
+          { ...candidate, path: candidate.physicalPath },
+          known.physicalPath,
+        ),
+      )
+    ) {
+      throw new Error("Session sharing source changed");
+    }
+    // Listing may fail even while the admitted exact file remains accessible.
+    candidates.push(known);
+  }
+  const identities = captureSessionStoreCandidateIdentities(candidates);
   return async () => {
     assertCallerCurrent();
     const resolved =

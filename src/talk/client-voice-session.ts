@@ -2,13 +2,13 @@
 import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import {
   appendTranscriptMessage,
-  loadSessionEntryReadOnly,
   publishTranscriptUpdate,
 } from "../config/sessions/session-accessor.js";
 import { appendExpectedSessionTranscriptTurn } from "../config/sessions/session-accessor.sqlite-transcript-turn.js";
 import type { SessionTranscriptWriteScope } from "../config/sessions/session-accessor.types.js";
 import { isNativeSessionEntryRead } from "../config/sessions/session-entry-read-request.js";
 import { withSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
+import { releaseSessionSourceAuthorities } from "../config/sessions/session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -56,8 +56,11 @@ import {
 } from "./client-voice-session-store.js";
 import {
   captureClientVoiceSessionWriter,
+  mutateAuthorizedClientVoiceSession,
+  type ClientVoiceSessionMutationAuthority,
   type ClientVoiceSessionWriter,
 } from "./client-voice-session-write.js";
+import type { VoiceSessionMutation } from "./client-voice-session-write.kernel.js";
 import {
   buildPersistedVoiceMessage,
   VoiceTranscriptOperationRegistry,
@@ -190,24 +193,16 @@ function ensureToolEffectSubscription(): void {
 
 export { createOrResumeClientVoiceSession } from "./client-voice-session-write.js";
 
-/** Read the canonical agent-session id without creating state during provider startup. */
-export function resolveClientVoiceAgentSessionId(params: {
-  agentId: string;
-  sessionKey: string;
-  storePath?: string;
-}): string | undefined {
-  return loadSessionEntryReadOnly(params)?.sessionId?.trim() || undefined;
-}
-
 /** Correlate a consult run with its open call for confirmation and mutation evidence. */
-export async function registerClientVoiceConsultRun(input: {
-  agentId: string;
-  sessionKey: string;
-  voiceSessionId: string;
-  runId: string;
-  config?: OpenClawConfig;
-  assertCurrent?: () => void;
-}): Promise<() => void> {
+export async function registerClientVoiceConsultRun(
+  input: ClientVoiceSessionMutationAuthority & {
+    agentId: string;
+    sessionKey: string;
+    voiceSessionId: string;
+    runId: string;
+    config?: OpenClawConfig;
+  },
+): Promise<() => void> {
   const params = { ...input };
   const previous = voiceSessionByRunId.get(params.runId);
   const sameBinding =
@@ -223,75 +218,79 @@ export async function registerClientVoiceConsultRun(input: {
   const capture = () => captureClientVoiceSessionSettlement(writer.settlementContext);
   let settlement: ReturnType<typeof capture> | undefined;
   let registered: ClientVoiceRun | undefined;
+  const errors: unknown[] = [];
   try {
     settlement = (sameBinding ? previous.settlement?.run(capture) : undefined) ?? capture();
     const accepted = settlement;
-    return await accepted.run(() =>
-      writer.mutate(
-        {
-          kind: "consult",
-          agentId: params.agentId,
-          sessionKey: params.sessionKey,
-          voiceSessionId: params.voiceSessionId,
-          runId: params.runId,
-          now: Date.now(),
-        },
-        (record) => {
-          const current = voiceSessionByRunId.get(params.runId);
-          if (
-            current?.binding.agentId !== params.agentId ||
-            current.binding.voiceSessionId !== params.voiceSessionId ||
-            current.binding.sessionKey !== params.sessionKey
-          ) {
-            if (current) {
-              retireClientVoiceRun(params.runId, current);
-            }
-            const owner: ClientVoiceRun = {
-              binding: Object.freeze({
-                agentId: params.agentId,
-                voiceSessionId: params.voiceSessionId,
-                sessionKey: params.sessionKey,
-              }),
-              source: writer.source,
-              ...(observeRelease ? { settlement: accepted } : {}),
-            };
-            registered = owner;
-            voiceSessionByRunId.set(params.runId, owner);
-            owner.stopObserving = observeRelease?.((reason) =>
-              retireClientVoiceRun(params.runId, owner, reason === "settled"),
-            );
+    return await accepted.run(() => {
+      const mutation: VoiceSessionMutation = {
+        kind: "consult",
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        voiceSessionId: params.voiceSessionId,
+        runId: params.runId,
+        now: Date.now(),
+      };
+      const publish = (record: ClientVoiceSessionRecord | undefined) => {
+        const current = voiceSessionByRunId.get(params.runId);
+        if (
+          current?.binding.agentId !== params.agentId ||
+          current.binding.voiceSessionId !== params.voiceSessionId ||
+          current.binding.sessionKey !== params.sessionKey
+        ) {
+          if (current) {
+            retireClientVoiceRun(params.runId, current);
           }
-          // Replays re-arm a closed call's digest without replacing its accepted owner.
-          if (record?.status === "closed" && params.config) {
-            mutationDigestDeliveryOwner.record({
+          const owner: ClientVoiceRun = {
+            binding: Object.freeze({
               agentId: params.agentId,
               voiceSessionId: params.voiceSessionId,
-              context: { config: params.config, source: writer.source },
-            });
-          }
-          ensureToolEffectSubscription();
-          const owner = voiceSessionByRunId.get(params.runId);
-          return () => {
-            if (owner) {
-              retireClientVoiceRun(params.runId, owner);
-            }
+              sessionKey: params.sessionKey,
+            }),
+            source: writer.source,
+            ...(observeRelease ? { settlement: accepted } : {}),
           };
-        },
-      ),
-    );
+          registered = owner;
+          voiceSessionByRunId.set(params.runId, owner);
+          owner.stopObserving = observeRelease?.((reason) =>
+            retireClientVoiceRun(params.runId, owner, reason === "settled"),
+          );
+        }
+        // Replays re-arm a closed call's digest without replacing its accepted owner.
+        if (record?.status === "closed" && params.config) {
+          mutationDigestDeliveryOwner.record({
+            agentId: params.agentId,
+            voiceSessionId: params.voiceSessionId,
+            context: { config: params.config, source: writer.source },
+          });
+        }
+        ensureToolEffectSubscription();
+        const owner = voiceSessionByRunId.get(params.runId);
+        return () => {
+          if (owner) {
+            retireClientVoiceRun(params.runId, owner);
+          }
+        };
+      };
+      return params.requester || params.source
+        ? mutateAuthorizedClientVoiceSession(params, writer, () => mutation, publish)
+        : writer.mutate(mutation, publish);
+    });
   } catch (error) {
+    errors.push(error);
     if (registered) {
-      retireClientVoiceRun(params.runId, registered, false);
+      try {
+        retireClientVoiceRun(params.runId, registered, false);
+      } catch (releaseError) {
+        errors.push(releaseError);
+      }
     }
     throw error;
   } finally {
-    try {
-      await writer.release();
-    } finally {
-      if (settlement !== registered?.settlement) {
-        settlement?.release();
-      }
-    }
+    await releaseSessionSourceAuthorities(
+      settlement && settlement !== registered?.settlement ? [settlement, writer] : [writer],
+      errors,
+    );
   }
 }
 
@@ -321,15 +320,6 @@ export function assertClientVoiceSessionOpen(params: ClientVoiceRunBinding): "cl
     throw new Error("voice session is closed");
   }
   return record.origin;
-}
-
-/** Resolve the unique open client-owned call for legacy tool-call clients. */
-export async function resolveOpenClientVoiceSessionId(params: {
-  agentId: string;
-  sessionKey: string;
-}): Promise<string | undefined> {
-  const matches = await lookupClientVoiceSessions({ kind: "legacy", ...params });
-  return matches.length === 1 ? matches[0]?.voiceSessionId : undefined;
 }
 
 function appendVoiceTranscript(
