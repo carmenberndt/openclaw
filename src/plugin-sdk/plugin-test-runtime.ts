@@ -10,23 +10,22 @@ type AgentHarnessHostTestAttempt = Omit<
   "admittedRunContext" | "hostCapabilities" | "disableToolSearch" | "sessionReadScopeKey"
 >;
 
-/** Builds the production admitted-run host boundary for plugin integration tests. */
-export async function createAgentHarnessHostCapabilitiesForTest(params: {
-  attempt: AgentHarnessHostTestAttempt;
+type PluginHarnessTestOperatorSource = Pick<
+  AdmittedRunOperatorAuthority,
+  "profileId" | "scopes" | "assertCurrent" | "modelPolicy" | "onModelPolicyChanged"
+>;
+
+// Admits one plugin-harness run the way core does before it hands an attempt to a plugin.
+async function admitPluginHarnessRunForTest(params: {
+  attempt: Pick<AgentHarnessHostTestAttempt, "config" | "runId" | "agentId">;
   pluginId: string;
-  nativeModelPolicySupport?: "exact";
-  operatorSource?: Pick<
-    AdmittedRunOperatorAuthority,
-    "profileId" | "scopes" | "assertCurrent" | "modelPolicy" | "onModelPolicyChanged"
-  >;
+  operatorSource?: PluginHarnessTestOperatorSource;
 }) {
   const {
     createAdmittedRunOperatorAuthority,
     createOperationalRunInstanceRef,
     prepareAgentRunAdmission,
   } = await import("../agents/admitted-run-context.js");
-  const { createAgentHarnessHostCapabilities } =
-    await import("../agents/harness/host-capability.js");
   const admission = prepareAgentRunAdmission({
     cfg: params.attempt.config ?? {},
     operatorAuthority: params.operatorSource
@@ -39,7 +38,23 @@ export async function createAgentHarnessHostCapabilitiesForTest(params: {
     },
     operationalRunInstance: createOperationalRunInstanceRef(params.attempt.runId),
   });
-  const admittedRunContext = await admission.admit("plugin-harness", params.pluginId);
+  return {
+    admittedRunContext: await admission.admit("plugin-harness", params.pluginId),
+    close: () => admission.close(),
+  };
+}
+
+/** Builds the production admitted-run host boundary for plugin integration tests. */
+export async function createAgentHarnessHostCapabilitiesForTest(params: {
+  attempt: AgentHarnessHostTestAttempt;
+  pluginId: string;
+  nativeModelPolicySupport?: "exact";
+  operatorSource?: PluginHarnessTestOperatorSource;
+}) {
+  const { createAgentHarnessHostCapabilities } =
+    await import("../agents/harness/host-capability.js");
+  const admission = await admitPluginHarnessRunForTest(params);
+  const admittedRunContext = admission.admittedRunContext;
   const host = createAgentHarnessHostCapabilities({
     attempt: { ...params.attempt, admittedRunContext },
     pluginId: params.pluginId,
@@ -104,6 +119,56 @@ export async function runInAdmittedSessionTurnForTest<
       }
     },
   );
+}
+
+type HarnessToolAuthorityBoundary = Parameters<
+  typeof import("../agents/harness/tool-authority.runtime.js").withPreparedEmbeddedRunToolAuthority
+>;
+type HarnessToolAuthorityTestAttempt = HarnessToolAuthorityBoundary[1] & {
+  replyOperation?: ReplyOperation;
+  trigger?: HarnessToolAuthorityBoundary[0]["trigger"];
+};
+
+/**
+ * Runs a harness attempt inside the admitted session turn and the tool-authority
+ * boundary core wraps around every Gateway harness attempt. That boundary derives
+ * the turn's real tool-authority fingerprint and binds native registration to the
+ * turn watchdog, so runtime-owned liveness behaves as in production. Fixtures that
+ * supply their own `toolAuthorityFingerprint` keep `runInAdmittedSessionTurnForTest`.
+ */
+export async function runInHarnessToolAuthorityForTest<
+  T,
+  Attempt extends HarnessToolAuthorityTestAttempt,
+>(
+  attempt: Attempt,
+  pluginId: string,
+  run: (attempt: Attempt & { toolAuthorityFingerprint?: string }) => Promise<T>,
+): Promise<T> {
+  if (attempt.toolAuthorityFingerprint) {
+    throw new Error("The tool-authority boundary derives its own fingerprint");
+  }
+  const { withPreparedEmbeddedRunToolAuthority } =
+    await import("../agents/harness/tool-authority.runtime.js");
+  const { resolveAgentIdFromSessionKey } = await import("../routing/session-key.js");
+  // Core always hands a harness its resolved agent; the session key owns that identity.
+  const agentId = attempt.agentId ?? resolveAgentIdFromSessionKey(attempt.sessionKey);
+  const admission = await admitPluginHarnessRunForTest({ attempt, pluginId });
+  try {
+    return await runInAdmittedSessionTurnForTest({ ...attempt, agentId }, (admitted) =>
+      withPreparedEmbeddedRunToolAuthority(
+        {
+          admittedRunContext: admission.admittedRunContext,
+          replyOperation: admitted.replyOperation,
+          trigger: admitted.trigger,
+        },
+        admitted,
+        undefined,
+        run,
+      ),
+    );
+  } finally {
+    admission.close();
+  }
 }
 
 export { setDefaultChannelPluginRegistryForTests } from "../commands/channel-test-registry.js";

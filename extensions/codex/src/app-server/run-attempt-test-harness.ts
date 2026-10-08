@@ -23,6 +23,7 @@ import {
   disposePluginRegistryInstances,
   getActivePluginRegistry,
   runInAdmittedSessionTurnForTest,
+  runInHarnessToolAuthorityForTest,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { drainSessionDiskBudgetWorkers } from "openclaw/plugin-sdk/sqlite-runtime-testing";
@@ -134,6 +135,11 @@ type RunCodexAppServerAttemptOptions = Omit<
   "bindingStore"
 > & {
   bindingStore?: NonNullable<Parameters<typeof runCodexAppServerAttemptImpl>[1]>["bindingStore"];
+  /**
+   * Run inside core's tool-authority boundary, which derives the turn's real
+   * fingerprint and binds native liveness to the turn watchdog as in production.
+   */
+  toolAuthority?: "production";
 };
 
 export function queueActiveRunMessageForTest(
@@ -228,14 +234,19 @@ export function runCodexAppServerAttempt(
     }
   };
   trackedParams.onExecutionPhase = observeExecutionPhase;
-  // Gateway runs reach the harness inside an admitted session turn.
-  const promise = runInAdmittedSessionTurnForTest(trackedParams, (admitted) =>
+  const { toolAuthority, ...attemptOptions } = options;
+  const runAdmitted = (admitted: EmbeddedRunAttemptParams) =>
     runCodexAppServerAttemptImpl(admitted, {
-      ...options,
-      startupTimeoutFloorMs: options.startupTimeoutFloorMs ?? 30_000,
-      bindingStore: options.bindingStore ?? testCodexAppServerBindingStore,
+      ...attemptOptions,
+      startupTimeoutFloorMs: attemptOptions.startupTimeoutFloorMs ?? 30_000,
+      bindingStore: attemptOptions.bindingStore ?? testCodexAppServerBindingStore,
       ...(clientFactory ? { clientFactory } : {}),
-    }),
+    });
+  // Gateway runs reach the harness inside an admitted session turn.
+  const promise = (
+    toolAuthority === "production"
+      ? runInHarnessToolAuthorityForTest(trackedParams, "codex", runAdmitted)
+      : runInAdmittedSessionTurnForTest(trackedParams, runAdmitted)
   ).finally(() => {
     if (trackedParams.onExecutionPhase === observeExecutionPhase) {
       trackedParams.onExecutionPhase = onExecutionPhase;

@@ -235,7 +235,10 @@ describe("runCodexAppServerAttempt native lifecycle", () => {
   ])("waits for exact native completion after $name", async ({ notifications }) => {
     vi.useFakeTimers();
     const harness = createStartedThreadHarness();
-    const run = runCodexAppServerAttempt(makeTestParams({ timeoutMs: MAX_TIMER_TIMEOUT_MS }));
+    // Codex owns liveness for this quiet wait only through core's tool-authority boundary.
+    const run = runCodexAppServerAttempt(makeTestParams({ timeoutMs: MAX_TIMER_TIMEOUT_MS }), {
+      toolAuthority: "production",
+    });
     const settled = vi.fn();
     void run.then(settled);
     await run.waitForTurnAccepted();
@@ -535,7 +538,7 @@ describe("runCodexAppServerAttempt native lifecycle", () => {
     params.timeoutMs = 60 * 60_000;
 
     let settled = false;
-    const run = runCodexAppServerAttempt(params).finally(() => {
+    const run = runCodexAppServerAttempt(params, { toolAuthority: "production" }).finally(() => {
       settled = true;
     });
     await Promise.race([run, turnStartRequested.promise]);
