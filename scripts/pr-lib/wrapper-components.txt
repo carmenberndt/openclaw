@@ -339,8 +339,6 @@ src/agents/worktrees/run-end-lifecycle.ts
 src/agents/sandbox/registry-lifecycle.ts
 src/talk/client-voice-session-lifecycle.ts
 src/talk/client-voice-session-source.ts
-src/talk/client-voice-session-write.ts
-src/talk/client-voice-session-write.kernel.ts
 src/agents/worktrees/run-lease-owner.ts
 src/agents/worktrees/run-lease-store.kernel.ts
 src/agents/worktrees/run-lease-store.ts
@@ -1860,7 +1858,3 @@ scripts/github/security-sensitive-guard.mjs
 scripts/lib/bounded-response.mjs
 scripts/pr-lib/merge-prior-ci-cancellation.mjs
 scripts/pr-lib/merge-prior-ci-security.mjs
-src/config/sessions/session-entry-patch-guard.ts
-src/config/sessions/session-accessor.sqlite-entry-read.ts
-src/config/sessions/session-accessor.sqlite-transcript-state.ts
-src/config/sessions/session-sharing-store.kernel.ts
