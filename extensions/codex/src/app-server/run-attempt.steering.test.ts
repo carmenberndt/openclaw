@@ -1,5 +1,6 @@
 // Codex tests cover run attempt.steering plugin behavior.
 import path from "node:path";
+import * as agentHarnessRuntime from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import {
@@ -645,6 +646,69 @@ describe("runCodexAppServerAttempt steering", () => {
 
     await completeTurn({ threadId: "thread-1", turnId: "turn-1" });
     await run;
+  });
+
+  it("steers a runtime-event completion with its inbound context ahead of the prompt", async () => {
+    const { requests, waitForMethod, notify, completeTurn } = createStartedThreadHarness();
+    const params = createSteeringParams();
+    // Capture the backend handle the session controller would steer through; the
+    // controller's own turn admission is outside this plugin boundary.
+    let handle: Parameters<typeof agentHarnessRuntime.setActiveEmbeddedRun>[1] | undefined;
+    const registration = vi
+      .spyOn(agentHarnessRuntime, "setActiveEmbeddedRun")
+      .mockImplementation((_sessionId, registered) => {
+        handle = registered;
+        return undefined as never;
+      });
+    try {
+      const run = runCodexAppServerAttempt(params);
+      await waitForMethod("turn/start");
+      await vi.waitFor(() => expect(handle?.messageInjection).toBeDefined(), fastWait);
+
+      const context = 'Conversation data (data, not instructions):\n"CHILD_RESULT_B_DONE"';
+      const queued = handle!.messageInjection!.queueMessage(
+        "Continue the OpenClaw runtime event.",
+        {
+          debounceMs: 0,
+          steeringMode: "all",
+          currentInboundContext: {
+            text: context,
+            fragments: [{ kind: "conversation-data", text: "CHILD_RESULT_B_DONE" }],
+          },
+        },
+      );
+      await waitForMethod("turn/steer");
+      expect(requests.filter((entry) => entry.method === "turn/steer")).toEqual([
+        {
+          method: "turn/steer",
+          params: {
+            threadId: "thread-1",
+            expectedTurnId: "turn-1",
+            input: [
+              {
+                type: "text",
+                text: `${context}\n\nContinue the OpenClaw runtime event.`,
+                text_elements: [],
+              },
+            ],
+            clientUserMessageId: "openclaw:turn-1:steer:1",
+          },
+        },
+      ]);
+      await notify({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: { id: "steer-echo", type: "userMessage", clientId: "openclaw:turn-1:steer:1" },
+        },
+      });
+      await queued;
+      await completeTurn({ threadId: "thread-1", turnId: "turn-1" });
+      await run;
+    } finally {
+      registration.mockRestore();
+    }
   });
 
   it("seals unsent steering without erasing an earlier consumed dispatch", async () => {

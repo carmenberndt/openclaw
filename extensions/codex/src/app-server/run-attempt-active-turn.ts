@@ -38,6 +38,7 @@ import { restoreCodexAttemptCompactionContext } from "./run-attempt-compaction.j
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import type { CodexAttemptNotificationController } from "./run-attempt-notification-controller.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
+import { prependCurrentInboundContext } from "./run-attempt-state.js";
 import type { CodexStartedTurn } from "./run-attempt-turn-request.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import { isCodexNativeDelegationDisabledForRun } from "./thread-requests.js";
@@ -345,8 +346,11 @@ export function activateCodexAttemptTurn(
     assertActive: assertSteeringActive,
     withCurrent: connection.withCurrent,
     prepareMessage: async (text, options, assertMessageCurrent) => {
+      // Model input carries the steer's inbound context like turn/start; the
+      // transcript message and image references stay the user text alone.
+      const inputText = prependCurrentInboundContext(text, options.currentInboundContext);
       const attachmentNote = await connection.prepareInputAttachments({
-        maxChars: Math.max(0, CODEX_TURN_START_TEXT_INPUT_MAX_CHARS - text.length - 2),
+        maxChars: Math.max(0, CODEX_TURN_START_TEXT_INPUT_MAX_CHARS - inputText.length - 2),
         turn: {
           media: options.media,
           userTurnTranscriptRecorder: options.userTurnTranscriptRecorder,
@@ -375,7 +379,7 @@ export function activateCodexAttemptTurn(
       });
       return {
         input: buildCodexUserInput(
-          attachmentNote ? `${text}\n\n${attachmentNote}` : text,
+          attachmentNote ? `${inputText}\n\n${attachmentNote}` : inputText,
           result.images,
         ),
         message: {
