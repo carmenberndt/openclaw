@@ -9,7 +9,7 @@ import {
   transcriptMessages,
 } from "./attempt-transcript-journal.test-helpers.js";
 import type { AttemptResultWithSdkSessionId } from "./attempt-types.js";
-import { runCopilotAttempt } from "./attempt.js";
+import { runCopilotAttempt } from "./attempt.test-support.js";
 import { createCopilotTestHostCapabilities } from "./host-capability.test-support.js";
 import type { CopilotClientPool } from "./runtime.js";
 

@@ -28,12 +28,12 @@ import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtim
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerCopilotCleanupTests } from "./attempt-cleanup.test-support.js";
-import { runCopilotAttempt } from "./attempt.js";
 import {
   makeAssistantMessageEvent,
   makeFakePool,
   makeFakeSdk,
   projectAgentRunAttemptTerminal,
+  runCopilotAttempt,
   type FakeSdk,
   type FakeSession,
   type SessionEventShape,
@@ -278,12 +278,8 @@ function requireResumeSessionConfig(sdk: FakeSdk): Record<string, unknown> {
 }
 
 function flushAsync() {
-  // Pump enough microtasks for the attempt to settle past every
-  // pre-createSession `await` in attempt.ts (resolvePoolAcquire,
-  // BYOK proxy setup, resolveCopilotWorkspaceBootstrapContext,
-  // createSession, etc.).
-  // Each chained `then` is one tick; tests rely on this to observe
-  // `sdk.sessions[0]` being populated before they emit deltas.
+  // Pump a few microtasks so SDK event handlers already in flight advance.
+  // Each chained `then` is one tick.
   const tick = () => Promise.resolve();
   return tick().then(tick).then(tick).then(tick).then(tick);
 }
@@ -1805,8 +1801,12 @@ describe("runCopilotAttempt", () => {
     const onAssistantDelta = vi.fn(async (_payload: { delta: string }) => {
       await release.promise;
     });
+    const sent = createDeferred<void>();
     const sdk = makeFakeSdk((session) => {
-      session.sendAndWait.mockReturnValue(sendDeferred.promise);
+      session.sendAndWait.mockImplementation(() => {
+        sent.resolve();
+        return sendDeferred.promise;
+      });
     });
     const pool = makeFakePool(sdk);
     const createToolBridge = vi.fn(async () => createStubToolBridge());
@@ -1815,7 +1815,8 @@ describe("runCopilotAttempt", () => {
       createToolBridge,
       pool,
     });
-    await flushAsync();
+    // Session-turn admission precedes SDK setup, so wait for the prompt send itself.
+    await sent.promise;
     const session = requireSession(sdk);
     session.emit("assistant.message_delta", { deltaContent: "partial-", messageId: "msg-1" });
     await flushAsync();
