@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { publishDiagnostics } from "../../scripts/e2e/lib/upgrade-survivor/diagnostics.mjs";
 import {
   assertSnapshotCleanupRefusal,
+  bindSnapshotRuntimeIdentity,
   observeSnapshotNativeBackups,
   writeSnapshotCleanupEvidence,
 } from "../../scripts/e2e/lib/upgrade-survivor/snapshot-cleanup-refusal.mjs";
@@ -738,3 +739,46 @@ it.each(["failed", "timeout", "passed"] as const)(
     expect(text).not.toContain("privatePackageInventory");
   },
 );
+
+it("leaves package lifecycle scripts outside the snapshot runtime observer", () => {
+  const identity = {
+    entrypoint: "scripts/preinstall-package-manager-warning.mjs",
+    entrypointSha256: "d6eb7f880a3a5aa9bb4ed6e79229e8defcefc51884b22de41629b8f304bb5103",
+    manifestSha256: "b".repeat(64),
+    buildInfoSha256: "c".repeat(64),
+  };
+  const expected = {
+    files: {
+      "openclaw.mjs": { sha256: "a".repeat(64) },
+      "package.json": { sha256: identity.manifestSha256 },
+      "dist/build-info.json": { sha256: identity.buildInfoSha256 },
+    },
+  };
+  expect(bindSnapshotRuntimeIdentity(identity, expected)).toBeUndefined();
+  const runtime = { ...identity, entrypoint: "openclaw.mjs", entrypointSha256: "a".repeat(64) };
+  expect(bindSnapshotRuntimeIdentity(runtime, expected)).toMatchObject({
+    ...runtime,
+    payloadSha256: expect.any(String),
+  });
+  expect(() =>
+    bindSnapshotRuntimeIdentity({ ...runtime, entrypointSha256: "x".repeat(64) }, expected),
+  ).toThrow();
+  expect(() =>
+    bindSnapshotRuntimeIdentity({ ...runtime, entrypoint: "dist/unexpected.worker.js" }, expected),
+  ).toThrow();
+});
+
+it("retains a settled updater timeout before reading snapshot proof", () => {
+  const failure = Object.assign(new Error("Published updater timed out after settlement"), {
+    exitCode: 124,
+    command: "update",
+  });
+  let actual: unknown;
+  try {
+    assertSnapshotCleanupRefusal("/missing-snapshot-proof", undefined, failure);
+  } catch (error) {
+    actual = error;
+  }
+  expect(actual).toBe(failure);
+  expect(actual).toMatchObject({ exitCode: 124, command: "update" });
+});

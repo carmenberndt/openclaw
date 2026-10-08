@@ -110,6 +110,18 @@ export function observeSnapshotNativeBackups(sourcePath, onAcquisition) {
   };
 }
 
+export function bindSnapshotRuntimeIdentity(identity, expected) {
+  // NODE_OPTIONS reaches npm lifecycle scripts too. Only packaged application
+  // entrypoints belong to this observer; unknown dist workers still fail closed.
+  if (identity.entrypoint !== "openclaw.mjs" && !identity.entrypoint.startsWith("dist/")) {
+    return undefined;
+  }
+  assert.equal(identity.entrypointSha256, expected.files[identity.entrypoint]?.sha256);
+  assert.equal(identity.manifestSha256, expected.files["package.json"]?.sha256);
+  assert.equal(identity.buildInfoSha256, expected.files["dist/build-info.json"]?.sha256);
+  return { ...identity, payloadSha256: hash(JSON.stringify(expected)) };
+}
+
 function installFault() {
   const artifacts = process.env.OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT;
   if (!artifacts || !fs.existsSync(path.join(artifacts, fixtureName))) {
@@ -118,7 +130,7 @@ function installFault() {
   assert.equal(process.platform, "linux");
   assert(fs.existsSync("/.dockerenv"), "Snapshot fault injection requires disposable Docker state");
   const fixture = readJson(path.join(artifacts, fixtureName));
-  const identity = processIdentity(process.argv[1]);
+  let identity = processIdentity(process.argv[1]);
   if (!identity) {
     return;
   }
@@ -132,10 +144,10 @@ function installFault() {
     return;
   }
   const expected = readJson(path.join(artifacts, "snapshot-cleanup-candidate-identity.json"));
-  assert.equal(identity.entrypointSha256, expected.files[identity.entrypoint]?.sha256);
-  assert.equal(identity.manifestSha256, expected.files["package.json"]?.sha256);
-  assert.equal(identity.buildInfoSha256, expected.files["dist/build-info.json"]?.sha256);
-  identity.payloadSha256 = hash(JSON.stringify(expected));
+  identity = bindSnapshotRuntimeIdentity(identity, expected);
+  if (!identity) {
+    return;
+  }
   if (isMainThread && role === "doctor") {
     assertWorkerCellPackageIdentity(readWorkerCellPackageIdentity(identity.root), expected);
     writeJson(path.join(artifacts, "snapshot-cleanup-doctor-" + process.pid + ".json"), {
@@ -404,7 +416,10 @@ export function writeSnapshotCleanupEvidence(artifacts) {
   );
 }
 
-export function assertSnapshotCleanupRefusal(artifacts, updateResult) {
+export function assertSnapshotCleanupRefusal(artifacts, updateResult, updateFailure) {
+  if (!updateResult) {
+    throw updateFailure ?? new Error("Published update did not settle before the fault proof");
+  }
   const fixture = readJson(path.join(artifacts, fixtureName));
   const driver = readJson(path.join(artifacts, "snapshot-cleanup-driver.json"));
   assert.equal(driver.identity.commit, fixture.baseline.commit);

@@ -522,9 +522,8 @@ process.exitCode = await runCancelableCommand(async (signal) => {
       if (updateFailure && hasUnjoinedWork(updateFailure)) {
         throw updateFailure;
       }
-      assert(update, "Published update did not settle before the fault proof");
       const { assertSnapshotCleanupRefusal } = await import("./snapshot-cleanup-refusal.mjs");
-      assertSnapshotCleanupRefusal(artifacts, update);
+      assertSnapshotCleanupRefusal(artifacts, update, updateFailure);
       writeJson("summary", {
         baseline: { spec: `openclaw@${driverVersion}`, version: driverVersion },
         candidate: { kind: "tarball", version: build.version },
