@@ -2,6 +2,7 @@ import { copyFileSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
 import {
   isSessionEntryDataSql,
   observeHostDataSql,
@@ -48,12 +49,20 @@ import * as voiceSessions from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
+import { captureGatewayDeviceRevocation } from "../../device-revocation.js";
+import { makeClient } from "../../server-broadcast.test-helpers.js";
+import { createDirectChatContext } from "../../server-chat.agent-events.test-helpers.js";
+import {
+  bindGatewayRequestHandlerMutationAuthority,
+  bindWebSocketRequestMutationAuthority,
+} from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
+import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
 import { SessionMutationAuthorizationChangedError } from "../../session-mutation-authorization-error.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { roleClient, rolePolicyConfig } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
-import { cleanupTalkConnection } from "../session-registry.js";
+import { cleanupTalkConnection, prepareTalkConnectionClose } from "../session-registry.js";
 import {
   completeTalkVoiceChange,
   readTalkVoiceSelection,
@@ -621,35 +630,74 @@ describe("voice creation authority", () => {
     },
   );
 
-  it("creates voice on an admitted chat without a caller-thread write transaction", async () => {
-    const fixture = configureDelegatedBrowserProvider(async () => browserSession);
-    ownedVoiceSessionKey = "main";
-    const source = openOpenClawAgentDatabase({ agentId: "main" });
-    const respond = vi.fn();
-    const transactions: string[] = [];
-    const statements = observeHostDataSql((sql, database) => {
-      if (database === source.db && /^\s*begin\s+immediate\b/i.test(sql)) {
-        transactions.push(sql);
+  it.each(["callback-absent", "worker"] as const)(
+    "creates voice on an admitted chat without a caller-thread write transaction (%s)",
+    async (authority) => {
+      const fixture = configureDelegatedBrowserProvider(async () => browserSession);
+      ownedVoiceSessionKey = "main";
+      const source = openOpenClawAgentDatabase({ agentId: "main" });
+      const respond = vi.fn();
+      const transactions: string[] = [];
+      const statements = observeHostDataSql((sql, database) => {
+        if (database === source.db && /^\s*begin\s+immediate\b/i.test(sql)) {
+          transactions.push(sql);
+        }
+      });
+      let releaseAuthority: (() => void) | undefined;
+      try {
+        const { client } = makeClient(fixture.client.connId, "operator", ["operator.admin"]);
+        const options: GatewayRequestHandlerOptions = {
+          req: { type: "req", id: "worker-voice", method: "talk.client.create" },
+          params: { sessionKey: "main", provider: "openai" },
+          isWebchatConnect: () => false,
+          respond,
+          context: createDirectChatContext({
+            getRuntimeConfig: fixture.context.getRuntimeConfig,
+            getClientConnIds: (filter) => new Set(!filter || filter(client) ? [client.connId] : []),
+            chatAbortControllers: fixture.context.chatAbortControllers,
+            broadcastToConnIds: fixture.context.broadcastToConnIds,
+          }),
+          client,
+        };
+        if (authority === "worker") {
+          const lifetime = captureGatewayDeviceRevocation(fixture.context, {}, () => true);
+          releaseAuthority = lifetime.release;
+          options.hasCurrentClientAuthority = lifetime.isCurrent;
+          const generation = new SharedGatewaySessionGenerationState({
+            current: undefined,
+            required: undefined,
+          });
+          bindWebSocketRequestMutationAuthority(options, client, generation.reader);
+          const admitted = resolveSessionMutationAuthorization({
+            method: options.req.method,
+            requestParams: options.params,
+            context: options.context,
+            client,
+          });
+          expect(admitted.error).toBeNull();
+          await createTalkClient(
+            bindGatewayRequestHandlerMutationAuthority(
+              options,
+              { ...options, sessionMutationAuthorization: admitted.authorization },
+              undefined,
+            ),
+          );
+        } else {
+          await invokeCreate(options);
+        }
+        expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(true);
+        ownedVoiceSessionId = respond.mock.lastCall?.[1].voiceSessionId;
+        expect(transactions).toEqual([]);
+        expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
+        expect(clientVoiceSessionTesting.readRecord("main", ownedVoiceSessionId!)?.status).toBe(
+          "open",
+        );
+      } finally {
+        releaseAuthority?.();
+        statements.restore();
       }
-    });
-    try {
-      await invokeCreate({
-        params: { sessionKey: "main", provider: "openai" },
-        respond,
-        context: fixture.context,
-        client: fixture.client,
-      } as never);
-      expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(true);
-      ownedVoiceSessionId = respond.mock.lastCall?.[1].voiceSessionId;
-      expect(transactions).toEqual([]);
-      expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
-      expect(clientVoiceSessionTesting.readRecord("main", ownedVoiceSessionId!)?.status).toBe(
-        "open",
-      );
-    } finally {
-      statements.restore();
-    }
-  });
+    },
+  );
 
   registerClientCreateEnsureTests({
     tempDir: () => tempDir,
@@ -662,6 +710,144 @@ describe("voice creation authority", () => {
     observeAdmission: (observer) => {
       observeAdmission = observer;
     },
+  });
+
+  it.each(["startup-copy", "active-copy", "healthy"] as const)(
+    "keeps browser provider writes on their creator source (%s)",
+    async (phase) => {
+      let providerRequest: BrowserRequest | undefined;
+      const fixture = configureDelegatedBrowserProvider(async (request) => {
+        providerRequest = request;
+        return browserSession;
+      });
+      const voiceSessionId = "browser-creator-source";
+      const sourcePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
+      const displacedPath = `${sourcePath}.creator`;
+      let replacementBytes: Buffer | undefined;
+      const replaceSource = async () => {
+        await closeOpenClawAgentDatabasesAsync(tempDir);
+        renameSync(sourcePath, displacedPath);
+        copyFileSync(displacedPath, sourcePath);
+        replacementBytes = readFileSync(sourcePath);
+        const copied = new DatabaseSync(sourcePath, { readOnly: true });
+        try {
+          expect(readVoiceSessionRecordInTransaction({ db: copied }, voiceSessionId)?.status).toBe(
+            "open",
+          );
+        } finally {
+          copied.close();
+        }
+      };
+      const createVoice = voiceSessions.createOrResumeClientVoiceSession;
+      const intercepted = vi
+        .spyOn(voiceSessions, "createOrResumeClientVoiceSession")
+        .mockImplementationOnce(async (...args) => {
+          const id = await createVoice(...args);
+          if (phase === "startup-copy") {
+            await replaceSource();
+          }
+          return id;
+        });
+      const respond = vi.fn();
+      try {
+        await invokeCreate({
+          params: { sessionKey, provider: "openai", voiceSessionId },
+          respond,
+          context: fixture.context,
+          client: fixture.client,
+        } as never);
+        expect(respond.mock.lastCall?.[0]).toBe(phase !== "startup-copy");
+        if (phase !== "startup-copy") {
+          ownedVoiceSessionId = voiceSessionId;
+          if (phase === "active-copy") {
+            await replaceSource();
+          }
+          providerRequest?.gatewayControl?.onTranscript?.("user", "Final creator transcript", true);
+          await closeTalkClientGatewayControlSession({
+            voiceSessionId,
+            sessionKey,
+            connId: fixture.client.connId,
+          }).catch((error: unknown) => {
+            if (phase === "healthy") {
+              throw error;
+            }
+          });
+        }
+        expect(fixture.cancelBrowserSession).toHaveBeenCalledOnce();
+        await closeOpenClawAgentDatabasesAsync(tempDir);
+        if (replacementBytes) {
+          expect(readFileSync(sourcePath)).toEqual(replacementBytes);
+        } else {
+          expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)).toMatchObject({
+            status: "closed",
+            hasUserTranscript: true,
+          });
+        }
+      } finally {
+        intercepted.mockRestore();
+      }
+    },
+  );
+
+  it("joins committed browser creation before the real Talk close decides logical state", async () => {
+    const fixture = configureDelegatedBrowserProvider(async () => browserSession);
+    const voiceSessionId = "browser-creation-close";
+    const committed = createDeferred();
+    const releaseCreation = createDeferred();
+    const providerClosing = createDeferred();
+    fixture.cancelBrowserSession.mockImplementation(async () => {
+      providerClosing.resolve();
+    });
+    const createVoice = voiceSessions.createOrResumeClientVoiceSession;
+    const intercepted = vi
+      .spyOn(voiceSessions, "createOrResumeClientVoiceSession")
+      .mockImplementationOnce(async (...args) => {
+        const id = await createVoice(...args);
+        committed.resolve();
+        await releaseCreation.promise;
+        return id;
+      });
+    const close = prepareTalkConnectionClose([fixture.client], fixture.context.logGateway);
+    const respond = vi.fn();
+    const creating = invokeCreate({
+      params: { sessionKey, provider: "openai", voiceSessionId },
+      respond,
+      context: fixture.context,
+      client: fixture.client,
+    } as never);
+    let closing: Promise<void> | undefined;
+    let closeFinished = false;
+    try {
+      await awaitGateBeforeSettlement(
+        committed.promise,
+        creating,
+        "Browser creation did not commit",
+      );
+      closing = close.drain().then(() => {
+        closeFinished = true;
+      });
+      await awaitGateBeforeSettlement(
+        providerClosing.promise,
+        closing,
+        "Provider close did not start",
+      );
+      const reader = voiceWriters.captureClientVoiceSessionWriter({ agentId: "main" });
+      try {
+        await reader.read(voiceSessionId);
+      } finally {
+        await reader.release();
+      }
+      expect(closeFinished).toBe(false);
+      releaseCreation.resolve();
+      await Promise.all([creating, closing]);
+      expect(respond.mock.lastCall?.[0]).toBe(false);
+      expect(fixture.cancelBrowserSession).toHaveBeenCalledOnce();
+      expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("closed");
+    } finally {
+      releaseCreation.resolve();
+      await Promise.allSettled([creating, closing, close.drain()]);
+      intercepted.mockRestore();
+    }
   });
 
   it.each(["identity", "label"] as const)(
@@ -831,11 +1017,14 @@ describe("voice creation authority", () => {
     }
   });
 
-  it.each(
-    [false, true].flatMap((receipt) => [false, true].map((revoked) => ({ receipt, revoked }))),
-  )(
-    "retains a replacement source SDK guard at native commit (revoked=$revoked, receipt=$receipt)",
-    async ({ revoked, receipt }) => {
+  it.each([
+    ...[false, true].flatMap((receipt) =>
+      [false, true].map((revoked) => ({ receipt, revoked, transport: false })),
+    ),
+    ...[false, true].map((revoked) => ({ receipt: false, revoked, transport: true })),
+  ])(
+    "retains a replacement source SDK guard at native commit (revoked=$revoked, receipt=$receipt) transport=$transport",
+    async ({ revoked, receipt, transport }) => {
       const createBrowserSession = vi.fn(async (request: BrowserRequest) => ({
         ...browserSession,
         voice: request.voice ?? "cove",
@@ -863,7 +1052,18 @@ describe("voice creation authority", () => {
           return createVoice(...args);
         });
       let nativeCommitGuard = false;
+      let inGrant = false;
+      observeAdmission = (_request, run) => {
+        const previous = inGrant;
+        inGrant = true;
+        try {
+          run();
+        } finally {
+          inGrant = previous;
+        }
+      };
       const assertSdkCurrent = () => {
+        expect(inGrant, "Replacement SDK reads must stay outside worker grants").toBe(false);
         expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
         if (
           replacementId &&
@@ -884,13 +1084,22 @@ describe("voice creation authority", () => {
           context: fixture.context,
           client: fixture.client,
           isWebchatConnect: () => false,
-          sessionMutationCommitGuard: receipt
-            ? captureGatewayToolReceiptAssertion(
-                composeSessionSourceAssertion([
-                  captureExternalSessionCommitGuard(assertSdkCurrent),
-                ]),
-              )
-            : assertSdkCurrent,
+          ...(transport
+            ? {
+                hasCurrentClientAuthority: () => {
+                  assertSdkCurrent();
+                  return true;
+                },
+              }
+            : {
+                sessionMutationCommitGuard: receipt
+                  ? captureGatewayToolReceiptAssertion(
+                      composeSessionSourceAssertion([
+                        captureExternalSessionCommitGuard(assertSdkCurrent),
+                      ]),
+                    )
+                  : assertSdkCurrent,
+              }),
         } as never),
       );
       const changeId = fixture.context.broadcastToConnIds.mock.calls.find(
@@ -922,28 +1131,66 @@ describe("voice creation authority", () => {
     },
   );
 
-  it("retains a released SDK's SQLite-reading guard inside the native voice commit", async () => {
-    const fixture = configureDelegatedBrowserProvider(async () => browserSession);
-    const voiceSessionId = "voice-sdk-guard";
-    let committedGuard = false;
-    const respond = vi.fn();
-    await invokeCreate({
-      params: { sessionKey, provider: "openai", voiceSessionId },
-      respond,
-      context: fixture.context,
-      client: fixture.client,
-      sessionMutationCommitGuard: () => {
+  it.each([
+    { guard: "commit", revoked: false },
+    { guard: "commit", revoked: true },
+    { guard: "transport", revoked: false },
+    { guard: "transport", revoked: true },
+  ] as const)(
+    "retains a released SDK's SQLite-reading $guard guard inside the native voice commit (revoked=$revoked)",
+    async ({ guard, revoked }) => {
+      const fixture = configureDelegatedBrowserProvider(async () => browserSession);
+      const voiceSessionId = "voice-sdk-guard";
+      let committedGuard = false;
+      let inGrant = false;
+      observeAdmission = (_request, run) => {
+        inGrant = true;
+        try {
+          run();
+        } finally {
+          inGrant = false;
+        }
+      };
+      const readSdkCurrent = () => {
+        expect(inGrant, "Opaque SDK reads must stay outside worker grants").toBe(false);
         expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(sessionId);
         if (
           getOpenClawAgentDatabaseIfOpen({ agentId: "main" })?.db.isTransaction &&
           clientVoiceSessionTesting.readRecord("main", voiceSessionId)
         ) {
           committedGuard = true;
+          return !revoked;
         }
-      },
-    } as never);
-    ownedVoiceSessionId = voiceSessionId;
-    expect(respond.mock.lastCall?.[0]).toBe(true);
-    expect(committedGuard).toBe(true);
-  });
+        return true;
+      };
+      const respond = vi.fn();
+      await invokeCreate({
+        params: { sessionKey, provider: "openai", voiceSessionId },
+        respond,
+        context: fixture.context,
+        client: fixture.client,
+        ...(guard === "transport"
+          ? { hasCurrentClientAuthority: readSdkCurrent }
+          : {
+              sessionMutationCommitGuard: () => {
+                if (!readSdkCurrent()) {
+                  throw new Error("SDK authority revoked");
+                }
+              },
+            }),
+      } as never);
+      expect(committedGuard, respond.mock.lastCall?.[2]?.message).toBe(true);
+      expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(!revoked);
+      if (revoked) {
+        expect(respond.mock.lastCall?.[2]?.message).toContain(
+          guard === "transport" ? "Gateway requester authority changed" : "SDK authority revoked",
+        );
+        expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)).toBeUndefined();
+        expect(fixture.cancelBrowserSession).toHaveBeenCalledOnce();
+      } else {
+        ownedVoiceSessionId = voiceSessionId;
+        expect(clientVoiceSessionTesting.readRecord("main", voiceSessionId)?.status).toBe("open");
+      }
+    },
+  );
 });

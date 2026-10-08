@@ -556,17 +556,22 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
       const authorization: SessionMutationAuthorization = {
         ...(params.method === "sessions.move" ||
         params.method === "sessions.dispatch" ||
-        ((params.method === "talk.client.create" || params.method === "talk.client.toolCall") &&
+        ((params.method === "talk.client.create" ||
+          params.method === "talk.client.toolCall" ||
+          params.method === "talk.session.create") &&
           !authorizedTargets.some((target) => isIncognitoSessionKey(target.sessionKey)))
           ? {
-              prepareWorkerGrant: () =>
+              prepareWorkerGrant: (transactionSource) =>
                 prepareSessionSharingWorkerGrant({
                   targets: authorizedTargets,
                   request: params,
                   sourceConfig: getCfg(),
+                  authorizesAgentRun,
                   transactionFacts:
                     params.method === "talk.client.create" ||
-                    params.method === "talk.client.toolCall",
+                    params.method === "talk.client.toolCall" ||
+                    params.method === "talk.session.create",
+                  transactionSource,
                   consume: (expected, cfg, prepared, profiles) =>
                     consumeSharing(
                       prepared,

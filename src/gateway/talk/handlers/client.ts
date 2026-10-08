@@ -7,7 +7,6 @@ import {
   validateTalkClientToolCallParams,
   validateTalkClientTranscriptParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
-import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
 import {
   prepareSessionSourceAuthority,
   releaseSessionSourceAuthorities,
@@ -41,7 +40,6 @@ import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
-import { SessionMutationAuthorizationChangedError } from "../../session-mutation-authorization-error.js";
 import { formatForLog } from "../../ws-log.js";
 import { startTalkRealtimeAgentConsult } from "../agent-consult.js";
 import { prepareTalkClientControlAuthority } from "../client-agent-consult.js";
@@ -53,6 +51,7 @@ import {
   ensureTalkRealtimeRelayVoiceSession,
   flushTalkRealtimeRelayVoiceWrites,
 } from "../relay/operations.js";
+import { talkRequestError } from "../request-error.js";
 import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
 import { prepareTalkSessionTarget, requirePreparedTalkSessionTarget } from "../session-target.js";
 import { unregisterTalkVoiceSession } from "../voice-selection.js";
@@ -147,8 +146,10 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             selectedVoiceSessionId =
               (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined) ?? inferred;
           }
-          assertStoreCurrent?.();
-          request.sessionMutationAuthorization?.assertCurrent();
+          if (!relaySessionId) {
+            assertStoreCurrent?.();
+            request.sessionMutationAuthorization?.assertCurrent();
+          }
           const voiceSessionId =
             selectedVoiceSessionId ??
             (await createOrResumeClientVoiceSession({
@@ -173,6 +174,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
               creation: resolveSandboxedSessionCreation(request.client, config),
               requester: borrowedRequester,
               source: request.sessionMutationAuthorization?.assertCurrent,
+              prepareWorkerGrant: request.sessionMutationAuthorization?.prepareWorkerGrant,
               assertCurrent: () => {
                 assertStoreCurrent?.();
                 readGatewayRequestMutationAuthority(request).assertPreparationCurrent();
@@ -187,6 +189,8 @@ export const talkClientHandlers: GatewayRequestHandlers = {
                   readSource,
                 }),
             });
+            assertStoreCurrent?.();
+            request.sessionMutationAuthorization?.assertCurrent();
             await ensureTalkRealtimeRelayVoiceSession({
               relaySessionId,
               connId,
@@ -246,7 +250,10 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         args: params.args ?? {},
         relaySessionId: normalizeOptionalString(params.relaySessionId),
         connId,
-        onRunStarted: async (runId, { assertWorkAdmissionCurrent, physicalSource }) => {
+        onRunStarted: async (
+          runId,
+          { assertWorkAdmissionCurrent, physicalSource, onRegistered },
+        ) => {
           const release = await registerClientVoiceConsultRun({
             agentId,
             sessionKey: params.sessionKey,
@@ -254,6 +261,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             runId,
             config: request.context.getRuntimeConfig(),
             physicalSource,
+            onRegistered,
             requester: readGatewayRequestMutationAuthority(request).assertCurrent,
             source: {
               storePath: target.storePath,
@@ -266,13 +274,16 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             },
           });
           try {
+            assertWorkAdmissionCurrent();
             request.sessionMutationAuthorization?.assertCurrent();
             if (confirmationGrant) {
               bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId });
             }
             return release;
           } catch (error) {
-            release();
+            if (!onRegistered) {
+              release();
+            }
             throw error;
           }
         },
@@ -400,20 +411,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         });
         respond(true, result, undefined);
       } catch (err) {
-        if (err instanceof SessionMutationAuthorizationChangedError) {
-          respond(false, undefined, err.error);
-          return;
-        }
-        respond(
-          false,
-          undefined,
-          errorShape(
-            err instanceof AgentSelectionRequiredError
-              ? ErrorCodes.INVALID_REQUEST
-              : ErrorCodes.UNAVAILABLE,
-            formatForLog(err),
-          ),
-        );
+        respond(false, undefined, talkRequestError(err));
       }
     },
   ),

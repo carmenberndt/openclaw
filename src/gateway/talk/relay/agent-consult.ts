@@ -4,7 +4,12 @@ import { registerClientVoiceConsultRun } from "../../../talk/client-voice-sessio
 import type { RealtimeVoiceAgentConsultRunner } from "../../../talk/provider-types.js";
 import { abortChatRunById } from "../../chat-abort.js";
 import type { TalkAgentConsultRequest } from "../client-agent-consult.types.js";
-import type { RelaySession } from "./state.js";
+import {
+  hasRelayAgentRunRegistrations,
+  type RelayAgentRun,
+  type RelayAgentRunRegistration,
+  type RelaySession,
+} from "./state.js";
 import { captureRelayVoiceSessionSource, ensureRelayVoiceSession } from "./voice.js";
 
 type RelayAgentConsultRunner = RealtimeVoiceAgentConsultRunner & {
@@ -33,18 +38,15 @@ export function bindTalkRealtimeRelayAgentConsult(
       return await runner(request);
     };
   const steer = runPrompt.steer;
+  const claimForCurrentOwner = (claim: "claimAppend" | "claimFailureAppend") => {
+    const current = isCurrent();
+    const claimed = runPrompt[claim]();
+    return current && claimed;
+  };
   const lifecycleMethods = {
     adoptCompletionClaims: () => runPrompt.adoptCompletionClaims(),
-    claimAppend: () => {
-      const current = isCurrent();
-      const claimed = runPrompt.claimAppend();
-      return current && claimed;
-    },
-    claimFailureAppend: () => {
-      const current = isCurrent();
-      const claimed = runPrompt.claimFailureAppend();
-      return current && claimed;
-    },
+    claimAppend: () => claimForCurrentOwner("claimAppend"),
+    claimFailureAppend: () => claimForCurrentOwner("claimFailureAppend"),
     revokeRequesterFinal: () => runPrompt.revokeRequesterFinal?.(),
     ...(steer
       ? {
@@ -71,21 +73,65 @@ export function createRelayAgentRunRegistration(
     registerVoice?: (
       assertCurrent: () => void,
       physicalSource: ClientVoiceSessionSource,
-    ) => Promise<() => void>;
-  }): Promise<() => void> {
+      onRegistered: (release: () => void) => void,
+    ) => Promise<void>;
+  }): Promise<RelayAgentRunRegistration> {
     const session = getRelaySession(params.relaySessionId, params.connId);
     const callId = params.callId?.trim();
-    let releaseVoice: (() => void) | undefined;
+    const previous = session.activeAgentRuns.get(params.runId);
+    const run: RelayAgentRun =
+      previous?.sessionKey === params.sessionKey
+        ? previous
+        : { runId: params.runId, sessionKey: params.sessionKey };
+    const chat = session.context.chatAbortControllers.get(params.runId);
+    let installed = false;
+    const ownsSlot = () =>
+      callId
+        ? session.activeAgentToolCalls.get(callId) === registration
+        : run.standalone === registration;
+    const isCurrent = () => session.activeAgentRuns.get(params.runId) === run && ownsSlot();
+    const canReleaseVoice = () =>
+      isCurrent() && !hasRelayAgentRunRegistrations(session, run, registration);
     const release = () => {
-      releaseVoice?.();
-      if (session.activeAgentRuns.get(params.runId) === params.sessionKey) {
-        session.activeAgentRuns.delete(params.runId);
+      if (!ownsSlot()) {
+        return;
       }
-      if (callId && session.activeAgentToolCalls.get(callId) === params.runId) {
+      if (callId) {
         session.activeAgentToolCalls.delete(callId);
+      } else {
+        delete run.standalone;
+      }
+      if (
+        session.activeAgentRuns.get(params.runId) === run &&
+        !hasRelayAgentRunRegistrations(session, run)
+      ) {
+        session.activeAgentRuns.delete(params.runId);
+        run.releaseVoice?.();
       }
     };
-    const assertCurrent = () => {
+    const registration: RelayAgentRunRegistration = {
+      run,
+      isCurrent,
+      release,
+      abortIfCurrent: () => {
+        const uninstalled =
+          !installed &&
+          !session.activeAgentRuns.has(params.runId) &&
+          (!callId || !session.activeAgentToolCalls.has(callId));
+        if (
+          (canReleaseVoice() || uninstalled) &&
+          chat &&
+          session.context.chatAbortControllers.get(params.runId) === chat
+        ) {
+          abortChatRunById(session.context, {
+            runId: params.runId,
+            sessionKey: params.sessionKey,
+            stopReason: "voice session binding failed",
+          });
+        }
+      },
+    };
+    const assertCallerCurrent = () => {
       params.assertCurrent?.();
       if (getRelaySession(params.relaySessionId, params.connId) !== session) {
         throw new Error("Realtime relay session changed during run registration");
@@ -97,18 +143,27 @@ export function createRelayAgentRunRegistration(
         throw new Error("Realtime provider cancelled the tool call before run registration");
       }
     };
+    const assertCurrent = () => {
+      assertCallerCurrent();
+      if (!isCurrent()) {
+        throw new Error("Realtime relay run registration changed while waiting");
+      }
+    };
     try {
       const source = captureRelayVoiceSessionSource(session);
       return await withClientVoiceSessionSettlement(
         async () => {
-          assertCurrent();
+          assertCallerCurrent();
           if (callId && !session.toolCalls.tryAdmit([callId])) {
             throw new Error("Realtime relay tool-call session limit exceeded");
           }
-          session.activeAgentRuns.set(params.runId, params.sessionKey);
+          session.activeAgentRuns.set(params.runId, run);
           if (callId) {
-            session.activeAgentToolCalls.set(callId, params.runId);
+            session.activeAgentToolCalls.set(callId, registration);
+          } else {
+            run.standalone = registration;
           }
+          installed = true;
           if (!(await ensureRelayVoiceSession(session))) {
             throw new Error("Realtime relay voice session could not be created for agent consult");
           }
@@ -116,29 +171,31 @@ export function createRelayAgentRunRegistration(
           const { agentId, sessionKey } = session.sessionTarget;
           const physicalSource = captureRelayVoiceSessionSource(session);
           physicalSource.assertCurrent();
-          releaseVoice = params.registerVoice
-            ? await params.registerVoice(assertCurrent, physicalSource)
-            : await registerClientVoiceConsultRun({
-                agentId,
-                sessionKey,
-                voiceSessionId: session.id,
-                runId: params.runId,
-                assertCurrent,
-                physicalSource,
-              });
+          const onRegistered = (releaseVoice: () => void) => {
+            run.releaseVoice = releaseVoice;
+          };
+          if (params.registerVoice) {
+            await params.registerVoice(assertCurrent, physicalSource, onRegistered);
+          } else {
+            await registerClientVoiceConsultRun({
+              agentId,
+              sessionKey,
+              voiceSessionId: session.id,
+              runId: params.runId,
+              assertCurrent,
+              physicalSource,
+              onRegistered,
+            });
+          }
           assertCurrent();
-          return release;
+          return registration;
         },
         undefined,
         source.settlementContext,
       );
     } catch (error) {
+      registration.abortIfCurrent();
       release();
-      abortChatRunById(session.context, {
-        runId: params.runId,
-        sessionKey: params.sessionKey,
-        stopReason: "voice session binding failed",
-      });
       throw error;
     }
   };

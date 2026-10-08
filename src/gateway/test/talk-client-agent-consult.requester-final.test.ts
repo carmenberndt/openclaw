@@ -82,8 +82,10 @@ function createRunner(isRunCurrent: (runId: string) => boolean = () => true) {
     },
     getVoiceSessionId: () => "voice-session",
     initialItems: [],
-    registerRun: vi.fn(),
-    isRunCurrent,
+    registerRun: vi.fn(async ({ runId }) => ({
+      release: vi.fn(),
+      isCurrent: () => isRunCurrent(runId),
+    })),
   });
 }
 

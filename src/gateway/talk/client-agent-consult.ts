@@ -34,6 +34,7 @@ import {
   bindAuthorizedClientVoiceConfirmation,
   observeClientVoiceConfirmationRun,
 } from "../../talk/client-voice-confirmation.js";
+import type { ClientVoiceSessionSource } from "../../talk/client-voice-session-source.js";
 import {
   assertClientVoiceSessionOpen,
   registerClientVoiceConsultRun,
@@ -198,14 +199,14 @@ export function createTalkClientAgentConsultRunner(params: {
   ownerConnId?: string;
   authority?: TalkAgentConsultAuthority;
   getVoiceSessionId: () => string | undefined;
+  getVoiceSessionSource?: () => ClientVoiceSessionSource | undefined;
   initialItems: Array<{ role: "user" | "assistant"; text: string }>;
   runIdPrefix?: string;
   surface?: string;
   registerRun?: (params: {
     runId: string;
     assertCurrent: () => void;
-  }) => void | (() => void) | Promise<void | (() => void)>;
-  isRunCurrent?: (runId: string) => boolean;
+  }) => Promise<{ release: () => void; isCurrent: () => boolean }>;
 }) {
   const { agentId, sessionKey, canonicalKey, storePath } = params.sessionTarget;
   const authority = params.authority ?? resolveTalkAgentConsultAuthority(undefined);
@@ -273,13 +274,21 @@ export function createTalkClientAgentConsultRunner(params: {
     }
     await ready?.();
     signal?.throwIfAborted();
+    const physicalSource = params.getVoiceSessionSource?.();
+    if (params.getVoiceSessionSource && !physicalSource) {
+      throw new Error("Realtime browser voice session is not ready for agent consult");
+    }
+    const assertConsultCurrent = () => {
+      assertCurrent?.();
+      physicalSource?.assertCurrent();
+    };
     // Readiness can outlive its physical browser owner. Recheck after that
     // suspension and keep this path synchronous until backend admission.
-    assertCurrent?.();
+    assertConsultCurrent();
     // Relays own admission before their lazy record registration. Browser callbacks
     // must validate the durable call before accepting a new run.
     if (!params.registerRun) {
-      assertClientVoiceSessionOpen({ agentId, sessionKey, voiceSessionId });
+      assertClientVoiceSessionOpen({ agentId, sessionKey, voiceSessionId }, physicalSource);
     }
     const confirmationGrant = parsedArgs.confirmationId
       ? authorizeClientVoiceConfirmation({
@@ -293,12 +302,12 @@ export function createTalkClientAgentConsultRunner(params: {
     let confirmationRetryContext: string | undefined;
     const getAdditionalSystemPrompt = () => confirmationRetryContext;
     const runtime = owner
-      ? createOwnedAgentRuntime(owner, assertCurrent, getAdditionalSystemPrompt)
-      : assertCurrent || source === "native-delegation" || confirmationGrant
+      ? createOwnedAgentRuntime(owner, assertConsultCurrent, getAdditionalSystemPrompt)
+      : assertCurrent || physicalSource || source === "native-delegation" || confirmationGrant
         ? createTalkClientAgentRuntime({
             config: params.config,
             ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
-            assertCurrent,
+            assertCurrent: assertConsultCurrent,
             getAdditionalSystemPrompt,
           })
         : getAgentRuntime();
@@ -333,9 +342,13 @@ export function createTalkClientAgentConsultRunner(params: {
           ...authority,
           abortSignal: signal,
           onRunStarted: async ({ runId, sessionId, timeoutMs }) => {
+            let registeredRun: { release: () => void; isCurrent: () => boolean } | undefined;
             const assertRegistrationCurrent = () => {
-              assertCurrent?.();
+              assertConsultCurrent();
               signal?.throwIfAborted();
+              if (registeredRun && !registeredRun.isCurrent()) {
+                throw new Error("The active Talk consult admission is no longer current");
+              }
               if (
                 owner &&
                 (promptOwner !== owner ||
@@ -350,10 +363,11 @@ export function createTalkClientAgentConsultRunner(params: {
             let releaseVoice: void | (() => void) = undefined;
             try {
               if (params.registerRun) {
-                releaseVoice = await params.registerRun({
+                registeredRun = await params.registerRun({
                   runId,
                   assertCurrent: assertRegistrationCurrent,
                 });
+                releaseVoice = registeredRun.release;
               } else {
                 releaseVoice = await registerClientVoiceConsultRun({
                   agentId,
@@ -361,6 +375,7 @@ export function createTalkClientAgentConsultRunner(params: {
                   voiceSessionId,
                   runId,
                   config: params.config,
+                  physicalSource,
                   assertCurrent: assertRegistrationCurrent,
                 });
               }
@@ -371,7 +386,7 @@ export function createTalkClientAgentConsultRunner(params: {
                 runId,
               });
               if (owner) {
-                assertCurrent?.();
+                assertConsultCurrent();
                 owner.identity = { runId, sessionId };
                 owner.completionClaim = prepareEmbeddedAgentRunCompletionClaim(sessionId, runId);
                 if (owner.requesterFinal) {
@@ -428,7 +443,7 @@ export function createTalkClientAgentConsultRunner(params: {
                       entry.lifecycleGeneration === generation &&
                       isAgentEventLifecycleGenerationCurrent(generation))) &&
                   (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
-                  (params.isRunCurrent?.(runId) ?? true);
+                  (registeredRun?.isCurrent() ?? true);
               }
               return {
                 cleanupBeforeRun: releaseVoice || undefined,

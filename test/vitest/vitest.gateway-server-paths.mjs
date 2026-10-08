@@ -11,7 +11,7 @@ export const gatewayPluginTestFiles = [
 
 // Native database consumers retain lifecycle cleanup within each forked process.
 export const gatewayDatabaseWorkerTestFiles = [
-  "src/gateway/agent-turn/agent-run-commentary-media.test.ts",
+  "src/gateway/agent-turn/agent-run-media.test.ts",
   "src/gateway/approval-fixture.test.ts",
   "src/gateway/auth-token-store-ref.test.ts",
   "src/gateway/board-http.test.ts",
@@ -249,7 +249,6 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-row-selection.test.ts",
   "src/gateway/session-sharing-committed-read.test.ts",
   "src/gateway/session-sharing-groups.test.ts",
-  "src/gateway/session-sharing-preparation.admission.test.ts",
   "src/gateway/session-sharing-preparation.creation-settlement.test.ts",
   "src/gateway/session-sharing-preparation.test.ts",
   "src/gateway/session-sharing.worker.test.ts",
@@ -261,6 +260,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-utils-store-lookup.freshness.test.ts",
   "src/gateway/session-utils-store-lookup.test.ts",
   "src/gateway/session-utils.agent-models.test.ts",
+  "src/gateway/session-utils.deleted-agent.test.ts",
   "src/gateway/session-utils.queued-collector-admission.test.ts",
   "src/gateway/session-utils.queued-collector-narrow-abort.test.ts",
   "src/gateway/session-utils.queued-collector-settlement.test.ts",
@@ -277,6 +277,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/skill-library-authoring.test.ts",
   "src/gateway/startup-local-cli-pairing.test.ts",
   "src/gateway/talk/client-authority.test.ts",
+  "src/gateway/talk/client-gateway-control.agent-consult.test.ts",
   "src/gateway/talk/client-spoken-confirmation.test.ts",
   "src/gateway/talk/handlers/client-native-actions.test.ts",
   "src/gateway/talk/handlers/client-consult-authority.test.ts",
@@ -351,6 +352,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/worker-environments/placement-read-projection.snapshot.test.ts",
   "src/gateway/worker-environments/placement-read-projection.worker.test.ts",
   "src/gateway/worker-environments/placement-reclaim-lifecycle.test.ts",
+  "src/gateway/worker-environments/placement-session-read.test.ts",
   "src/gateway/worker-environments/placement-session-retirement.test.ts",
   "src/gateway/worker-environments/placement-session-tool-operations.worker.test.ts",
   "src/gateway/worker-environments/placement-startup-concurrency.test.ts",

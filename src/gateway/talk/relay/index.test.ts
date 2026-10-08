@@ -13,6 +13,7 @@ import {
 import type { OpenClawConfig } from "../../../config/types.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
+import { drainGlobalSingletonLifecycleState } from "../../../shared/global-singleton.js";
 import { captureOpenClawStateDatabaseReadAdmission } from "../../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
 import {
@@ -33,7 +34,7 @@ import {
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { registerChatAbortController, type ChatAbortControllerEntry } from "../../chat-abort.js";
 import { createChatRunState } from "../../server-chat-state.js";
-import { cleanupTalkConnection } from "../session-registry.js";
+import { cleanupTalkConnection, prepareTalkConnectionClose } from "../session-registry.js";
 import { prepareTalkSessionTarget } from "../session-target.js";
 import {
   completeTalkVoiceChange,
@@ -49,7 +50,6 @@ import {
   ensureActiveRelayTurnId,
   makeRelayTransport,
   observeRelayTranscriptFailures,
-  prepareRelayTestRestart,
 } from "./index.test-support.js";
 import { resolveTalkRealtimeRelayPresentation } from "./issues.js";
 import {
@@ -66,7 +66,7 @@ import {
 } from "./operations.js";
 import { createTalkRealtimeRelaySession as createTalkRealtimeRelaySessionRaw } from "./session-create.js";
 import { usePersistentRelayTestState } from "./session-state.test-support.js";
-import { drainingRelaySessions, relaySessions } from "./state.js";
+import { drainingRelaySessions, relaySessions, type RelayAgentRun } from "./state.js";
 import { MAX_RELAY_TOOL_CALL_IDENTITIES } from "./tool-call-ledger.js";
 
 const activeRelaySessions = new Map<string, string>();
@@ -661,7 +661,7 @@ describe("talk realtime gateway relay", () => {
     expect(bridgeRequest?.agentId).toBe("main");
 
     const run = runAgentConsult({ prompt: "late consult", signal: AbortSignal.timeout(1_000) });
-    const replacement = { ...original, activeAgentRuns: new Map<string, string>() };
+    const replacement = { ...original, activeAgentRuns: new Map<string, RelayAgentRun>() };
     relaySessions.set(session.relaySessionId, replacement);
     try {
       await expect(run).rejects.toThrow("Realtime gateway-relay session is closed");
@@ -2889,18 +2889,15 @@ describe("talk realtime gateway relay", () => {
         context: { broadcastToConnIds: vi.fn(), logGateway } as never,
         connId: "conn-relay-drain",
         provider,
-        providerConfig: {},
-        instructions: "brief",
-        tools: [],
       });
       await ensureTalkRealtimeRelayVoiceSession({
         relaySessionId: session.relaySessionId,
         connId: "conn-relay-drain",
         sessionKey: "agent:main:main",
       });
+      const talkClose = prepareTalkConnectionClose([{ connId: "conn-relay-drain" }], logGateway);
       let closing: void | Promise<void> = undefined;
       let drain: Promise<void> | undefined;
-      const restart = prepareRelayTestRestart("conn-relay-drain", logGateway);
       try {
         if (start === "explicit-close") {
           closing = stopTalkRealtimeRelaySession({
@@ -2910,7 +2907,7 @@ describe("talk realtime gateway relay", () => {
         }
         cleanupTalkConnection("conn-relay-drain", logGateway);
         let drained = false;
-        drain = restart().then(() => {
+        drain = talkClose.drain().then(() => {
           drained = true;
         });
         await nextEventLoopTurn();
@@ -2919,13 +2916,15 @@ describe("talk realtime gateway relay", () => {
         await drain;
         expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)).toMatchObject({
           status: "closed",
+          hasUserTranscript: true,
         });
         expect(
           [...drainingRelaySessions].some((relay) => relay.id === session.relaySessionId),
         ).toBe(false);
+        await drainGlobalSingletonLifecycleState("restart");
       } finally {
         finishProvider.resolve();
-        await Promise.allSettled([closing, drain ?? restart()]);
+        await Promise.allSettled([closing, drain, talkClose.drain()]);
       }
     },
   );
@@ -4000,7 +3999,7 @@ describe("talk realtime gateway relay", () => {
               runId: "run-2",
               callId: replacementCallId,
             }),
-          ).resolves.toEqual(expect.any(Function));
+          ).resolves.toMatchObject({ run: { runId: "run-2" } });
         }
 
         cancellationAccepted.resolve();
@@ -4009,7 +4008,8 @@ describe("talk realtime gateway relay", () => {
         expect(relaySessions.has(session.relaySessionId)).toBe(true);
         if (replacementCallId) {
           expect(
-            relaySessions.get(session.relaySessionId)?.activeAgentToolCalls.get(replacementCallId),
+            relaySessions.get(session.relaySessionId)?.activeAgentToolCalls.get(replacementCallId)
+              ?.run.runId,
           ).toBe("run-2");
           await submitTalkRealtimeRelayToolResult({
             relaySessionId: session.relaySessionId,

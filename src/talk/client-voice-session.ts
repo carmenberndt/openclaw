@@ -43,6 +43,7 @@ import {
 import { lookupClientVoiceSessions } from "./client-voice-session-read.js";
 import {
   captureClientVoiceSessionSource,
+  matchesClientVoiceRunSource,
   type ClientVoiceSessionSource,
 } from "./client-voice-session-source.js";
 import {
@@ -204,17 +205,19 @@ export async function registerClientVoiceConsultRun(
     runId: string;
     config?: OpenClawConfig;
     physicalSource?: ClientVoiceSessionSource;
+    onRegistered?: (release: () => void) => void;
   },
 ): Promise<() => void> {
   const params = { ...input };
   const previous = voiceSessionByRunId.get(params.runId);
   const sameBinding =
-    previous?.binding.agentId === params.agentId &&
-    previous.binding.voiceSessionId === params.voiceSessionId &&
-    previous.binding.sessionKey === params.sessionKey;
+    previous !== undefined && matchesClientVoiceRunSource(previous, params, params.physicalSource);
   const writer = sameBinding
     ? runWithClientVoiceRunSettlement(previous, () =>
-        captureClientVoiceSessionWriter({ ...params, physicalSource: previous.source }),
+        captureClientVoiceSessionWriter({
+          ...params,
+          physicalSource: params.physicalSource ?? previous.source,
+        }),
       )
     : captureClientVoiceSessionWriter(params);
   const observeRelease = captureGatewayRootWorkReleaseObserver();
@@ -235,31 +238,28 @@ export async function registerClientVoiceConsultRun(
         now: Date.now(),
       };
       const publish = (record: ClientVoiceSessionRecord | undefined) => {
+        const source = writer.source;
         // A queued replay still commits, but cannot revive its retired run owner.
         const retired = sameBinding && previous.retired;
-        const current = voiceSessionByRunId.get(params.runId);
-        if (
-          !retired &&
-          (current?.binding.agentId !== params.agentId ||
-            current.binding.voiceSessionId !== params.voiceSessionId ||
-            current.binding.sessionKey !== params.sessionKey)
-        ) {
-          if (current) {
-            retireClientVoiceRun(params.runId, current);
+        let owner = retired ? undefined : voiceSessionByRunId.get(params.runId);
+        if (!retired && !matchesClientVoiceRunSource(owner, params, source)) {
+          if (owner) {
+            retireClientVoiceRun(params.runId, owner);
           }
-          const owner: ClientVoiceRun = {
+          owner = {
             binding: Object.freeze({
               agentId: params.agentId,
               voiceSessionId: params.voiceSessionId,
               sessionKey: params.sessionKey,
             }),
-            source: writer.source,
+            source,
             ...(observeRelease ? { settlement: accepted } : {}),
           };
           registered = owner;
           voiceSessionByRunId.set(params.runId, owner);
+          const published = owner;
           owner.stopObserving = observeRelease?.((reason) =>
-            retireClientVoiceRun(params.runId, owner, reason === "settled"),
+            retireClientVoiceRun(params.runId, published, reason === "settled"),
           );
         }
         // Replays re-arm a closed call's digest without replacing its accepted owner.
@@ -267,16 +267,21 @@ export async function registerClientVoiceConsultRun(
           mutationDigestDeliveryOwner.record({
             agentId: params.agentId,
             voiceSessionId: params.voiceSessionId,
-            context: { config: params.config, source: writer.source },
+            context: {
+              config: params.config,
+              source: owner?.source ?? (sameBinding ? previous.source : source),
+            },
           });
         }
         ensureToolEffectSubscription();
-        const owner = retired ? undefined : voiceSessionByRunId.get(params.runId);
-        return () => {
+        const release = () => {
           if (owner) {
             retireClientVoiceRun(params.runId, owner);
           }
         };
+        // Publish cleanup with the binding, before resource release can suspend.
+        params.onRegistered?.(release);
+        return release;
       };
       return params.requester || params.source
         ? mutateAuthorizedClientVoiceSession(params, writer, () => mutation, publish)
@@ -320,8 +325,13 @@ export function isClientVoiceSessionConfirmable(binding: ClientVoiceRunBinding):
 }
 
 /** Validate ownership and open state before starting a voice-bound consult. */
-export function assertClientVoiceSessionOpen(params: ClientVoiceRunBinding): "client" | "relay" {
-  const record = readOwnedVoiceSessionFacts(params);
+export function assertClientVoiceSessionOpen(
+  params: ClientVoiceRunBinding,
+  source?: ClientVoiceSessionSource,
+): "client" | "relay" {
+  source?.assertCurrent();
+  const record = readOwnedVoiceSessionFacts(params, source?.options);
+  source?.assertCurrent();
   if (record.status !== "open") {
     throw new Error("voice session is closed");
   }
@@ -478,11 +488,15 @@ function appendVoiceTranscript(
                 });
               }
             };
+            const nativeTranscript = isNativeSessionEntryRead(sessionTarget, normalized.agentId);
+            const transcriptStore = sessionTarget.storePath
+              ? resolveUnsuffixedSqliteTargetFromSessionStorePath(sessionTarget.storePath)
+              : undefined;
             const sharesVoiceStore =
-              !isNativeSessionEntryRead(sessionTarget, normalized.agentId) &&
-              (!sessionTarget.storePath ||
-                resolveUnsuffixedSqliteTargetFromSessionStorePath(sessionTarget.storePath).path ===
-                  writer.options.path);
+              !nativeTranscript &&
+              (!transcriptStore ||
+                ((transcriptStore.agentId || transcriptStore.shared) &&
+                  transcriptStore.path === writer.options.path));
             if (sharesVoiceStore) {
               // Entry preparation and failure reservation share their authoritative transaction.
               const prepared = await writer.mutate(
@@ -531,6 +545,9 @@ function appendVoiceTranscript(
                         );
                       }
                     },
+                    !nativeTranscript &&
+                      physicalSource?.key === writer.identity.key &&
+                      physicalSource.birthtime === writer.identity.birthtime,
                   );
                 },
               );
@@ -591,11 +608,7 @@ export function appendRelayVoiceTranscript(
 }
 
 const digestOptions = createClientVoiceMutationDigestDeliveryOptions(
-  (record) =>
-    [...voiceSessionByRunId.values()].some(
-      ({ binding }) =>
-        binding.agentId === record.agentId && binding.voiceSessionId === record.voiceSessionId,
-    ),
+  () => voiceSessionByRunId,
   captureClientVoiceSessionSettlement,
 );
 const mutationDigestDeliveryOwner = new ClientVoiceMutationDigestOwner(digestOptions);

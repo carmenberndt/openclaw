@@ -110,7 +110,6 @@ import {
   adoptOpenClawAgentDatabaseSchema,
   getOpenClawAgentDatabaseValidation,
   invalidateOpenClawAgentDatabaseValidation,
-  setOpenClawAgentDatabaseValidation,
   publishOpenClawAgentDatabaseSchema,
 } from "./openclaw-agent-db-validation-cache.js";
 import {
@@ -522,10 +521,9 @@ function* openOpenClawAgentDatabaseSteps(
     if (!isValidatedReopen) {
       assertCurrent(database);
       registerOpenClawAgentDatabase(
-        { agentId, path: pathname, env: options.env },
+        { agentId, path: pathname, env: options.env, admittedDb: db },
         registrationObserver,
       );
-      setOpenClawAgentDatabaseValidation(database);
     } else if (!reusedSchema) {
       publishOpenClawAgentDatabaseSchema(database);
     }
@@ -650,7 +648,6 @@ export function borrowOpenClawAgentDatabase(options: OpenClawAgentDatabaseOption
   return { db, release: retainAgentDatabase(db) };
 }
 
-/** Return whether the exact cached agent database pathname is still open. */
 export function isOpenClawAgentDatabaseOpen(pathname: string): boolean {
   return cache.databases.get(path.resolve(pathname))?.db.isOpen === true;
 }

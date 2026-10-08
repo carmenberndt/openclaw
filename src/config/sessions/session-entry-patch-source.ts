@@ -1,3 +1,4 @@
+import { isMainThread } from "node:worker_threads";
 import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
@@ -8,21 +9,18 @@ import {
   resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
+import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../paths.js";
 import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-exact-read.js";
-import { toDatabaseOptions, type ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
-import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import { toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import type { SqliteSessionEntrySnapshotPatchParams } from "./session-entry-patch.types.js";
 import { captureIncognitoSessionBinding } from "./session-incognito-binding.js";
 
 /** Bind entry preparation and commit checks to the original physical store before yielding. */
-export function captureSessionEntryPatchSource(
-  scope: ResolvedSqliteScope,
-  sessionKey: string,
-  captured?: CapturedSessionEntryReadSource,
-  retainedExecution?: OpenClawAgentDatabaseExecution,
-) {
+export function captureSessionEntryPatchSource(params: SqliteSessionEntrySnapshotPatchParams) {
+  const { resolved: scope, sessionKey, capturedSource: captured, options } = params;
+  const { retainedExecution } = options;
   // Queueing and either cold open must retain the same registration and lease owner.
   const resolved = {
     ...scope,
@@ -41,6 +39,30 @@ export function captureSessionEntryPatchSource(
     sessionKey,
     storePath: databasePath,
   });
+  const useWorker =
+    !incognitoBinding &&
+    isMainThread &&
+    options.workerGuard !== undefined &&
+    !options.shouldCommit &&
+    !options.assertCommitAllowed &&
+    supportsOpenClawAgentDatabaseExecution(databaseOptions);
+  const ensure = options.workerGuard?.ensureIdentitySource;
+  if (
+    ensure &&
+    (!useWorker ||
+      typeof params.update === "function" ||
+      params.update.kind !== "ensure-identity" ||
+      ensure.agentId !== resolved.agentId)
+  ) {
+    throw new Error("Transaction-local entry authority requires a closed worker ensure");
+  }
+  if (
+    ensure &&
+    (targetIdentity.key !== `file:${String(ensure.source.databaseIdentity)}` ||
+      targetIdentity.birthtime !== ensure.source.databaseBirthtime)
+  ) {
+    throw new Error("Transaction-local entry authority differs from its writer");
+  }
   const assertCapturedSource = (database?: OpenClawAgentDatabase) => {
     if (!captured) {
       return;
@@ -99,6 +121,10 @@ export function captureSessionEntryPatchSource(
     targetIdentity,
     incognito,
     incognitoBinding,
+    useWorker,
+    ensureIdentitySource: ensure
+      ? { source: ensure.source, agentId: ensure.agentId, sessionKey: ensure.sessionKey }
+      : undefined,
     assertCapturedSource,
     assertCurrent,
   };

@@ -7,12 +7,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { createDeferred, withinTest } from "../../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   loadSessionEntry,
   replaceSessionEntry,
+  replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../../../config/sessions/session-sqlite-target-paths.js";
 import * as sqliteTarget from "../../../config/sessions/session-sqlite-target.js";
@@ -21,10 +24,15 @@ import type { SqliteWorkerAdmissionRequest } from "../../../infra/sqlite-worker-
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db-lifecycle.js";
 import { openOpenClawAgentDatabase } from "../../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
+import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
+import { setUserProfileRole } from "../../../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import * as voiceWriters from "../../../talk/client-voice-session-write.js";
 import * as voiceSessions from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
+import * as sharingGrants from "../../session-sharing-worker-grant.js";
+import { rolePolicyConfig, sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import {
   browserSession,
   createDelegatedBrowserProviderFixture,
@@ -44,6 +52,168 @@ type EnsureHarness = {
 };
 
 export function registerClientCreateEnsureTests(harness: EnsureHarness) {
+  it.for(["missing", "idless"] as const)(
+    "refuses a changed %s entry while its transaction authority is being prepared",
+    async (kind, { signal }) => {
+      const key = `agent:main:entry-authority-${kind}`;
+      const scope = { agentId: "main", sessionKey: key };
+      const fixture = harness.configureProvider(async () => browserSession);
+      const profile = ensureProfileForEmail("voice-entry-owner@example.test");
+      setUserProfileRole(profile.id, "write");
+      Object.assign(fixture.client, sharingPolicyClient({ user: profile.id }));
+      const cfg = { ...rolePolicyConfig(), ...fixture.context.getRuntimeConfig() };
+      fixture.context.getRuntimeConfig = () => cfg;
+      if (kind === "idless") {
+        await replaceSessionEntry(scope, {
+          sessionId: "",
+          updatedAt: 1,
+          createdActor: { type: "human", source: "profile", id: "another-profile" },
+        });
+      }
+      const prepared = createDeferred();
+      const resume = createDeferred();
+      const prepare = sharingGrants.prepareSessionSharingWorkerGrant;
+      const preparation = vi
+        .spyOn(sharingGrants, "prepareSessionSharingWorkerGrant")
+        .mockImplementation(async (params) => {
+          const grant = await prepare(params);
+          if (params.transactionSource) {
+            prepared.resolve();
+            await resume.promise;
+          }
+          return grant;
+        });
+      const respond = vi.fn();
+      const pending = harness.invokeCreate({
+        params: { sessionKey: key, provider: "openai", voiceSessionId: "changed-entry-voice" },
+        respond,
+        context: fixture.context,
+        client: fixture.client,
+      } as never);
+      try {
+        await withinTest(
+          Promise.race([
+            prepared.promise,
+            pending.then(() => {
+              throw new Error("Creation finished before its authority wait");
+            }),
+          ]),
+          signal,
+        );
+        replaceSessionEntrySync(scope, {
+          sessionId: "",
+          updatedAt: 2,
+          visibility: "draft",
+          createdActor: { type: "human", source: "profile", id: "another-profile" },
+        });
+        resume.resolve();
+        await pending;
+        if (respond.mock.lastCall?.[0]) {
+          harness.ownVoice(respond.mock.lastCall[1].voiceSessionId, key);
+        }
+        expect(respond.mock.lastCall?.[0]).toBe(false);
+        expect(loadSessionEntry(scope)?.sessionId).toBe("");
+        expect(loadSessionEntry(scope)?.createdActor?.id).toBe("another-profile");
+        expect(clientVoiceSessionTesting.readRecord("main", "changed-entry-voice")).toBeUndefined();
+        expect(fixture.cancelBrowserSession).toHaveBeenCalledOnce();
+      } finally {
+        resume.resolve();
+        await pending;
+        preparation.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    { change: "role", phase: "publication", writer: "foreign" },
+    { change: "display", phase: "publication", writer: "foreign" },
+    { change: "role", phase: "preparation", writer: "owner" },
+  ] as const)(
+    "rechecks a $writer profile $change commit after entry $phase",
+    async ({ change, phase }) => {
+      const key = `agent:main:entry-profile-${change}-${phase}`;
+      const fixture = harness.configureProvider(async () => browserSession);
+      const profile = ensureProfileForEmail("voice-entry-profile@example.test");
+      setUserProfileRole(profile.id, "write");
+      Object.assign(fixture.client, sharingPolicyClient({ user: profile.id }));
+      const policy = rolePolicyConfig();
+      policy.gateway!.roles!.definitions.view!.agents = [];
+      const cfg = { ...policy, ...fixture.context.getRuntimeConfig() };
+      fixture.context.getRuntimeConfig = () => cfg;
+      const ensure = voiceWriters.ensureClientVoiceAgentSessionEntry;
+      let changed = false;
+      const changeProfile = () => {
+        if (phase === "preparation") {
+          setUserProfileRole(profile.id, "view");
+          changed = true;
+          return;
+        }
+        const peer = new DatabaseSync(resolveOpenClawStateSqlitePath());
+        try {
+          peer
+            .prepare(
+              change === "role"
+                ? "UPDATE user_profiles SET role = 'view' WHERE id = ?"
+                : "UPDATE user_profiles SET display_name = 'Changed display' WHERE id = ?",
+            )
+            .run(profile.id);
+          changed = true;
+        } finally {
+          peer.close();
+        }
+      };
+      const prepare = sharingGrants.prepareSessionSharingWorkerGrant;
+      const creation =
+        phase === "preparation"
+          ? vi
+              .spyOn(sharingGrants, "prepareSessionSharingWorkerGrant")
+              .mockImplementationOnce(async (params) => {
+                const grant = await prepare(params);
+                changeProfile();
+                return grant;
+              })
+          : vi
+              .spyOn(voiceWriters, "ensureClientVoiceAgentSessionEntry")
+              .mockImplementationOnce((params) =>
+                ensure({
+                  ...params,
+                  onCommittedSource: (source, entry) => {
+                    params.onCommittedSource?.(source, entry);
+                    changeProfile();
+                  },
+                }),
+              );
+      const respond = vi.fn();
+      try {
+        await harness.invokeCreate({
+          params: { sessionKey: key, provider: "openai", voiceSessionId: "profile-changed-voice" },
+          respond,
+          context: fixture.context,
+          client: fixture.client,
+        } as never);
+        expect(changed).toBe(true);
+        const entry = loadSessionEntry({ agentId: "main", sessionKey: key });
+        if (phase === "preparation") {
+          expect(entry).toBeUndefined();
+        } else {
+          expect(entry?.sessionId).toBeTruthy();
+        }
+        if (respond.mock.lastCall?.[0]) {
+          harness.ownVoice(respond.mock.lastCall[1].voiceSessionId, key);
+        }
+        expect(respond.mock.lastCall?.[0], respond.mock.lastCall?.[2]?.message).toBe(
+          change === "display",
+        );
+        expect(clientVoiceSessionTesting.readRecord("main", "profile-changed-voice")?.status).toBe(
+          change === "display" ? "open" : undefined,
+        );
+        expect(fixture.cancelBrowserSession).toHaveBeenCalledTimes(change === "role" ? 1 : 0);
+      } finally {
+        creation.mockRestore();
+      }
+    },
+  );
+
   it.each([
     "missing",
     "idless",

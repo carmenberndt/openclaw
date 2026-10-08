@@ -9,6 +9,7 @@ import { buildSessionCreationStamp } from "../config/sessions/session-entry-prov
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import type { SessionPendingInputAuthorityFacts } from "../config/sessions/session-pending-input-authority.js";
 import {
+  assertPreparedSessionSourceCurrent,
   prepareSessionSourceAuthority,
   composeSessionSourceAssertion,
   releaseSessionSourceAuthorities,
@@ -16,6 +17,7 @@ import {
   type SessionSourceAssertion,
   type SessionSourcePredicateFacts,
   type SessionSourceWriteGrant,
+  type SessionSourceTransactionGrant,
 } from "../config/sessions/session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
 import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
@@ -231,6 +233,9 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   deadlineAt?: number;
   requester?: SessionSourceAssertion;
   source?: SessionSourceAssertion;
+  prepareWorkerGrant?: (
+    target: Omit<SessionSourceTransactionGrant, "assertCurrent">,
+  ) => Promise<SessionSourceWriteGrant>;
   assertCurrent?: () => void;
   onCommitted?: (entry: InternalSessionEntry) => void;
   onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: InternalSessionEntry) => void;
@@ -300,11 +305,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
         const assertPreparationCurrent = () => {
           execution.assertCurrent();
           selected.assertCurrent();
-          if (requester.assertPreparedCurrent) {
-            requester.assertPreparedCurrent();
-          } else if (!requester.nativeSource) {
-            requester.assertCurrent();
-          }
+          assertPreparedSessionSourceCurrent(requester);
         };
         const { withOpenClawAgentDatabaseAsync, withOpenClawAgentDatabaseRuntimeFromExecution } =
           await import("../state/openclaw-agent-db.js");
@@ -316,6 +317,25 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
             throw new Error("Talk entry preparation omitted its physical source");
           }
           const canonicalKey = resolveSqliteSessionKey(params.sessionKey, agentId);
+          const readSource: CapturedSessionEntryReadSource = {
+            agentId: execution.agentId,
+            path: identity.nativeLocation,
+            databaseIdentity: identity.physicalIdentity,
+            databaseBirthtime: identity.birthtime,
+          };
+          const grant =
+            !requester.nativeSource && !requester.opaqueCommitGuard && requester.checks.length === 0
+              ? await params.prepareWorkerGrant?.({
+                  source: readSource,
+                  agentId,
+                  sessionKey: canonicalKey,
+                })
+              : undefined;
+          if (grant) {
+            resources.push(grant);
+          }
+          assertPreparationCurrent();
+          grant?.assertLifetimeCurrent();
           const { operation, fallbackEntry } = reduction();
           return complete(
             await applySessionEntryTargetOperation(
@@ -324,19 +344,21 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
                 env: selected.options.env,
                 storePath: selected.storePath,
                 target: { canonicalKey, storeKeys: collectSessionEntryLookupKeys(canonicalKey) },
-                readSource: {
-                  agentId: execution.agentId,
-                  path: identity.nativeLocation,
-                  databaseIdentity: identity.physicalIdentity,
-                  databaseBirthtime: identity.birthtime,
-                },
+                readSource,
               },
               operation,
               {
                 ...publication,
                 fallbackEntry,
                 retainedExecution: execution,
-                workerGuard: { source, assertCurrent: assertPreparationCurrent },
+                workerGuard: {
+                  source: grant?.transaction ? borrowedRequester : source,
+                  ensureIdentitySource: grant?.transaction,
+                  assertCurrent: () => {
+                    assertPreparationCurrent();
+                    grant?.assertLifetimeCurrent();
+                  },
+                },
               },
             ),
           );
@@ -539,6 +561,7 @@ export async function mutateAuthorizedClientVoiceSession<T>(
             assertSourceIdentityCurrent?.();
             writer.assertCurrent();
             params.assertCurrent?.();
+            assertPreparedSessionSourceCurrent(requester);
           };
           const assertNativeCurrent = (transaction?: OpenClawAgentDatabase) => {
             // An SDK guard need not check a source alias, even when it shares the writer's file.

@@ -511,7 +511,12 @@ export type SessionMutationAuthorization = {
   admittedTarget?: Readonly<{ agentId: string; sessionKey: string; sessionId: string }>;
   assertCurrent: () => void;
   /** Prepare captured agent-store reads before a shared-state worker takes its write lock. */
-  prepareWorkerGrant?: () => Promise<{
+  prepareWorkerGrant?: (
+    target?: Omit<
+      import("../../config/sessions/session-source-authority.js").SessionSourceTransactionGrant,
+      "assertCurrent"
+    >,
+  ) => Promise<{
     assertCurrent: () => void;
     assertLifetimeCurrent: () => void;
     release: () => void | Promise<void>;

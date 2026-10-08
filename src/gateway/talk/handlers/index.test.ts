@@ -97,9 +97,23 @@ const mocks = vi.hoisted(() => ({
       registerVoice,
       assertCurrent,
     }: {
-      registerVoice?: (assertCurrent: () => void) => Promise<() => void>;
+      registerVoice?: (
+        assertCurrent: () => void,
+        physicalSource: undefined,
+        onRegistered: (release: () => void) => void,
+      ) => Promise<void>;
       assertCurrent?: () => void;
-    }) => registerVoice?.(assertCurrent ?? (() => {})),
+    }) => {
+      let release = () => {};
+      await registerVoice?.(assertCurrent ?? (() => {}), undefined, (registeredRelease) => {
+        release = registeredRelease;
+      });
+      return {
+        release,
+        isCurrent: () => true,
+        abortIfCurrent: () => {},
+      };
+    },
   ),
   flushTalkRealtimeRelayVoiceWrites: vi.fn(async () => undefined),
   ensureTalkRealtimeRelayVoiceSession: vi.fn(),
@@ -123,7 +137,13 @@ const mocks = vi.hoisted(() => ({
   ensureClientVoiceAgentSessionEntry: vi.fn(async () => "session-main"),
   resolveClientVoiceAgentSessionId: vi.fn<() => string | undefined>(() => "session-main"),
   assertClientVoiceSessionOpen: vi.fn(),
-  registerClientVoiceConsultRun: vi.fn(() => () => {}),
+  registerClientVoiceConsultRun: vi.fn(
+    ({ onRegistered }: { onRegistered?: (release: () => void) => void }) => {
+      const release = () => {};
+      onRegistered?.(release);
+      return release;
+    },
+  ),
   resolveOpenClientVoiceSessionId: vi.fn(),
   consultRealtimeVoiceAgent: vi.fn(async (_params?: unknown) => ({ text: "agent answer" })),
   closeTalkClientGatewayControlSession: vi.fn(async () => false),
@@ -248,6 +268,13 @@ vi.mock("../../../talk/client-voice-session-write.js", async (importOriginal) =>
   return {
     ...actual,
     ensureClientVoiceAgentSessionEntry: mocks.ensureClientVoiceAgentSessionEntry,
+    // Creation is mocked here; expose its supplied source without acquiring a database writer.
+    captureClientVoiceSessionWriter: ({
+      physicalSource,
+    }: Parameters<typeof actual.captureClientVoiceSessionWriter>[0]) => ({
+      source: expectDefined(physicalSource, "Mocked voice creation requires its admitted source"),
+      release: () => {},
+    }),
   };
 });
 
@@ -3229,6 +3256,7 @@ describe("talk.client.create handler", () => {
       );
       expect(mocks.createOrResumeClientVoiceSession).toHaveBeenCalledWith(
         expect.objectContaining({ provider: "openai" }),
+        expect.objectContaining({ source: expect.any(Object), release: expect.any(Function) }),
       );
       expectRespondOk(respond, {
         provider: "openai",
@@ -3420,6 +3448,10 @@ describe("talk.client.create handler", () => {
     const consult = providerConsult({ prompt: "Check the release" });
     await started.promise;
 
+    const voiceWriter = expectRecordFields(
+      mockCallArg(mocks.createOrResumeClientVoiceSession, 0, 1),
+      { source: expect.any(Object) },
+    );
     expect(mocks.registerClientVoiceConsultRun).toHaveBeenCalledWith({
       agentId: "main",
       sessionKey: "main",
@@ -3427,6 +3459,7 @@ describe("talk.client.create handler", () => {
       runId: "talk-realtime-consult:gpt-live",
       config,
       assertCurrent: expect.any(Function),
+      physicalSource: voiceWriter.source,
     });
     expect(chatAbortControllers.get("talk-realtime-consult:gpt-live")).toMatchObject({
       sessionId: "session-main",

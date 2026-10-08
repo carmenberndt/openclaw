@@ -1,3 +1,5 @@
+import { copyFileSync, renameSync } from "node:fs";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import {
@@ -10,6 +12,8 @@ import {
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import {
   authorizeClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
@@ -19,6 +23,13 @@ import {
   noteClientVoiceConfirmationUtteranceForTest as noteClientVoiceConfirmationUtterance,
   resetClientVoiceConfirmationStateForTest,
 } from "../../talk/client-voice-confirmation.test-support.js";
+import { captureClientVoiceSessionSource } from "../../talk/client-voice-session-source.js";
+import { readVoiceSessionRecord } from "../../talk/client-voice-session-store.js";
+import { createOrResumeClientVoiceSession } from "../../talk/client-voice-session.js";
+import { clientVoiceSessionTesting } from "../../talk/client-voice-session.test-support.js";
+import { setTestEnvValue } from "../../test-utils/env.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 
 const { config, coreParams, deferred, mocks } = await vi.hoisted(
   () => import("./client-gateway-control.agent-consult.test-support.js"),
@@ -62,15 +73,17 @@ function createConsultRunner(
     },
     getVoiceSessionId: () => "voice-session",
     initialItems: [],
-    registerRun: vi.fn(),
+    registerRun: vi.fn(async () => ({ release: vi.fn(), isCurrent: () => true })),
     ...overrides,
   });
 }
 
 function createRunner(
-  registerRun = vi.fn(),
+  registerRun: NonNullable<
+    Parameters<typeof createTalkClientAgentConsultRunner>[0]["registerRun"]
+  > = vi.fn(async () => ({ release: vi.fn(), isCurrent: () => true })),
   authority: TalkAgentConsultAuthority = { senderIsOwner: false, toolsAllow: ["read"] },
-  options: { ownerConnId?: string; isRunCurrent?: (runId: string) => boolean } = {},
+  options: { ownerConnId?: string } = {},
 ) {
   return createConsultRunner({ registerRun, authority, ...options });
 }
@@ -159,7 +172,7 @@ describe("Talk client agent consult admission", () => {
 
   it("preserves full agent authority for administrator consults", async () => {
     await expect(
-      createRunner(vi.fn(), { senderIsOwner: true }).runPrompt({ prompt: "check" }),
+      createRunner(undefined, { senderIsOwner: true }).runPrompt({ prompt: "check" }),
     ).resolves.toEqual({ text: "done" });
 
     expect(mocks.consultRealtimeVoiceAgent).toHaveBeenCalledWith(
@@ -226,7 +239,7 @@ describe("Talk client agent consult admission", () => {
       const runner = createConsultRunner({
         context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
         ownerConnId: "connection-owner",
-        isRunCurrent,
+        registerRun: vi.fn(async () => ({ release: vi.fn(), isCurrent: isRunCurrent })),
       });
 
       const lifecycleRunner = runner[entrypoint];
@@ -262,7 +275,7 @@ describe("Talk client agent consult admission", () => {
       expect(lifecycleRunner.claimAppend()).toBe(true);
       expect(lifecycleRunner.claimAppend()).toBe(false);
       expect(chatAbortControllers.has("run-talk")).toBe(false);
-      expect(isRunCurrent).toHaveBeenCalledWith("run-talk");
+      expect(isRunCurrent).toHaveBeenCalled();
     },
   );
 
@@ -308,7 +321,6 @@ describe("Talk client agent consult admission", () => {
       context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       authority,
-      isRunCurrent: () => true,
     });
     runner.runPrompt.adoptCompletionClaims();
     const run = runner.runPrompt({ prompt: "first task" });
@@ -432,7 +444,6 @@ describe("Talk client agent consult admission", () => {
     const runner = createConsultRunner({
       context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
-      isRunCurrent: () => true,
     });
     runner.runPrompt.adoptCompletionClaims();
     const run = runner.runPrompt({ prompt: "first task" });
@@ -505,7 +516,6 @@ describe("Talk client agent consult admission", () => {
     });
     const runner = createConsultRunner({
       ownerConnId: "connection-owner",
-      isRunCurrent: () => true,
     });
     runner.runPrompt.adoptCompletionClaims();
     const run = runner.runPrompt({ prompt: "first task" });
@@ -549,7 +559,6 @@ describe("Talk client agent consult admission", () => {
     });
     const runner = createConsultRunner({
       ownerConnId: "connection-owner",
-      isRunCurrent: () => true,
     });
     runner.runPrompt.adoptCompletionClaims();
     const first = runner.runPrompt({ prompt: "first task" });
@@ -582,7 +591,7 @@ describe("Talk client agent consult admission", () => {
     const secondPublished = deferred<void>();
     const finishSecond = deferred<void>();
     const chatAbortControllers = new Map();
-    const registerRun = vi.fn();
+    const registerRun = vi.fn(async () => ({ release: vi.fn(), isCurrent: () => true }));
     const currentRun = { instanceId: "instance:current-owner", runId: "run-talk" };
     const secondHandle = createEmbeddedRunHandle({ runId: "run-talk" });
     const project = vi.fn((_overlay: ReplyToolAuthorityOverlay) => "current-authority");
@@ -644,7 +653,6 @@ describe("Talk client agent consult admission", () => {
       context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       registerRun,
-      isRunCurrent: () => true,
     });
     runner.runPrompt.adoptCompletionClaims();
     const first = runner.runPrompt({ prompt: "first task" });
@@ -690,10 +698,9 @@ describe("Talk client agent consult admission", () => {
     });
     const runnerOptions = {
       ownerConnId: "connection-owner",
-      isRunCurrent: () => true,
     };
-    const staleRunner = createRunner(vi.fn(), undefined, runnerOptions);
-    const currentRunner = createRunner(vi.fn(), undefined, runnerOptions);
+    const staleRunner = createRunner(undefined, undefined, runnerOptions);
+    const currentRunner = createRunner(undefined, undefined, runnerOptions);
     let staleCurrent = true;
     const staleRun = staleRunner.runOwnedArgs(
       { question: "stale task" },
@@ -767,7 +774,6 @@ describe("Talk client agent consult admission", () => {
     const runner = createConsultRunner({
       context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
-      isRunCurrent: () => true,
     });
     const readiness = vi.fn(() => ready.promise);
     const assertCurrent = vi.fn();
@@ -804,6 +810,90 @@ describe("Talk client agent consult admission", () => {
       await run.catch(() => undefined);
     }
   });
+
+  it.each(["state-switch", "file-replaced"] as const)(
+    "keeps browser consult on its published physical source (%s)",
+    async (change) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const target = {
+          agentId: "researcher",
+          sessionKey: "main",
+          voiceSessionId: "voice-session",
+          origin: "client" as const,
+        };
+        const originalEnv = { ...process.env };
+        const sourcePath = resolveOpenClawAgentSqlitePath(target);
+        const otherState = path.join(path.dirname(sourcePath), "other-state");
+        await createOrResumeClientVoiceSession(target);
+        const source = captureClientVoiceSessionSource(target.agentId);
+        if (change === "state-switch") {
+          setTestEnvValue("OPENCLAW_STATE_DIR", otherState);
+          await createOrResumeClientVoiceSession(target);
+          setTestEnvValue("OPENCLAW_STATE_DIR", state.stateDir);
+        }
+        const ready = deferred<void>();
+        let published = false;
+        const sourceOwner = {
+          getVoiceSessionSource: () => {
+            if (!published) {
+              throw new Error("Browser source has not been published");
+            }
+            return source;
+          },
+        };
+        const runner = createConsultRunner({
+          registerRun: undefined,
+          ...sourceOwner,
+        });
+        mocks.consultRealtimeVoiceAgent.mockImplementationOnce(async (params: ConsultParams) => {
+          if (change === "state-switch") {
+            setTestEnvValue("OPENCLAW_STATE_DIR", otherState);
+          }
+          await params.onRunStarted?.({
+            runId: "run-talk",
+            sessionId: "session-talk",
+            timeoutMs: 1,
+          });
+          await params.agentRuntime.runEmbeddedAgent(coreParams);
+          return { text: "done" };
+        });
+        const running = runner.runOwnedArgs(
+          { question: "Use this browser's store" },
+          undefined,
+          () => ready.promise,
+        );
+        try {
+          expect(mocks.consultRealtimeVoiceAgent).not.toHaveBeenCalled();
+          if (change === "file-replaced") {
+            await closeOpenClawAgentDatabasesAsync(state.stateDir);
+            renameSync(sourcePath, `${sourcePath}.original`);
+            copyFileSync(`${sourcePath}.original`, sourcePath);
+          }
+          published = true;
+          ready.resolve();
+          if (change === "file-replaced") {
+            await expect(running).rejects.toThrow();
+            expect(mocks.consultRealtimeVoiceAgent).not.toHaveBeenCalled();
+            expect(mocks.runEmbeddedAgentCore).not.toHaveBeenCalled();
+          } else {
+            await expect(running).resolves.toEqual({ text: "done" });
+            expect(
+              readVoiceSessionRecord(target.agentId, target.voiceSessionId, { env: originalEnv }),
+            ).toMatchObject({ consultRunIds: ["run-talk"] });
+            expect(readVoiceSessionRecord(target.agentId, target.voiceSessionId)).toMatchObject({
+              consultRunIds: [],
+            });
+          }
+        } finally {
+          ready.resolve();
+          await running.catch(() => undefined);
+          setTestEnvValue("OPENCLAW_STATE_DIR", state.stateDir);
+          clientVoiceSessionTesting.reset();
+          await cleanupSessionStateForTest({ stateDir: otherState });
+        }
+      });
+    },
+  );
 
   it("rechecks reusable browser ownership after yielding before backend admission", async () => {
     let current = true;
@@ -850,10 +940,13 @@ describe("Talk client agent consult admission", () => {
       current = false;
       return { instanceId: `instance:${runId}`, runId };
     });
-    const runner = createRunner(vi.fn(), undefined, {
-      ownerConnId: "connection-owner",
-      isRunCurrent: () => current,
-    });
+    const runner = createRunner(
+      vi.fn(async () => ({ release: vi.fn(), isCurrent: () => current })),
+      undefined,
+      {
+        ownerConnId: "connection-owner",
+      },
+    );
     runner.runPrompt.adoptCompletionClaims();
 
     await expect(runner.runPrompt({ prompt: "first task" })).rejects.toThrow(
@@ -984,7 +1077,7 @@ describe("Talk client agent consult admission", () => {
       await params.agentRuntime.runEmbeddedAgent(coreParams);
       return { text: "done" };
     });
-    const registerRun = vi.fn();
+    const registerRun = vi.fn(async () => ({ release: vi.fn(), isCurrent: () => true }));
 
     await expect(
       createRunner(registerRun).runArgs({ question: "check", confirmationId }),

@@ -175,20 +175,19 @@ export function createTalkRealtimeRelaySession(
       if (!getActiveRelay()) {
         throw new Error("Realtime gateway-relay session is closed");
       }
-      const release = await registerTalkRealtimeRelayAgentRun({
+      const registration = await registerTalkRealtimeRelayAgentRun({
         relaySessionId,
         connId: params.connId,
         sessionKey: canonicalKey,
         runId,
         assertCurrent,
       });
-      if (!getActiveRelay()) {
-        release();
+      if (!getActiveRelay() || !registration.isCurrent()) {
+        registration.release();
         throw new Error("Realtime gateway-relay session is closed");
       }
-      return release;
+      return registration;
     },
-    isRunCurrent: (runId) => getActiveRelay()?.activeAgentRuns.get(runId) === canonicalKey,
   });
   const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
     consultRunner.runPrompt,

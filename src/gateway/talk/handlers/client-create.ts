@@ -8,19 +8,22 @@ import {
   errorShape,
   validateTalkClientCreateParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
-import {
-  AgentSelectionRequiredError,
-  resolveAgentWorkspaceDir,
-} from "../../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir } from "../../../agents/agent-scope.js";
 import {
   composeSessionSourceAssertion,
+  releaseSessionSourceAuthorities,
   type SessionSourceWriteGrant,
 } from "../../../config/sessions/session-source-authority.js";
 import { toErrorObject } from "../../../infra/errors.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { assertSecretOwnerAvailable } from "../../../secrets/runtime-degraded-state.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../../talk/agent-consult-tool.js";
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-control-shared.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
+import {
+  captureClientVoiceSessionSource,
+  type ClientVoiceSessionSource,
+} from "../../../talk/client-voice-session-source.js";
 import {
   ensureClientVoiceAgentSessionEntry,
   captureClientVoiceSessionWriter,
@@ -45,13 +48,13 @@ import { readGatewayRequestMutationAuthority } from "../../server-methods/sessio
 import type { GatewayRequestHandler } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
-import { SessionMutationAuthorizationChangedError } from "../../session-sharing.js";
 import { formatForLog } from "../../ws-log.js";
 import { createTalkClientAgentConsultRunner } from "../client-agent-consult.js";
 import {
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
+import { talkRequestError } from "../request-error.js";
 import {
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
@@ -161,6 +164,10 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
     );
     replacement?.assertCurrent(target);
     const { agentId, sessionKey } = target;
+    const assertTargetCurrent = () => {
+      sessionMutationAuthorization?.assertCurrent();
+      replacement?.assertCurrent(target);
+    };
     const sessionTarget = { agentId, sessionKey: target.canonicalKey, storePath: target.storePath };
     assertSecretOwnerAvailable("capability", "talk:realtime");
     const resolution = resolveConfiguredRealtimeVoiceProvider({
@@ -194,15 +201,10 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       sessionKey: target.canonicalKey,
       warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
     });
-    sessionMutationAuthorization?.assertCurrent();
-    replacement?.assertCurrent(target);
+    assertTargetCurrent();
     if (resolution.provider.createBrowserSession) {
-      const initialItems = await readTalkRealtimeInitialItems(target, () => {
-        sessionMutationAuthorization?.assertCurrent();
-        replacement?.assertCurrent(target);
-      });
-      sessionMutationAuthorization?.assertCurrent();
-      replacement?.assertCurrent(target);
+      const initialItems = await readTalkRealtimeInitialItems(target, assertTargetCurrent);
+      assertTargetCurrent();
       const controlSource =
         providerCapabilities?.handlesAgentConsult === true ? "delegation" : "transcript";
       const tools =
@@ -232,24 +234,79 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           "Gateway-owned realtime sessions require a connected client",
         );
       }
+      let voiceSessionSource: ClientVoiceSessionSource | undefined;
+      let voiceCreation: Promise<string> | undefined;
+      let closing = false;
       let closingWriter: ClientVoiceSessionWriter | undefined;
       let closingFailure: { error: unknown } | undefined;
+      const awaitVoiceCreation = async () => {
+        try {
+          await voiceCreation;
+        } catch (error) {
+          // Acknowledged creation retains close custody even if later cleanup failed.
+          if (!logicalSessionCreated) {
+            throw error;
+          }
+        }
+      };
+      const requireVoiceSource = () => {
+        if (!voiceSessionSource) {
+          throw new Error("Realtime browser voice session is not ready for persistence");
+        }
+        return voiceSessionSource;
+      };
+      const withVoiceWriter = async <T>(
+        operation: (writer: ClientVoiceSessionWriter) => Promise<T>,
+      ): Promise<T> => {
+        const source = requireVoiceSource();
+        return withClientVoiceSessionSettlement(
+          async () => {
+            await awaitVoiceCreation();
+            if (closingFailure) {
+              throw closingFailure.error;
+            }
+            const writer =
+              closingWriter ??
+              captureClientVoiceSessionWriter({ agentId, physicalSource: requireVoiceSource() });
+            const retained = closing;
+            if (retained) {
+              closingWriter = writer;
+            }
+            const errors: unknown[] = [];
+            try {
+              return await operation(writer);
+            } catch (error) {
+              errors.push(error);
+              throw error;
+            } finally {
+              if (!retained) {
+                await releaseSessionSourceAuthorities([writer], errors);
+              }
+            }
+          },
+          undefined,
+          source.settlementContext,
+        );
+      };
       const closeLogicalSession = async () => {
         unregisterVoiceSession?.();
+        await awaitVoiceCreation();
         if (closingFailure) {
           throw closingFailure.error;
         }
         if (!logicalSessionCreated) {
           return;
         }
-        await closeClientVoiceSession(
-          {
-            agentId,
-            sessionKey,
-            voiceSessionId: activeVoiceSessionId!,
-            config: runtimeConfig,
-          },
-          closingWriter,
+        await withVoiceWriter((writer) =>
+          closeClientVoiceSession(
+            {
+              agentId,
+              sessionKey,
+              voiceSessionId: activeVoiceSessionId!,
+              config: runtimeConfig,
+            },
+            writer,
+          ),
         );
         if (ownerConnId) {
           forgetLegacyVoiceBinding(
@@ -266,6 +323,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
         ...(ownerConnId ? { ownerConnId } : {}),
         authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
         getVoiceSessionId: () => activeVoiceSessionId,
+        getVoiceSessionSource: () => (logicalSessionCreated ? voiceSessionSource : undefined),
         initialItems,
       });
       const gatewayControlOwner = ownsProvider
@@ -292,61 +350,73 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
             appendTranscript: ({ entryId, role, text, confirmation }) =>
               closingFailure
                 ? Promise.reject(toErrorObject(closingFailure.error, "Voice session close failed"))
-                : appendClientVoiceTranscript(
-                    {
-                      agentId,
-                      sessionKey,
-                      sessionTarget,
-                      voiceSessionId: activeVoiceSessionId!,
-                      entryId,
-                      role,
-                      text,
-                      confirmation,
-                      config: runtimeConfig,
-                    },
-                    closingWriter,
+                : withVoiceWriter((writer) =>
+                    appendClientVoiceTranscript(
+                      {
+                        agentId,
+                        sessionKey,
+                        sessionTarget,
+                        voiceSessionId: activeVoiceSessionId!,
+                        entryId,
+                        role,
+                        text,
+                        confirmation,
+                        config: runtimeConfig,
+                      },
+                      writer,
+                    ),
                   ),
-            flushTranscript: () =>
-              flushClientVoiceSessionWrites(
-                {
-                  agentId,
-                  voiceSessionId: activeVoiceSessionId!,
-                },
-                closingFailure ? null : closingWriter,
-              ),
+            flushTranscript: async () => {
+              const target = { agentId, voiceSessionId: activeVoiceSessionId! };
+              if (!voiceSessionSource) {
+                return flushClientVoiceSessionWrites(target, null);
+              }
+              try {
+                return await withVoiceWriter((writer) =>
+                  flushClientVoiceSessionWrites(target, writer),
+                );
+              } catch (error) {
+                if (!closing) {
+                  throw error;
+                }
+                closingFailure ??= { error };
+                await flushClientVoiceSessionWrites(target, null);
+              }
+            },
             closeLogicalSession,
             withCloseSettlement: (run) => {
+              closing = true;
               const close = async (admissionFailure?: { error: unknown }) => {
                 closingFailure = admissionFailure;
-                if (!closingFailure) {
-                  try {
-                    closingWriter = captureClientVoiceSessionWriter({ agentId });
-                  } catch (error) {
-                    closingFailure = { error };
-                  }
-                }
+                const errors: unknown[] = [];
                 try {
                   await run();
                   if (closingFailure) {
                     throw closingFailure.error;
                   }
                 } catch (error) {
-                  if (closingFailure && error !== closingFailure.error) {
-                    throw new AggregateError(
-                      [closingFailure.error, error],
-                      "Voice session close failed",
-                      { cause: error },
-                    );
-                  }
-                  throw error;
+                  const failure =
+                    closingFailure && error !== closingFailure.error
+                      ? new AggregateError(
+                          [closingFailure.error, error],
+                          "Voice session close failed",
+                          { cause: error },
+                        )
+                      : error;
+                  errors.push(failure);
+                  throw failure;
                 } finally {
                   const writer = closingWriter;
                   closingWriter = undefined;
                   closingFailure = undefined;
-                  await writer?.release();
+                  await releaseSessionSourceAuthorities(writer ? [writer] : [], errors);
                 }
               };
-              return withClientVoiceSessionSettlement(close, (error) => close({ error }));
+              return withClientVoiceSessionSettlement(
+                close,
+                (error) => close({ error }),
+                voiceSessionSource?.settlementContext,
+              );
             },
           })
         : undefined;
@@ -389,8 +459,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       };
       const assertCommitAllowed = () => {
         sessionMutationCommitGuard?.();
-        sessionMutationAuthorization?.assertCurrent();
-        replacement?.assertCurrent(target);
+        assertTargetCurrent();
         gatewayControlOwner?.assertOpen();
       };
       let session: Awaited<ReturnType<typeof resolution.provider.createBrowserSession>> | undefined;
@@ -447,6 +516,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
                     replacement?.source(target).assertCurrent,
                   ]),
                   source: sessionMutationAuthorization?.assertCurrent,
+                  prepareWorkerGrant: sessionMutationAuthorization?.prepareWorkerGrant,
                   assertCurrent: () => {
                     requester.assertPreparationCurrent();
                     gatewayControlOwner?.assertOpen();
@@ -463,6 +533,8 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
           replacement?.assertCurrent(target);
           gatewayControlOwner?.assertOpen();
+          const initialVoiceSource = captureClientVoiceSessionSource(agentId);
+          voiceSessionSource = initialVoiceSource;
           // Recovering 6h-abandoned calls (and retrying their digests) is not on the
           // start path; running it inline would delay use of time-sensitive provider
           // credentials behind slow channel sends. Fire it off the response path.
@@ -474,40 +546,78 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           }).catch((error: unknown) =>
             context.logGateway.warn(`talk voice session recovery failed: ${formatForLog(error)}`),
           );
-          const voiceSessionId = await createOrResumeClientVoiceSession({
-            agentId,
-            sessionKey,
-            provider: resolution.provider.id,
-            origin: "client",
-            // Deployed clients sent sessionKey before transcripts existed, so capability
-            // must be negotiated explicitly; declaring it turns the confirmation gate on.
-            transcriptCapable:
-              wantsGatewayControl || params.capabilities?.includes("voice-transcript") === true,
-            voiceSessionId: activeVoiceSessionId ?? requestedVoiceSessionId,
-            requester: requester.assertCurrent,
-            source: {
-              storePath: target.storePath,
-              prepareWorkerGrant: !replacement
-                ? sessionMutationAuthorization?.prepareWorkerGrant
-                : undefined,
-              retainWorkerGrant: (grant) => {
-                mutationGrant = grant;
-              },
-              assertCurrent: composeSessionSourceAssertion([
-                sessionMutationAuthorization?.assertCurrent,
-                replacement?.source(target).assertCurrent,
-              ]),
-            },
-            assertCurrent: () => {
-              requester.assertPreparationCurrent();
-              gatewayControlOwner?.assertOpen();
-              if (sessionEntryDeadlineAt !== undefined && Date.now() >= sessionEntryDeadlineAt) {
-                throw new Error("Realtime browser session expired during startup; try again");
-              }
-            },
-          });
-          activeVoiceSessionId = voiceSessionId;
-          logicalSessionCreated = true;
+          voiceCreation = withClientVoiceSessionSettlement(
+            () =>
+              Promise.resolve().then(async () => {
+                const writer = captureClientVoiceSessionWriter({
+                  agentId,
+                  physicalSource: initialVoiceSource,
+                });
+                const errors: unknown[] = [];
+                try {
+                  const voiceSessionId = await createOrResumeClientVoiceSession(
+                    {
+                      agentId,
+                      sessionKey,
+                      provider: resolution.provider.id,
+                      origin: "client",
+                      // Deployed clients sent sessionKey before transcripts existed, so capability
+                      // must be negotiated explicitly; declaring it turns the confirmation gate on.
+                      transcriptCapable:
+                        wantsGatewayControl ||
+                        params.capabilities?.includes("voice-transcript") === true,
+                      voiceSessionId: activeVoiceSessionId ?? requestedVoiceSessionId,
+                      requester: requester.assertCurrent,
+                      source: {
+                        storePath: target.storePath,
+                        prepareWorkerGrant: !replacement
+                          ? sessionMutationAuthorization?.prepareWorkerGrant
+                          : undefined,
+                        retainWorkerGrant: (grant) => {
+                          mutationGrant = grant;
+                        },
+                        assertCurrent: composeSessionSourceAssertion([
+                          sessionMutationAuthorization?.assertCurrent,
+                          replacement?.source(target).assertCurrent,
+                        ]),
+                      },
+                      assertCurrent: () => {
+                        requester.assertPreparationCurrent();
+                        gatewayControlOwner?.assertOpen();
+                        if (
+                          sessionEntryDeadlineAt !== undefined &&
+                          Date.now() >= sessionEntryDeadlineAt
+                        ) {
+                          throw new Error(
+                            "Realtime browser session expired during startup; try again",
+                          );
+                        }
+                      },
+                    },
+                    writer,
+                  );
+                  activeVoiceSessionId = voiceSessionId;
+                  logicalSessionCreated = true;
+                  voiceSessionSource = writer.source;
+                  return voiceSessionId;
+                } catch (error) {
+                  errors.push(error);
+                  if (!hasSqliteWorkerOutcomeUnknown(error)) {
+                    try {
+                      voiceSessionSource = writer.source;
+                    } catch {
+                      // Keep the original fence if the creator cannot certify its admitted file.
+                    }
+                  }
+                  throw error;
+                } finally {
+                  await releaseSessionSourceAuthorities([writer], errors);
+                }
+              }),
+            undefined,
+            initialVoiceSource.settlementContext,
+          );
+          const voiceSessionId = await voiceCreation;
           sessionMutationCommitGuard?.();
           if (mutationGrant) {
             mutationGrant.assertCurrent();
@@ -625,19 +735,6 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       `Realtime provider "${resolution.provider.id}" does not support client-owned realtime sessions`,
     );
   } catch (err) {
-    if (err instanceof SessionMutationAuthorizationChangedError) {
-      respond(false, undefined, err.error);
-      return;
-    }
-    respond(
-      false,
-      undefined,
-      errorShape(
-        err instanceof AgentSelectionRequiredError
-          ? ErrorCodes.INVALID_REQUEST
-          : ErrorCodes.UNAVAILABLE,
-        formatForLog(err),
-      ),
-    );
+    respond(false, undefined, talkRequestError(err));
   }
 };

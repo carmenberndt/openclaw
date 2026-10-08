@@ -29,6 +29,7 @@ import {
   withSessionEntryWorker,
   type SessionEntryWorkerPreparation,
 } from "./session-accessor.sqlite-replacement-worker.js";
+import type { SessionEntryCommitContext } from "./session-accessor.types.js";
 import type {
   SessionEntryPatchCommit,
   SessionEntryPatchCommitted,
@@ -37,6 +38,7 @@ import type {
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-authority.js";
 import {
   prepareSessionSourceAuthority,
   type PreparedSessionSourceAuthority,
@@ -65,6 +67,8 @@ export async function patchSessionEntryInWorker(params: {
     return held?.release?.();
   };
   let input: SessionEntryPatchCommit | SessionEntryPatchReduction | undefined = params.reduction;
+  const ensureIdentitySource = params.guard?.ensureIdentitySource;
+  let transactionFacts: SessionPendingInputAuthorityFacts | undefined;
   return await runSessionEntryWorkerOperation<
     SessionEntryPatchCommitted,
     { entry: SessionEntry | null; wrote: boolean }
@@ -84,7 +88,28 @@ export async function patchSessionEntryInWorker(params: {
       if (candidate.entry !== null) {
         params.guard?.assertCurrent?.();
         source?.assertCurrent();
+        if (ensureIdentitySource) {
+          if (!transactionFacts) {
+            throw new Error("Entry ensure omitted its transaction authority facts");
+          }
+          ensureIdentitySource.assertCurrent(transactionFacts);
+        }
       }
+    },
+    onTransactionFacts: (value) => {
+      if (
+        ensureIdentitySource &&
+        isRecord(value) &&
+        value.kind === "session-entry-patch-validated"
+      ) {
+        if (!isRecord(value.authority)) {
+          throw new Error("Entry ensure omitted its transaction authority facts");
+        }
+        // The paired kernel supplies the current preimage while its write lock remains held.
+        transactionFacts = value.authority as SessionPendingInputAuthorityFacts;
+        ensureIdentitySource.assertCurrent(transactionFacts);
+      }
+      return false;
     },
     prepareWorker: params.reduction
       ? undefined
@@ -122,7 +147,7 @@ export async function patchSessionEntryInWorker(params: {
       }
       return commit(() => worker.execute({ type: "session.entry.patch.commit", input: prepared }));
     },
-    async onCommitted(committed, published, identity, fileIdentity) {
+    async onCommitted(committed, published, identity, _context, fileIdentity) {
       try {
         if (committed.publication && committed.entry) {
           params.onCommitted?.(structuredClone(committed.entry));
@@ -148,7 +173,8 @@ export async function patchSessionEntryInWorker(params: {
         }
       }
       await releaseSource();
-      if (committed.entry !== null && params.guard?.source) {
+      // Closed ensure callers check fresh authority before their next effect; the receipt is a fact.
+      if (committed.entry !== null && params.guard?.source && !ensureIdentitySource) {
         source = await prepareSessionSourceAuthority(params.guard.source);
         source.assertCurrent();
       }
@@ -196,6 +222,7 @@ export async function runSessionEntryWorkerOperation<
     candidate: Candidate,
     published: ReturnType<ReturnType<typeof retainSessionEntryWorkerPublication>["settle"]>,
     identity: string,
+    context: SessionEntryCommitContext,
     fileIdentity: AgentDatabaseExecutionFileIdentity,
   ): Result | Promise<Result>;
 }): Promise<Result> {
@@ -224,7 +251,7 @@ export async function runSessionEntryWorkerOperation<
     params.database,
     params.databaseIdentity,
     params.assertCurrent,
-    async (execution, source) => {
+    async (execution, source, context) => {
       await execution.prepare(source);
       params.assertCurrent();
       params.assertPrepared?.();
@@ -281,6 +308,7 @@ export async function runSessionEntryWorkerOperation<
                     committed,
                     published,
                     identity.physicalIdentity,
+                    context,
                     identity,
                   ),
                 };

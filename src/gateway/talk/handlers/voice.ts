@@ -4,13 +4,11 @@ import {
   validateTalkVoiceSetParams,
   type TalkVoiceGetParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
-import {
-  captureExternalSessionCommitGuard,
-  composeSessionSourceAssertion,
-} from "../../../config/sessions/session-source-authority.js";
+import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { resolveClientVoiceRunBinding } from "../../../talk/client-voice-session.js";
 import { resolveRealtimeVoiceSelectionRun } from "../../../talk/voice-selection-control.js";
 import { respondUnavailable } from "../../server-methods/response.js";
+import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type {
   GatewayRequestHandlerOptions,
   GatewayRequestHandlers,
@@ -32,25 +30,32 @@ function resolveVoiceCaller(options: GatewayRequestHandlerOptions, target: TalkV
   if (!client || !connId) {
     throw new Error("Voice selection requires a connected client");
   }
+  const authorizeSession = (agentId: string, sessionKey: string) => {
+    const authorization = resolveSessionMutationAuthorization({
+      client,
+      context,
+      method: "talk.voice.set",
+      requestParams: { agentId, sessionKey },
+    });
+    if (authorization.error) {
+      throw new Error(authorization.error.message);
+    }
+    return authorization.authorization;
+  };
   const identity = client.internal?.agentRuntimeIdentity;
   const binding = identity
     ? resolveClientVoiceRunBinding(identity.operationalRunInstance.runId)
     : undefined;
   const assertCallerCurrent = composeSessionSourceAssertion(
     [
-      captureExternalSessionCommitGuard(options.sessionMutationCommitGuard),
+      readGatewayRequestMutationAuthority(options).assertCurrent,
       options.sessionMutationAuthorization?.assertCurrent,
     ],
     (assertSources) => {
-      assertSources();
-      if (
-        client.invalidated ||
-        client.connectionSignal?.aborted ||
-        options.signal?.aborted ||
-        options.hasCurrentClientAuthority?.() === false
-      ) {
+      if (client.invalidated || client.connectionSignal?.aborted || options.signal?.aborted) {
         throw new Error("Voice selection caller disconnected");
       }
+      assertSources();
       if (
         identity &&
         (context.validateAgentRuntimeApprovalAuthority?.(identity) !== true || !identity.sessionKey)
@@ -72,22 +77,14 @@ function resolveVoiceCaller(options: GatewayRequestHandlerOptions, target: TalkV
     ) {
       throw new Error("The agent may only select the voice of its own call");
     }
-    const authorization = resolveSessionMutationAuthorization({
-      client,
-      context,
-      method: "talk.voice.set",
-      requestParams: { agentId: managed.agentId, sessionKey: managed.sessionKey },
-    });
-    if (authorization.error) {
-      throw new Error(authorization.error.message);
-    }
+    const authorization = authorizeSession(managed.agentId, managed.sessionKey);
     return {
       kind: "managed" as const,
       managed,
       assertCurrent: () => {
         assertCallerCurrent();
         managed.assertCurrent();
-        authorization.authorization?.assertCurrent();
+        authorization?.assertCurrent();
       },
     };
   }
@@ -127,18 +124,10 @@ function resolveVoiceCaller(options: GatewayRequestHandlerOptions, target: TalkV
   }
   // Resolve the server-owned call before capturing session participation authority.
   assertTalkSessionStorageTarget(context.getRuntimeConfig(), session.sessionTarget);
-  const authorization = resolveSessionMutationAuthorization({
-    client,
-    context,
-    method: "talk.voice.set",
-    requestParams: {
-      agentId: session.sessionTarget.agentId,
-      sessionKey: session.sessionTarget.canonicalKey,
-    },
-  });
-  if (authorization.error) {
-    throw new Error(authorization.error.message);
-  }
+  const authorization = authorizeSession(
+    session.sessionTarget.agentId,
+    session.sessionTarget.canonicalKey,
+  );
   const assertRoutingCurrent = captureSessionMutationRouting(
     context.getRuntimeConfig(),
     () => new Error("Talk session storage target changed; retry the request"),
@@ -148,7 +137,7 @@ function resolveVoiceCaller(options: GatewayRequestHandlerOptions, target: TalkV
     session,
     connId,
     assertCurrent: composeSessionSourceAssertion(
-      [assertBrowserBindingCurrent, authorization.authorization?.assertCurrent],
+      [assertBrowserBindingCurrent, authorization?.assertCurrent],
       (assertSources) => {
         assertRoutingCurrent(context.getRuntimeConfig());
         assertSources();
@@ -183,25 +172,22 @@ export const talkVoiceHandlers: GatewayRequestHandlers = {
       const { params, respond, context } = options;
       try {
         const caller = resolveVoiceCaller(options, params);
-        if (caller.kind === "managed") {
-          const result = await caller.managed.changeVoice(params.voice, {
-            assertCurrent: caller.assertCurrent,
-            signal: options.signal,
-          });
-          respond(true, result, undefined);
-          return;
-        }
-        const result = await requestTalkVoiceChange({
-          ...caller,
-          voice: params.voice,
-          requesterConnId: caller.connId,
-          send: (event) =>
-            context.broadcastToConnIds(
-              "talk.voice.change",
-              event,
-              new Set([caller.session.connId]),
-            ),
-        });
+        const result = await (caller.kind === "managed"
+          ? caller.managed.changeVoice(params.voice, {
+              assertCurrent: caller.assertCurrent,
+              signal: options.signal,
+            })
+          : requestTalkVoiceChange({
+              ...caller,
+              voice: params.voice,
+              requesterConnId: caller.connId,
+              send: (event) =>
+                context.broadcastToConnIds(
+                  "talk.voice.change",
+                  event,
+                  new Set([caller.session.connId]),
+                ),
+            }));
         respond(true, result, undefined);
       } catch (error) {
         respondUnavailable(respond, error);

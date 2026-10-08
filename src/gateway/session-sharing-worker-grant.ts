@@ -18,6 +18,8 @@ import { retainCachedOpenClawAgentDatabaseReadOnly } from "../state/openclaw-age
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { prepareOpenClawAgentDatabaseRegistrySnapshotRead } from "../state/openclaw-agent-db-registry-listing.js";
 import { matchesAgentDatabaseReadCandidatePath } from "../state/openclaw-agent-db-resources.js";
+import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
+import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
 import {
   sessionMutationTargetChanged,
   prepareAuthorizedSessionMutationFacts,
@@ -27,6 +29,7 @@ import {
 } from "./session-sharing-authorization.js";
 import { captureSessionMutationRouting } from "./session-sharing-preparation.js";
 import {
+  prepareProjectedSessionSharing,
   prepareSessionSharingProfiles,
   type PreparedSessionSharingProfiles,
 } from "./session-sharing-read.js";
@@ -37,7 +40,9 @@ export async function prepareSessionSharingWorkerGrant(params: {
   targets: readonly AuthorizedSessionMutationTarget[];
   request: SessionMutationAuthorizationParams;
   sourceConfig: OpenClawConfig;
+  authorizesAgentRun: boolean;
   transactionFacts?: boolean;
+  transactionSource?: Omit<SessionSourceTransactionGrant, "assertCurrent">;
   consume: (
     expected: AuthorizedSessionMutationTarget,
     cfg: OpenClawConfig,
@@ -51,6 +56,9 @@ export async function prepareSessionSharingWorkerGrant(params: {
   }));
   const changed = (key = targets[0]?.sessionKey ?? "") =>
     sessionMutationTargetChanged(params.request.method, key);
+  if (params.transactionSource && (!params.transactionFacts || targets.length !== 1)) {
+    throw changed();
+  }
   const assertRouting = captureSessionMutationRouting(params.sourceConfig, changed);
   const talkAgentId = params.sourceConfig.talk?.agentId;
   let active = true;
@@ -95,11 +103,32 @@ export async function prepareSessionSharingWorkerGrant(params: {
           );
         };
       }
-      const target = expected.resolved;
-      const source = target?.readSource;
-      if (!target || !source) {
+      const route = expected.resolved ?? expected.absentTarget;
+      const provided = params.transactionSource;
+      if (
+        provided &&
+        (provided.agentId !== route?.agentId || provided.sessionKey !== route.canonicalKey)
+      ) {
         throw changed(expected.sessionKey);
       }
+      const source = provided?.source ?? expected.resolved?.readSource;
+      if (!route || !source) {
+        throw changed(expected.sessionKey);
+      }
+      const originalSource = expected.resolved?.readSource;
+      if (
+        originalSource &&
+        (source.agentId !== originalSource.agentId ||
+          source.databaseIdentity !== originalSource.databaseIdentity ||
+          source.databaseBirthtime !== originalSource.databaseBirthtime)
+      ) {
+        throw changed(expected.sessionKey);
+      }
+      const target = {
+        ...route,
+        storeKey: expected.resolved?.storeKey ?? route.canonicalKey,
+        readSource: source,
+      };
       const locators =
         typeof source.databaseIdentity === "string"
           ? captureSessionStoreReadCandidates(target.storePath)
@@ -160,12 +189,30 @@ export async function prepareSessionSharingWorkerGrant(params: {
             assertLifetimeCurrent();
             const prepared = prepareAuthorizedSessionMutationFacts({
               expected,
+              source,
               facts,
               targetChanged: () => changed(expected.sessionKey),
             });
+            const cfg = params.request.context.getRuntimeConfig();
+            if (params.transactionSource && params.authorizesAgentRun) {
+              const policyConfig = params.request.context.getCommittedRuntimeConfig?.() ?? cfg;
+              const sharing = prepareProjectedSessionSharing({
+                cfg: policyConfig,
+                client: params.request.client,
+                profiles,
+                isMember: (_target, id) => facts.members.some((member) => member.identityId === id),
+              });
+              const error = authorizeGatewaySessionCreation(
+                { cfg: policyConfig, client: params.request.client, agentId: target.agentId },
+                { policy: sharing.policy },
+              );
+              if (error) {
+                throw new SessionMutationAuthorizationChangedError(error);
+              }
+            }
             params.consume(
               expected,
-              params.request.context.getRuntimeConfig(),
+              cfg,
               {
                 ...prepared,
                 members: facts.members,

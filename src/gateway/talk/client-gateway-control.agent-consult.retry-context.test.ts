@@ -43,7 +43,7 @@ function createRunner() {
     authority: { senderIsOwner: false, toolsAllow: ["read"] },
     getVoiceSessionId: () => "voice-session",
     initialItems: [],
-    registerRun: vi.fn(),
+    registerRun: vi.fn(async () => ({ release: vi.fn(), isCurrent: () => true })),
   });
 }
 

@@ -1,7 +1,6 @@
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
 import type { ProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
-import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
 import type { createGatewayChatUserTurnController } from "./chat-user-turn-recorder.js";
 
 export type ChatSendInternalOptions = {
@@ -16,5 +15,4 @@ export type ChatSendInternalOptions = {
     assertCurrent: () => void;
     assertWorkAdmissionCurrent: () => void;
   }) => Promise<void | (() => void)>;
-  skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
 };

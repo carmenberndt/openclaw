@@ -1,4 +1,3 @@
-import { isMainThread } from "node:worker_threads";
 import { normalizeInternalTurnContext } from "../../auto-reply/internal-turn-source.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
@@ -13,7 +12,6 @@ import {
   runOpenClawAgentWriteTransaction,
   withOpenClawAgentDatabaseRuntime,
 } from "../../state/openclaw-agent-db.js";
-import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { deriveLastRoutePatch, deriveSessionMetaPatch } from "./metadata.js";
 import type {
   RecordInboundSessionMetaParams,
@@ -38,7 +36,6 @@ import {
   readSessionKeyBySessionIdInDatabase,
 } from "./session-accessor.sqlite-entry-read.js";
 import {
-  readExactSessionEntryRowValidated,
   readSessionEntryRow,
   readLifecycleTargetSnapshot,
   readSessionEntrySelectionSnapshot,
@@ -189,18 +186,20 @@ export function listSessionTranscriptInstances(
     (database) =>
       readWithCanonicalSessionReaderContinuation(database, continuation, () => {
         const currentEntries =
-          options.sessionId !== undefined
-            ? {
-                get: (sessionKey: string) =>
-                  readExactSessionEntryRowValidated(database, sessionKey, scope.projection)?.entry,
-              }
+          options.sessionId !== undefined || options.sessionIds !== undefined
+            ? undefined
             : new Map(
                 listSqliteSessionEntriesFromDatabase(database, resolved, {
                   ...scope,
                   clone: false,
                 }).map(({ sessionKey, entry }) => [sessionKey, entry]),
               );
-        return listTranscriptInstancesFromDatabase({ currentEntries, database, options });
+        return listTranscriptInstancesFromDatabase({
+          currentEntries,
+          database,
+          options,
+          entryProjection: scope.projection,
+        });
       }),
     toDatabaseOptions(resolved),
   );
@@ -393,14 +392,11 @@ async function patchSqliteSessionEntrySnapshot(
     targetIdentity,
     incognito,
     incognitoBinding,
+    useWorker,
+    ensureIdentitySource,
     assertCapturedSource,
     assertCurrent,
-  } = captureSessionEntryPatchSource(
-    params.resolved,
-    sessionKey,
-    captured,
-    options.retainedExecution,
-  );
+  } = captureSessionEntryPatchSource(params);
   const prepare = async (prepared: SqliteLifecycleTargetSnapshot) => {
     const existing = prepared[0]?.entry;
     const writeBase = existing ?? options.fallbackEntry;
@@ -466,12 +462,6 @@ async function patchSqliteSessionEntrySnapshot(
     return result.entry;
   }
   let wrote = false;
-  const useWorker =
-    isMainThread &&
-    options.workerGuard !== undefined &&
-    !options.shouldCommit &&
-    !options.assertCommitAllowed &&
-    supportsOpenClawAgentDatabaseExecution(databaseOptions);
   const workerPatch = (preparedSource?: PreparedSessionSourceAuthority) =>
     patchSessionEntryInWorker({
       database: { ...databaseOptions, path: databasePath },
@@ -500,6 +490,7 @@ async function patchSqliteSessionEntrySnapshot(
               shouldCommitIf: options.workerGuard?.shouldCommitIf,
               cliHistory: options.workerGuard?.cliHistory,
               conversation: options.workerGuard?.conversation,
+              ensureIdentitySource,
             },
       prepare,
       onCommitted: options.onCommitted,
@@ -523,6 +514,10 @@ async function patchSqliteSessionEntrySnapshot(
           )
             ? "same-store"
             : "cross-store";
+        if (ensureIdentitySource && locality !== "same-store") {
+          await source.release?.();
+          throw new Error("Transaction-local entry authority differs from its writer");
+        }
         if (locality === "same-store") {
           return workerPatch(source);
         }

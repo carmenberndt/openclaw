@@ -30,13 +30,14 @@ import * as voiceSessions from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
+import { registerChatAbortController } from "../../chat-abort.js";
 import type { ChatSendInternalOptions } from "../../server-methods/chat-send-options.js";
 import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
 import { createGatewayRequestContext } from "../../server-request-context.js";
 import { makeContextParams } from "../../server-request-context.test-support.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { createIdleRelayProvider } from "../relay/index.test-support.js";
-import { closeRelaySession } from "../relay/operations.js";
+import { closeRelaySession, registerTalkRealtimeRelayAgentRun } from "../relay/operations.js";
 import { createTalkRealtimeRelaySession } from "../relay/session-create.js";
 import { relaySessions } from "../relay/state.js";
 import { prepareTalkSessionTarget } from "../session-target.js";
@@ -211,6 +212,113 @@ describe("voice consult registration authority", () => {
       await cleanupSessionStateForTest({ stateDir: successor, rootPath: successor });
     }
   });
+
+  it.for(["registered", "failed"] as const)(
+    "hands off cleanup before stale delegated handler refusal (%s)",
+    async (successor, { signal }) => {
+      const context = createGatewayRequestContext(makeContextParams());
+      context.getRuntimeConfig = () => ({});
+      const client = { connId: "replacement-registration" };
+      const created = createTalkRealtimeRelaySession({
+        context,
+        connId: client.connId,
+        cfg: {},
+        provider: createIdleRelayProvider(),
+        providerConfig: {},
+        instructions: "brief",
+        tools: [],
+        controlSource: "transcript",
+        sessionTarget: prepareTalkSessionTarget({}, scope.sessionKey),
+      });
+      const relay = relaySessions.get(created.relaySessionId)!;
+      const runId = "queued-consult";
+      const registration = registerChatAbortController({
+        chatAbortControllers: context.chatAbortControllers,
+        runId,
+        sessionId: "original-consult-session",
+        sessionKey: scope.sessionKey,
+        timeoutMs: 60_000,
+      });
+      const held = createDeferred();
+      const resume = createDeferred();
+      const register = voiceSessions.registerClientVoiceConsultRun;
+      vi.spyOn(voiceSessions, "registerClientVoiceConsultRun").mockImplementationOnce(
+        async (params) => {
+          const release = await register(params);
+          held.resolve();
+          await resume.promise;
+          return release;
+        },
+      );
+      const params = {
+        sessionKey: scope.sessionKey,
+        relaySessionId: relay.id,
+        voiceSessionId: relay.id,
+        callId: "replacement-registration-call",
+        name: "openclaw_agent_consult",
+        args: { question: "Report fixture status" },
+      };
+      const authorized = resolveSessionMutationAuthorization({
+        method: "talk.client.toolCall",
+        requestParams: params,
+        context,
+        client: client as never,
+      });
+      const respond = vi.fn();
+      const pending = talkClientHandlers["talk.client.toolCall"]!({
+        req: { type: "req", id: "replacement-registration", method: "talk.client.toolCall" },
+        params,
+        context,
+        client,
+        respond,
+        sessionMutationAuthorization: authorized.authorization,
+      } as never);
+      try {
+        await withinTest(held.promise, signal);
+        const replacement = {
+          relaySessionId: relay.id,
+          connId: relay.connId,
+          sessionKey: scope.sessionKey,
+          runId,
+          callId: params.callId,
+        };
+        const current =
+          successor === "registered"
+            ? await registerTalkRealtimeRelayAgentRun(replacement)
+            : undefined;
+        if (successor === "failed") {
+          await expect(
+            registerTalkRealtimeRelayAgentRun({
+              ...replacement,
+              registerVoice: async () => {
+                throw new Error("replacement registration refused");
+              },
+            }),
+          ).rejects.toThrow("replacement registration refused");
+        }
+        resume.resolve();
+        await pending;
+        expect(respond.mock.lastCall?.[0]).toBe(false);
+        expect(chat.dispatched).not.toHaveBeenCalled();
+        if (current) {
+          expect(current.isCurrent()).toBe(true);
+          expect(voiceSessions.resolveClientVoiceRunBinding(runId)).toBeDefined();
+          expect(registration.controller.signal.aborted).toBe(false);
+          current.release();
+        } else {
+          expect(relay.activeAgentRuns.size).toBe(0);
+          expect(relay.activeAgentToolCalls.size).toBe(0);
+          expect(voiceSessions.resolveClientVoiceRunBinding(runId)).toBeUndefined();
+          expect(registration.controller.signal.aborted).toBe(true);
+        }
+      } finally {
+        resume.resolve();
+        await pending;
+        registration.cleanup();
+        await closeRelaySession(relay, "completed");
+      }
+    },
+  );
 
   it.each([false, true])(
     "reopens a cold tool-call target with its SDK guard classified (sdk=%s)",
@@ -466,6 +574,7 @@ describe("voice consult registration authority", () => {
       ]);
       expect(existsSync(targetPath)).toBe(false);
       let nativeAuthorityObserved = false;
+      let preparedAuthorityObserved = false;
       const schemaSql: string[] = [];
       sqlReads?.restore();
       sqlReads = undefined;
@@ -493,9 +602,16 @@ describe("voice consult registration authority", () => {
               nativeAuthorityObserved ||=
                 getOpenClawAgentDatabaseIfOpen(target)?.db.isTransaction === true;
             },
+            {
+              preparedCheck: (assertSource) => {
+                preparedAuthorityObserved ||= inWorkerGrant;
+                assertSource();
+              },
+            },
           ),
         });
         expect(schemaSql).toEqual([]);
+        expect(preparedAuthorityObserved).toBe(true);
         expect(nativeAuthorityObserved).toBe(true);
         expect(
           clientVoiceSessionTesting.readRecord(target.agentId, "cold-native-voice"),

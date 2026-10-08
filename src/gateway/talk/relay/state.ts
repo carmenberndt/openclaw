@@ -154,13 +154,7 @@ export class TalkRealtimeRelayOutputOwnership {
       return undefined;
     }
     const activeTurnId = this.activeTurnId();
-    if (
-      this.phase !== "cancelling" &&
-      activeTurnId &&
-      this.mode === "turn-bound" &&
-      claim &&
-      this.phase === "unowned"
-    ) {
+    if (activeTurnId && this.mode === "turn-bound" && claim && this.phase === "unowned") {
       this.cancelledTerminal = undefined;
       Object.assign(this, { phase: "owned" as const, turnId: activeTurnId });
     }
@@ -251,6 +245,20 @@ export class TalkRealtimeRelayOutputOwnership {
   }
 }
 
+export type RelayAgentRun = {
+  runId: string;
+  sessionKey: string;
+  standalone?: RelayAgentRunRegistration;
+  releaseVoice?: () => void;
+};
+
+export type RelayAgentRunRegistration = {
+  run: RelayAgentRun;
+  isCurrent: () => boolean;
+  release: () => void;
+  abortIfCurrent: () => void;
+};
+
 export type RelaySession = {
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
@@ -266,9 +274,9 @@ export type RelaySession = {
   sessionTarget: PreparedTalkSessionTarget;
   expiresAtMs: number;
   cleanupTimer: ReturnType<typeof setTimeout>;
-  activeAgentRuns: Map<string, string>;
+  activeAgentRuns: Map<string, RelayAgentRun>;
   provider: string;
-  activeAgentToolCalls: Map<string, string>;
+  activeAgentToolCalls: Map<string, RelayAgentRunRegistration>;
   toolCalls: RelayToolCallLedger;
   providerToolCallIds: Map<string, string>;
   relayToolCallIdsByProviderId: Map<string, string>;
@@ -353,10 +361,7 @@ export function adoptRelayProviderToolCallId(
   }
   const current = session.relayToolCallIdsByProviderId.get(providerCallId);
   if (current) {
-    if (session.toolCalls.isAgentCompleted(current)) {
-      return undefined;
-    }
-    return current;
+    return session.toolCalls.isAgentCompleted(current) ? undefined : current;
   }
   const relayCallId = session.toolCalls.isAgentCompleted(providerCallId)
     ? `relay-${randomUUID()}`
@@ -431,14 +436,28 @@ export function ensureRelayTurn(session: RelaySession): string {
   return turn.turnId;
 }
 
+/** The two existing indexes own one run with independent provider-call registrations. */
+export function hasRelayAgentRunRegistrations(
+  session: RelaySession,
+  run: RelayAgentRun,
+  except?: RelayAgentRunRegistration,
+): boolean {
+  return (
+    Boolean(run.standalone && run.standalone !== except) ||
+    [...session.activeAgentToolCalls.values()].some(
+      (registration) => registration.run === run && registration !== except,
+    )
+  );
+}
+
 export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
   for (const runId of session.activeAgentRuns.keys()) {
     if (!session.context.chatAbortControllers.has(runId)) {
       session.activeAgentRuns.delete(runId);
     }
   }
-  for (const [callId, runId] of session.activeAgentToolCalls) {
-    if (!session.activeAgentRuns.has(runId)) {
+  for (const [callId, { run }] of session.activeAgentToolCalls) {
+    if (session.activeAgentRuns.get(run.runId) !== run) {
       session.activeAgentToolCalls.delete(callId);
     }
   }
@@ -448,7 +467,7 @@ export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
 /** Omitting the abort reason releases relay correlation while accepted work continues. */
 export function retireRelayAgentRuns(session: RelaySession, reason?: string): void {
   if (reason !== undefined) {
-    for (const [runId, sessionKey] of session.activeAgentRuns) {
+    for (const [runId, { sessionKey }] of session.activeAgentRuns) {
       abortChatRunById(session.context, {
         runId,
         sessionKey,

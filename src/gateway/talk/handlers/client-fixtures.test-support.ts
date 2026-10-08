@@ -16,6 +16,7 @@ export function createTrustedInternalChatSendFixture(chatSend: (...args: unknown
       }) => Promise<void | (() => void)>;
     },
   ) => {
+    request.context.chatAbortControllers ??= new Map();
     let registration: Promise<void | (() => void)> | undefined;
     const result = chatSend(
       {

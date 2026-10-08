@@ -121,6 +121,7 @@ export function expectedSessionMutationTargetError(
 
 export function prepareAuthorizedSessionMutationFacts(params: {
   expected: AuthorizedSessionMutationTarget;
+  source?: import("../config/sessions/session-entry-read-source.types.js").CapturedSessionEntryReadSource;
   facts: {
     agentId: string;
     storePath: string;
@@ -147,7 +148,7 @@ export function prepareAuthorizedSessionMutationFacts(params: {
           storeKey: expected.absentTarget.canonicalKey,
         }
       : undefined;
-  const expectedReadSource = original?.readSource;
+  const expectedReadSource = original?.readSource ?? params.source;
   if (
     !expectedRoute ||
     facts.agentId !== expectedRoute.agentId ||

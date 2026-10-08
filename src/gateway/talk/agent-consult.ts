@@ -22,6 +22,7 @@ import { formatForLog } from "../ws-log.js";
 import { prepareTalkAgentConsultTranscript } from "./agent-consult-transcript.js";
 import { resolveTalkAgentConsultAuthority } from "./client-gateway-control.js";
 import { registerTalkRealtimeRelayAgentRun } from "./relay/operations.js";
+import type { RelayAgentRunRegistration } from "./relay/state.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 function terminalTalkChatSendAckError(result: unknown): ErrorShape | undefined {
@@ -50,6 +51,7 @@ export async function startTalkRealtimeAgentConsult(
       context: {
         assertWorkAdmissionCurrent: () => void;
         physicalSource?: ClientVoiceSessionSource;
+        onRegistered?: (release: () => void) => void;
       },
     ) => Promise<() => void>;
   },
@@ -66,6 +68,10 @@ export async function startTalkRealtimeAgentConsult(
     request.client?.connect?.scopes,
     request.client,
   );
+  const unavailable = (errorMessage: string) => ({
+    ok: false as const,
+    error: errorShape(ErrorCodes.UNAVAILABLE, errorMessage),
+  });
   return await new Promise<
     { ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }
   >((resolve) => {
@@ -121,13 +127,7 @@ export async function startTalkRealtimeAgentConsult(
         resolve(
           runId
             ? { ok: true, runId, idempotencyKey }
-            : {
-                ok: false,
-                error: errorShape(
-                  ErrorCodes.UNAVAILABLE,
-                  "chat.send did not acknowledge an active run",
-                ),
-              },
+            : unavailable("chat.send did not acknowledge an active run"),
         );
       },
     } satisfies GatewayRequestHandlerOptions;
@@ -137,40 +137,50 @@ export async function startTalkRealtimeAgentConsult(
       transcript: { display: false, excludeFromContext: true },
       prepareAssistantTranscriptMessage: prepareTalkAgentConsultTranscript,
       beforeDispatch: async ({ runId, assertCurrent, assertWorkAdmissionCurrent }) => {
-        let releaseRelay: (() => void) | undefined;
+        let relayRegistration: RelayAgentRunRegistration | undefined;
         let releaseClient: void | (() => void);
+        const hasRelay = Boolean(params.relaySessionId && params.connId);
+        const chat = request.context.chatAbortControllers.get(runId);
         const release = () => {
           releaseClient?.();
-          releaseRelay?.();
+          relayRegistration?.release();
         };
         try {
           assertCurrent();
           if (params.relaySessionId && params.connId) {
-            releaseRelay = await registerTalkRealtimeRelayAgentRun({
+            relayRegistration = await registerTalkRealtimeRelayAgentRun({
               relaySessionId: params.relaySessionId,
               connId: params.connId,
               sessionKey: params.sessionTarget.canonicalKey,
               runId,
               callId: params.callId,
               assertCurrent: assertWorkAdmissionCurrent,
-              registerVoice: (assertRelayCurrent, physicalSource) =>
-                params.onRunStarted(runId, {
+              registerVoice: async (assertRelayCurrent, physicalSource, onRegistered) => {
+                await params.onRunStarted(runId, {
                   assertWorkAdmissionCurrent: assertRelayCurrent,
                   physicalSource,
-                }),
+                  onRegistered,
+                });
+              },
             });
           } else {
             releaseClient = await params.onRunStarted(runId, { assertWorkAdmissionCurrent });
           }
           assertCurrent();
+          if (relayRegistration && !relayRegistration.isCurrent()) {
+            throw new Error("Realtime relay run registration changed while waiting");
+          }
           return release;
         } catch (error) {
+          relayRegistration?.abortIfCurrent();
+          if (!hasRelay && chat && request.context.chatAbortControllers.get(runId) === chat) {
+            abortChatRunById(request.context, {
+              runId,
+              sessionKey: params.sessionTarget.canonicalKey,
+              stopReason: "voice session binding failed",
+            });
+          }
           release();
-          abortChatRunById(request.context, {
-            runId,
-            sessionKey: params.sessionTarget.canonicalKey,
-            stopReason: "voice session binding failed",
-          });
           throw error;
         }
       },
@@ -178,13 +188,7 @@ export async function startTalkRealtimeAgentConsult(
     void Promise.resolve(chatSendResult).then(
       () => {
         if (!acknowledged) {
-          resolve({
-            ok: false,
-            error: errorShape(
-              ErrorCodes.UNAVAILABLE,
-              "chat.send did not return a realtime tool result",
-            ),
-          });
+          resolve(unavailable("chat.send did not return a realtime tool result"));
         }
       },
       (error: unknown) => {
@@ -194,10 +198,7 @@ export async function startTalkRealtimeAgentConsult(
           );
           return;
         }
-        resolve({
-          ok: false,
-          error: errorShape(ErrorCodes.UNAVAILABLE, formatForLog(error)),
-        });
+        resolve(unavailable(formatForLog(error)));
       },
     );
   });

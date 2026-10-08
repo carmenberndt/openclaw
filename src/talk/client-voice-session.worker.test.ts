@@ -12,15 +12,23 @@ import {
   observeSqliteReadSql,
 } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { readSessionTranscriptMessageEvents } from "../config/sessions/session-accessor.sqlite-active-events.js";
+import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { captureExternalSessionCommitGuard } from "../config/sessions/session-source-authority.js";
+import { prepareSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
+import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { setTestEnvValue } from "../test-utils/env.js";
 import { prepareClientVoiceSessionClose } from "./client-voice-session-lifecycle.js";
+import {
+  captureClientVoiceSessionSourceOptions,
+  createClientVoiceSessionSource,
+} from "./client-voice-session-source.js";
 import { readVoiceSessionRecord } from "./client-voice-session-store.js";
 import { captureClientVoiceSessionWriter } from "./client-voice-session-write.js";
 import { recordMutation, seedSession } from "./client-voice-session.fixture.test-support.js";
@@ -624,6 +632,89 @@ describe("client voice session worker contract", () => {
       unsubscribe();
     }
   });
+
+  it.each(["missing", "unrelated", "same-source"] as const)(
+    "resolves an ambiguous conversation selector before atomic append (%s)",
+    async (selection) => {
+      const target = { agentId: "main", sessionKey: "agent:main:selector" };
+      const options = {
+        ...captureClientVoiceSessionSourceOptions(
+          selection === "same-source" ? "main" : "physical",
+        ),
+        path: path.join(process.env.OPENCLAW_STATE_DIR!, "custom.sqlite"),
+      };
+      openOpenClawAgentDatabase(options);
+      const selector = path.join(path.dirname(options.path), "custom.json");
+      const suffix = path.join(path.dirname(options.path), "custom.main.sqlite");
+      const selectedPath = selection === "same-source" ? options.path : suffix;
+      const sessionId = "selected-conversation";
+      replaceSessionEntrySync({ ...target, storePath: selectedPath }, { sessionId, updatedAt: 1 });
+      if (selection === "unrelated") {
+        replaceSessionEntrySync(
+          { ...target, storePath: options.path },
+          { sessionId: "unrelated-conversation", updatedAt: 1 },
+        );
+      }
+      expect(await prepareSqliteTargetFromSessionStorePath(selector, target)).toMatchObject({
+        agentId: "main",
+        path: selectedPath,
+      });
+      const writer = captureClientVoiceSessionWriter({
+        agentId: target.agentId,
+        physicalSource: createClientVoiceSessionSource(
+          options,
+          readDatabasePathIdentitySync(options.path),
+        ),
+      });
+      const voiceSessionId = "selector-voice";
+      const published: Array<ReturnType<typeof readVoiceSessionRecord>> = [];
+      const unsubscribe = onSessionTranscriptUpdate((update) => {
+        if (update.sessionKey === target.sessionKey) {
+          published.push(readVoiceSessionRecord(options.agentId, voiceSessionId, options));
+        }
+      });
+      try {
+        await createOrResumeClientVoiceSession(
+          { ...target, voiceSessionId, origin: "client" },
+          writer,
+        );
+        await appendClientVoiceTranscript(
+          {
+            ...target,
+            sessionTarget: { sessionKey: target.sessionKey, storePath: selector },
+            voiceSessionId,
+            entryId: "selected-transcript",
+            role: "user",
+            text: "Keep the selected conversation",
+          },
+          writer,
+        );
+        expect(
+          readSessionTranscriptMessageEvents({ ...target, storePath: selectedPath, sessionId }),
+        ).toHaveLength(1);
+        if (selection === "same-source") {
+          expect(published).toEqual([
+            expect.objectContaining({ hasUserTranscript: true, transcriptFailureKeys: [] }),
+          ]);
+        } else {
+          expect(
+            readSessionTranscriptMessageEvents({
+              ...target,
+              storePath: options.path,
+              sessionId: "unrelated-conversation",
+            }),
+          ).toEqual([]);
+        }
+        expect(readVoiceSessionRecord(options.agentId, voiceSessionId, options)).toMatchObject({
+          hasUserTranscript: true,
+          transcriptFailureKeys: [],
+        });
+      } finally {
+        unsubscribe();
+        await writer.release();
+      }
+    },
+  );
 
   it("rolls back the transcript when voice ownership changes after reservation", async () => {
     const target = { agentId: "main", sessionKey: "agent:main:main" };

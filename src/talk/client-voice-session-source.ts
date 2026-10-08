@@ -20,6 +20,7 @@ import {
   assertClientVoiceSessionSettlementCurrent,
   captureClientVoiceSessionSettlementContext,
 } from "./client-voice-session-lifecycle.js";
+import type { ClientVoiceRunBinding } from "./client-voice-session-store.js";
 
 /** Voice metadata stays bound to its admitted physical store across provider and queue waits. */
 export function captureClientVoiceSessionSourceOptions(agentId: string) {
@@ -102,6 +103,22 @@ export function captureClientVoiceSessionSource(agentId: string) {
 }
 
 export type ClientVoiceSessionSource = ReturnType<typeof captureClientVoiceSessionSource>;
+
+/** An explicit source qualifies the run's store; an omitted source retains replay custody. */
+export function matchesClientVoiceRunSource(
+  owner: { binding: ClientVoiceRunBinding; source: ClientVoiceSessionSource } | undefined,
+  binding: ClientVoiceRunBinding,
+  source?: ClientVoiceSessionSource,
+): boolean {
+  return (
+    owner?.binding.agentId === binding.agentId &&
+    owner.binding.voiceSessionId === binding.voiceSessionId &&
+    owner.binding.sessionKey === binding.sessionKey &&
+    (!source ||
+      (owner.source.identity.key === source.identity.key &&
+        owner.source.identity.birthtime === source.identity.birthtime))
+  );
+}
 
 /** Foreign source checks retain their own readers; local predicates belong to the voice writer. */
 export async function prepareClientVoiceSessionSourceChecks(

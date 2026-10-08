@@ -136,23 +136,23 @@ export function readSessionStoreTargetResult(
 
 function captureSessionStoreCandidateInventory(storePath: string) {
   const target = resolveUnsuffixedSqliteTargetFromSessionStorePath(storePath);
-  const candidates = new Map<string, SessionStoreReadCandidate>();
-  const add = (candidate: SessionStoreReadCandidate) =>
-    candidates.set(JSON.stringify(candidate), candidate);
-  if (!target.agentId && !target.shared) {
-    add(captureSessionStoreReadCandidate(target.path, "sibling-family"));
+  const candidates = [captureSessionStoreReadCandidate(target.path)];
+  if (target.agentId || target.shared) {
+    return { candidates, familyListingComplete: false };
   }
-  add(captureSessionStoreReadCandidate(target.path));
+  candidates.unshift(captureSessionStoreReadCandidate(target.path, "sibling-family"));
   let familyListingComplete = false;
   try {
     for (const candidate of listSqliteTargetCandidatePathsForSessionStorePath(storePath)) {
-      add(captureSessionStoreReadCandidate(candidate));
+      if (candidate !== target.path) {
+        candidates.push(captureSessionStoreReadCandidate(candidate));
+      }
     }
     familyListingComplete = true;
   } catch {
     // The worker refuses an unreadable or changed target outside this captured family.
   }
-  return { candidates: [...candidates.values()], familyListingComplete };
+  return { candidates, familyListingComplete };
 }
 
 export function captureSessionStoreReadCandidates(storePath: string): SessionStoreReadCandidate[] {

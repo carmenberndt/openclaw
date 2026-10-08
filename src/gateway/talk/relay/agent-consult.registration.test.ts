@@ -10,6 +10,7 @@ import {
   captureClientVoiceSessionSettlement,
   prepareClientVoiceSessionClose,
 } from "../../../talk/client-voice-session-lifecycle.js";
+import type { ClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import { readVoiceSessionRecord } from "../../../talk/client-voice-session-store.js";
 import {
   ensureClientVoiceAgentSessionEntry,
@@ -20,20 +21,277 @@ import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.te
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
+import { registerChatAbortController } from "../../chat-abort.js";
 import { createGatewayRequestContext } from "../../server-request-context.js";
 import { makeContextParams } from "../../server-request-context.test-support.js";
 import { prepareTalkSessionTarget } from "../session-target.js";
 import { createIdleRelayProvider } from "./index.test-support.js";
-import { closeRelaySession, registerTalkRealtimeRelayAgentRun } from "./operations.js";
+import {
+  cancelTalkRealtimeRelayProviderToolCall,
+  closeRelaySession,
+  registerTalkRealtimeRelayAgentRun,
+} from "./operations.js";
+import { clearRelayAgentToolCall } from "./provider-results.js";
 import { createTalkRealtimeRelaySession } from "./session-create.js";
 import { usePersistentRelayTestState } from "./session-state.test-support.js";
-import { relaySessions } from "./state.js";
+import { adoptRelayProviderToolCallId, relaySessions } from "./state.js";
 import { enqueueRelayVoiceTranscript, ensureRelayVoiceSession } from "./voice.js";
 
 const activeRelaySessions = new Map<string, string>();
 usePersistentRelayTestState(activeRelaySessions);
 
 describe("relay consult registration authority", () => {
+  const createRegistrationFixture = () => {
+    const context = createGatewayRequestContext(makeContextParams());
+    context.getRuntimeConfig = () => ({});
+    const created = createTalkRealtimeRelaySession({
+      context,
+      connId: "registration-owner",
+      cfg: {},
+      provider: createIdleRelayProvider(),
+      providerConfig: {},
+      instructions: "brief",
+      tools: [],
+      controlSource: "transcript",
+      sessionTarget: prepareTalkSessionTarget({}, "agent:main:main"),
+    });
+    activeRelaySessions.set(created.relaySessionId, "registration-owner");
+    const relay = relaySessions.get(created.relaySessionId)!;
+    const target = {
+      relaySessionId: relay.id,
+      connId: relay.connId,
+      sessionKey: relay.sessionTarget.canonicalKey,
+      runId: "registration-run",
+    };
+    const chat = registerChatAbortController({
+      chatAbortControllers: context.chatAbortControllers,
+      runId: target.runId,
+      sessionId: "registration-session",
+      sessionKey: target.sessionKey,
+      timeoutMs: 60_000,
+    });
+    return { relay, target, chat };
+  };
+
+  it.for(["release", "failure"] as const)(
+    "preserves a newer registration with identical IDs after old %s",
+    async (phase, { signal }) => {
+      const { relay, target, chat } = createRegistrationFixture();
+      const callId = adoptRelayProviderToolCallId(relay, "registration-call")!;
+      const held = createDeferred();
+      const resume = createDeferred();
+      let rejectOld = false;
+      const old = registerTalkRealtimeRelayAgentRun({
+        ...target,
+        callId,
+        assertCurrent: () => {
+          if (rejectOld) {
+            throw new Error("old registration retired");
+          }
+        },
+        registerVoice: async (assertCurrent, physicalSource, onRegistered) => {
+          await voiceSessions.registerClientVoiceConsultRun({
+            agentId: "main",
+            sessionKey: target.sessionKey,
+            voiceSessionId: relay.id,
+            runId: target.runId,
+            assertCurrent,
+            physicalSource,
+            onRegistered,
+          });
+          held.resolve();
+          if (phase === "failure") {
+            await resume.promise;
+          }
+        },
+      });
+      const settled = old.then(
+        (release) => ({ release }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await withinTest(held.promise, signal);
+        if (phase === "release") {
+          await old;
+        }
+        const current = await registerTalkRealtimeRelayAgentRun({ ...target, callId });
+        rejectOld = phase === "failure";
+        resume.resolve();
+        const result = await settled;
+        if ("release" in result) {
+          result.release.release();
+        } else {
+          expect(result.error).toBeInstanceOf(Error);
+        }
+        expect(relay.activeAgentRuns.size).toBe(1);
+        expect(relay.activeAgentToolCalls.size).toBe(1);
+        expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeDefined();
+        expect(chat.controller.signal.aborted).toBe(false);
+        cancelTalkRealtimeRelayProviderToolCall(relay, "registration-call");
+        expect(chat.controller.signal.aborted).toBe(true);
+        current.release();
+      } finally {
+        resume.resolve();
+        await settled;
+        chat.cleanup();
+      }
+    },
+  );
+
+  it.for(["none", "live", "detached"] as const)(
+    "settles published cleanup before a replaced registration returns (successor=%s)",
+    async (successor, { signal }) => {
+      const { relay, target, chat } = createRegistrationFixture();
+      const callId = adoptRelayProviderToolCallId(relay, "publication-call")!;
+      const held = createDeferred();
+      const resume = createDeferred();
+      let activeChat = chat;
+      let current: Awaited<ReturnType<typeof registerTalkRealtimeRelayAgentRun>> | undefined;
+      const register = voiceSessions.registerClientVoiceConsultRun;
+      const registering = vi
+        .spyOn(voiceSessions, "registerClientVoiceConsultRun")
+        .mockImplementationOnce(async (params) => {
+          const release = await register(params);
+          held.resolve();
+          await resume.promise;
+          return release;
+        });
+      const pending = registerTalkRealtimeRelayAgentRun({ ...target, callId });
+      const settled = pending.catch((error: unknown) => error);
+      try {
+        await withinTest(held.promise, signal);
+        await expect(
+          registerTalkRealtimeRelayAgentRun({
+            ...target,
+            callId,
+            registerVoice: async () => {
+              throw new Error("replacement registration refused");
+            },
+          }),
+        ).rejects.toThrow("replacement registration refused");
+        expect(relay.activeAgentRuns.size).toBe(0);
+        expect(relay.activeAgentToolCalls.size).toBe(0);
+        if (successor !== "none") {
+          chat.cleanup();
+          activeChat = registerChatAbortController({
+            chatAbortControllers: relay.context.chatAbortControllers,
+            runId: target.runId,
+            sessionId: "successor-session",
+            sessionKey: target.sessionKey,
+            timeoutMs: 60_000,
+          });
+          current = await registerTalkRealtimeRelayAgentRun({ ...target, callId });
+          expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeDefined();
+          if (successor === "detached") {
+            clearRelayAgentToolCall(relay, callId);
+            expect(relay.activeAgentRuns.size).toBe(0);
+          }
+        }
+        const binding = voiceSessions.resolveClientVoiceRunBinding(target.runId);
+        resume.resolve();
+        expect(await settled).toMatchObject({
+          message: "Realtime relay run registration changed while waiting",
+        });
+        if (successor === "none") {
+          expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeUndefined();
+        } else {
+          expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBe(binding);
+          expect(activeChat.controller.signal.aborted).toBe(false);
+          if (successor === "live") {
+            expect(current?.isCurrent()).toBe(true);
+            current?.release();
+            expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeUndefined();
+          }
+        }
+      } finally {
+        resume.resolve();
+        await settled;
+        current?.release();
+        activeChat.cleanup();
+        registering.mockRestore();
+      }
+    },
+  );
+
+  it.each(["call-1", "call-2"])("retains a shared run when %s clears first", async (first) => {
+    const { relay, target, chat } = createRegistrationFixture();
+    const second = first === "call-1" ? "call-2" : "call-1";
+    try {
+      for (const callId of ["call-1", "call-2"]) {
+        adoptRelayProviderToolCallId(relay, callId);
+        await registerTalkRealtimeRelayAgentRun({ ...target, callId });
+      }
+      clearRelayAgentToolCall(relay, first);
+      expect(relay.activeAgentRuns.size).toBe(1);
+      expect(relay.activeAgentToolCalls.has(second)).toBe(true);
+      expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeDefined();
+      cancelTalkRealtimeRelayProviderToolCall(relay, second);
+      expect(chat.controller.signal.aborted).toBe(true);
+      expect(relay.activeAgentRuns.size).toBe(0);
+    } finally {
+      chat.cleanup();
+    }
+  });
+
+  it.each(["standalone", "call"])(
+    "retains shared voice ownership when the %s registration releases first",
+    async (first) => {
+      const { relay, target, chat } = createRegistrationFixture();
+      const standalone = await registerTalkRealtimeRelayAgentRun(target);
+      const call = await registerTalkRealtimeRelayAgentRun({ ...target, callId: "shared-call" });
+      try {
+        (first === "standalone" ? standalone : call).release();
+        expect(relay.activeAgentRuns.size).toBe(1);
+        expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeDefined();
+        (first === "standalone" ? call : standalone).release();
+        expect(relay.activeAgentRuns.size).toBe(0);
+        expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeUndefined();
+      } finally {
+        standalone.release();
+        call.release();
+        chat.cleanup();
+      }
+    },
+  );
+
+  it("does not abort a replacement chat controller when registration fails", async ({ signal }) => {
+    const { relay, target, chat } = createRegistrationFixture();
+    const held = createDeferred();
+    const resume = createDeferred();
+    const pending = registerTalkRealtimeRelayAgentRun({
+      ...target,
+      callId: "controller-call",
+      registerVoice: async () => {
+        held.resolve();
+        await resume.promise;
+        throw new Error("registration refused");
+      },
+    });
+    const settled = pending.catch((error: unknown) => error);
+    await withinTest(held.promise, signal);
+    chat.cleanup();
+    const replacement = registerChatAbortController({
+      chatAbortControllers: relay.context.chatAbortControllers,
+      runId: target.runId,
+      sessionId: "replacement-chat",
+      sessionKey: target.sessionKey,
+      timeoutMs: 60_000,
+    });
+    try {
+      resume.resolve();
+      expect(await settled).toMatchObject({ message: "registration refused" });
+      expect(replacement.controller.signal.aborted).toBe(false);
+      adoptRelayProviderToolCallId(relay, "replacement-call");
+      await registerTalkRealtimeRelayAgentRun({ ...target, callId: "replacement-call" });
+      cancelTalkRealtimeRelayProviderToolCall(relay, "replacement-call");
+      expect(replacement.controller.signal.aborted).toBe(true);
+    } finally {
+      resume.resolve();
+      await settled;
+      replacement.cleanup();
+    }
+  });
+
   it("retries a known refused voice write in the database admitted by its creator", async () => {
     const originalEnv = { ...process.env };
     const env = captureEnv(["OPENCLAW_STATE_DIR"]);
@@ -184,7 +442,7 @@ describe("relay consult registration authority", () => {
             runId: "source-run",
           }).then(
             (registeredRelease) => {
-              release = registeredRelease;
+              release = registeredRelease.release;
               return undefined;
             },
             (error: unknown) => error,
@@ -265,22 +523,30 @@ describe("relay consult registration authority", () => {
       let callerCurrent = true;
       let blocker: Promise<void> | undefined;
       let release: (() => void) | undefined;
-      const registerVoice = vi.fn(async (assertCurrent: () => void) => {
-        blocker = runOpenClawAgentWriteAdmission({ agentId: "main" }, async () => {
-          entered.resolve();
-          await releaseQueue.promise;
-        });
-        await entered.promise;
-        const pending = voiceSessions.registerClientVoiceConsultRun({
-          agentId: "main",
-          sessionKey,
-          voiceSessionId,
-          runId: "run-1",
-          assertCurrent,
-        });
-        queued.resolve();
-        return await pending;
-      });
+      const registerVoice = vi.fn(
+        async (
+          assertCurrent: () => void,
+          physicalSource: ClientVoiceSessionSource,
+          onRegistered: (release: () => void) => void,
+        ) => {
+          blocker = runOpenClawAgentWriteAdmission({ agentId: "main" }, async () => {
+            entered.resolve();
+            await releaseQueue.promise;
+          });
+          await entered.promise;
+          const pending = voiceSessions.registerClientVoiceConsultRun({
+            agentId: "main",
+            sessionKey,
+            voiceSessionId,
+            runId: "run-1",
+            assertCurrent,
+            physicalSource,
+            onRegistered,
+          });
+          queued.resolve();
+          await pending;
+        },
+      );
       const pending = registerTalkRealtimeRelayAgentRun({
         relaySessionId: voiceSessionId,
         connId: "conn-1",
@@ -296,7 +562,7 @@ describe("relay consult registration authority", () => {
       });
       const settled = pending.then(
         (registered) => {
-          release = registered;
+          release = registered.release;
           return undefined;
         },
         (error: unknown) => error,
