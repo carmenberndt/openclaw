@@ -158,7 +158,19 @@ test("required placement survives disconnect but stops setup when committed call
   const createDispatch = placementDispatch.createWorkerPlacementDispatchService;
   vi.spyOn(placementDispatch, "createWorkerPlacementDispatchService").mockImplementation(
     (options) => {
-      const service = createDispatch(options);
+      const service = createDispatch({
+        ...options,
+        runLocalBarrier: async (params) => {
+          const placement = await options.runLocalBarrier(params);
+          const current = hold;
+          if (current?.afterAcknowledgment && placement.state === "requested") {
+            hold = undefined;
+            current.committed.resolve();
+            await current.resume;
+          }
+          return placement;
+        },
+      });
       const dispatch = service.dispatch;
       service.dispatch = (...args) => {
         const operation = dispatch(...args);
@@ -188,14 +200,16 @@ test("required placement survives disconnect but stops setup when committed call
   );
   // Hold dispatch after its durable requested commit. The requested acknowledgment is reported
   // on resume, leaving the post-acknowledgment recheck as the only fence before setup I/O.
-  let hold: { committed: Deferred; resume: Promise<void> } | undefined;
+  let hold:
+    | { committed: Deferred; resume: Promise<void>; afterAcknowledgment: boolean }
+    | undefined;
   const startDispatch = placementDispatchStore.startWorkerPlacementDispatch;
   vi.spyOn(placementDispatchStore, "startWorkerPlacementDispatch").mockImplementation(
     async (...args) => {
       const placement = await startDispatch(...args);
       const current = hold;
-      hold = undefined;
-      if (current && placement.state === "requested") {
+      if (current && !current.afterAcknowledgment && placement.state === "requested") {
+        hold = undefined;
         current.committed.resolve();
         await current.resume;
       }
@@ -245,22 +259,28 @@ test("required placement survives disconnect but stops setup when committed call
       email: string,
       endAuthority: (ws: WebSocket) => Promise<void>,
       expectedSetupCalls: string[] = [],
+      afterAcknowledgment = false,
     ) => {
       setupCalls.length = 0;
       const ws = await connect(email, ["operator.sessions.write"]);
       const committed = createDeferredCore();
       const resume = createDeferredCore();
-      hold = { committed, resume: resume.promise };
+      hold = { committed, resume: resume.promise, afterAcknowledgment };
       settled = { remaining: 2, done: createDeferredCore() };
       const created = rpcReq(ws, "sessions.create", {});
       void created.catch(() => {});
       try {
-        await Promise.race([
-          committed.promise,
-          created.then(() => {
-            throw new Error("sessions.create settled before its requested placement committed");
-          }),
-        ]);
+        if (afterAcknowledgment) {
+          expect((await created).ok).toBe(true);
+          await committed.promise;
+        } else {
+          await Promise.race([
+            committed.promise,
+            created.then(() => {
+              throw new Error("sessions.create settled before its requested placement committed");
+            }),
+          ]);
+        }
         await endAuthority(ws);
       } finally {
         resume.resolve();
@@ -271,8 +291,8 @@ test("required placement survives disconnect but stops setup when committed call
       return { ws, created };
     };
     try {
-      // Ordinary mutations retain accepted authority across reconnects. This offline
-      // node reaches setup, then fails there; closing its socket must not revoke it.
+      // Let the RPC acknowledge and release its own custody before disconnecting.
+      // Detached setup still owns the accepted source until its operation settles.
       const disconnected = await createThenEndAuthority(
         writers.disconnect,
         async (ws) => {
@@ -281,9 +301,10 @@ test("required placement survives disconnect but stops setup when committed call
           ws.close();
           await closed.promise;
         },
-        ["prepareProjectIntent"],
+        ["prepareProjectIntent", "createWithRequest"],
+        true,
       );
-      await expect(disconnected.created).rejects.toThrow(/closed/);
+      expect((await disconnected.created).ok).toBe(true);
 
       // A committed config patch removes the caller's operator scope.
       const revoked = await createThenEndAuthority(writers.scope, async () => {

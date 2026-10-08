@@ -1,6 +1,5 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
-  "src/agents/tools/gateway.test.ts",
   "src/cli/admin-state-owner.process.test.ts",
   "src/pairing/pairing-store.test.ts",
   "src/pairing/pairing-store.worker.test.ts",
@@ -361,6 +360,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/bash-tools.exec-cron-grant.test.ts",
   "src/agents/bash-tools.exec-host-gateway.test.ts",
   "src/agents/tools/gateway.hosted-routing.test.ts",
+  "src/agents/tools/gateway.test.ts",
   "src/agents/cli-runner.prepare-fixture.test.ts",
   "src/agents/cli-runner.context-engine.test.ts",
   "src/agents/cli-runner.reliability.test.ts",

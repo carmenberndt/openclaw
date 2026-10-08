@@ -5,6 +5,7 @@ import {
   RequiredWorkerProfileError,
 } from "../config/required-worker-profile.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { bindGatewayDeviceRevocation } from "./device-revocation.js";
 import { withGatewayWorkerSessionAdmission } from "./server-worker-placement-dispatch-admission.js";
 import { ensureSessionWorkspaceForPlacement } from "./session-lifecycle-preparation.js";
 import type { coordinateWorkerPlacementDispatch } from "./worker-environments/placement-dispatch-coordinator.js";
@@ -31,7 +32,7 @@ export function createRequiredWorkerSessionPreparation(options: {
       );
     }
     const snapshot = structuredClone(profile);
-    const assertPolicyCurrent = () => {
+    const assertPolicyCurrent = bindGatewayDeviceRevocation(() => {
       signal?.throwIfAborted();
       authorize?.();
       if (
@@ -42,7 +43,7 @@ export function createRequiredWorkerSessionPreparation(options: {
           "Session source or required worker policy changed during placement; retry.",
         );
       }
-    };
+    }, authorize);
     return await withGatewayWorkerSessionAdmission(
       {
         identity: {

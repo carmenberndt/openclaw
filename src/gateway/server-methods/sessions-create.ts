@@ -13,7 +13,10 @@ import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-ke
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import { captureAgentTurnPrincipal } from "../agent-turn/principal.js";
 import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js";
-import { acceptGatewayDeviceSourceAuthority } from "../device-revocation.js";
+import {
+  acceptGatewayDeviceSourceAuthority,
+  bindGatewayDeviceRevocation,
+} from "../device-revocation.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect-errors.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
@@ -161,13 +164,13 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     const { personalModelSelection, personalAccountDefaults } = personalAccounts;
     const cfg = getCurrentConfig();
     const authority = createAgentRuntimeAuthorityGuard(client, context, respond);
-    const assertSessionCreateCurrent = () => {
+    const assertSessionCreateCurrent = bindGatewayDeviceRevocation(() => {
       requestAuthority.assertCurrent();
       assertRequiredWorkerSessionCreateCurrent(getCurrentConfig(), requiredProfile, p);
       authority.commitGuard?.();
       sessionMutationAuthorization?.assertCurrent();
       assertPreparedSkillLibrarySelection(sessionCreation.skillLibrarySelections);
-    };
+    }, hasCurrentClientAuthority);
     // Account selection is connection-bound until committed. Placement then consumes
     // that committed session under its retained request and session authority.
     const commitGuard = () => {
