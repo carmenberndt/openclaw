@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { describe, expect, test, vi } from "vitest";
-import { WebSocket } from "ws";
+import { type RawData, WebSocket } from "ws";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as acpSessionMetadata from "../acp/runtime/session-meta-readonly.js";
+import { buildSourceReplyPayloadState } from "../agents/embedded-agent-runner/run/source-reply-payloads.js";
 import * as embeddedAgent from "../agents/embedded-agent.js";
 import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
@@ -353,6 +355,78 @@ describe("gateway server chat lifecycle", () => {
       } finally {
         blockedReply.resolve();
       }
+    });
+  });
+
+  test("chat.send publishes one terminal when the message tool owned the run's replies", async () => {
+    await withMainSessionStore(async () => {
+      const runId = "idem-message-tool-owned-terminal";
+      const answer = "Both subagents finished.";
+      const terminals: Array<Record<string, unknown>> = [];
+      const collectTerminal = (data: RawData) => {
+        const frame = JSON.parse(rawDataToString(data)) as {
+          event?: string;
+          payload?: Record<string, unknown>;
+        };
+        if (
+          frame.event === "chat" &&
+          frame.payload?.runId === runId &&
+          ["aborted", "error", "final"].includes(String(frame.payload.state))
+        ) {
+          terminals.push(frame.payload);
+        }
+      };
+      mockGetReplyFromConfigOnce(async (_ctx, opts) => {
+        opts?.onAgentRunStart?.(runId);
+        const runtimeOwner = claimAgentRunContext(
+          runId,
+          { agentId: "main", sessionId: "sess-main", sessionKey: "agent:main:main" },
+          { ownsContext: true, trackOwner: true },
+        );
+        // A native runtime ends its lifecycle before returning the message-tool replies
+        // it already persisted: a mid-run progress reply and the final answer.
+        const lifecycleTerminal = onceMessage(
+          ws,
+          (event) =>
+            event.type === "event" && event.event === "chat" && event.payload?.runId === runId,
+        );
+        try {
+          emitAgentEvent({ runId, stream: "lifecycle", data: { phase: "start", startedAt: 1 } });
+          emitAgentEvent({ runId, stream: "assistant", data: { text: answer, delta: answer } });
+          emitAgentEvent({
+            runId,
+            stream: "lifecycle",
+            data: { phase: "end", startedAt: 1, endedAt: 2 },
+          });
+          await lifecycleTerminal;
+        } finally {
+          releaseAgentRunContext(runId, runtimeOwner);
+        }
+        return buildSourceReplyPayloadState({
+          payloads: [
+            { text: "Both A and B are still running.", transcriptOwner: true },
+            { text: answer, transcriptOwner: true },
+          ],
+          runId,
+          sessionKey: "agent:main:main",
+          agentId: "main",
+        }).replyItems;
+      });
+
+      expect((await rpcReq(ws, "sessions.subscribe", {})).ok).toBe(true);
+      ws.on("message", collectTerminal);
+      try {
+        await sendChatAndExpectStarted(runId, "check on the subagents");
+        await waitForAgentRunDrained(runId);
+      } finally {
+        ws.off("message", collectTerminal);
+      }
+
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        state: "final",
+        message: { content: [{ type: "text", text: answer }] },
+      });
     });
   });
 

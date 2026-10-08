@@ -212,6 +212,7 @@ async function finalizeChatSendAgentReplyPayloads(
   params: FinalizeChatSendAgentRepliesBase & {
     inputs: readonly ReplyDispatchOperation[];
     suppressFinal?: boolean;
+    omitTranscriptOwnedReplies?: boolean;
     publishMessage?: (message: Record<string, unknown>, deliveryAuthorized: () => boolean) => void;
     isCurrent?: () => boolean;
   },
@@ -386,7 +387,23 @@ async function finalizeChatSendAgentReplyPayloads(
       });
     }
   }
-  const sourceReplyContent = sourceReplyContentStates.flatMap((state) => {
+  // A transcript-owned reply already persisted and published its own row; when the
+  // run's lifecycle owns the terminal, repeating it here publishes a second, stale final.
+  const broadcastIndices = agentRunReplyPayloads.flatMap((payload, replyIndex) =>
+    params.omitTranscriptOwnedReplies &&
+    getReplyPayloadMetadata(payload)?.sourceReplyTranscriptMirror?.transcriptOwner === true
+      ? []
+      : [replyIndex],
+  );
+  const broadcastStates = broadcastIndices.flatMap(
+    (replyIndex) => sourceReplyContentStates[replyIndex] ?? [],
+  );
+  const broadcastReply =
+    extractAssistantDisplayText(broadcastStates.flatMap((state) => state.broadcastContent)) ??
+    buildTranscriptReplyTextFromInputs(
+      broadcastIndices.flatMap((replyIndex) => finalInputsByIndex[replyIndex] ?? []),
+    );
+  const sourceReplyContent = broadcastStates.flatMap((state) => {
     if (state.hasManagedOutgoingContent && !state.backedManagedOutgoingContent) {
       return (
         stripManagedOutgoingAssistantContentBlocks(state.broadcastContent) ?? [
@@ -398,7 +415,10 @@ async function finalizeChatSendAgentReplyPayloads(
   });
   const sourceReplyTextFromContent = extractAssistantDisplayText(sourceReplyContent);
   const sourceReplyText =
-    sourceReplyTextFromContent ?? (sourceReplyContent.length === 0 ? displayReply : undefined);
+    sourceReplyTextFromContent ?? (sourceReplyContent.length === 0 ? broadcastReply : undefined);
+  if (params.omitTranscriptOwnedReplies && sourceReplyContent.length === 0 && !sourceReplyText) {
+    return { kind: "delivered", hasSourceReplyTranscriptMirror };
+  }
   const message = {
     role: "assistant",
     ...(sourceReplyContent.length
@@ -434,7 +454,11 @@ async function finalizeChatSendAgentReplyPayloads(
   return { kind: "delivered", hasSourceReplyTranscriptMirror };
 }
 
-/** Persist and broadcast agent-run source/status replies that bypass the normal model turn. */
+/**
+ * Persist and broadcast agent-run source/status replies that bypass the normal model turn.
+ * The run's lifecycle terminal is already published, so transcript-owned replies are not
+ * rebroadcast and no final is sent when nothing else remains.
+ */
 export async function finalizeChatSendSourceReplies(
   params: FinalizeChatSendAgentRepliesBase & {
     deliveredReplies: readonly DeliveredChatSendReply[];
@@ -445,6 +469,7 @@ export async function finalizeChatSendSourceReplies(
   const result = await finalizeChatSendAgentReplyPayloads({
     ...params,
     inputs: selectChatSendAgentReplyInputs(params),
+    omitTranscriptOwnedReplies: true,
   });
   return result.kind === "delivered" && result.hasSourceReplyTranscriptMirror;
 }
