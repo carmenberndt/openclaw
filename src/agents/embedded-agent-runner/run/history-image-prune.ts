@@ -85,10 +85,6 @@ function resolvePruneBeforeIndex(messages: AgentMessage[]): number {
   return turnsToKeep === 0 && firstToolResult >= 0 ? pruneBefore : -1;
 }
 
-function wasStructurallyMediaPruned(message: AgentMessage): boolean {
-  return asNonArrayRecord(Reflect.get(message, "__openclaw")).mediaImagePruned === true;
-}
-
 function replaceLegacyFactlessMediaText(text: string): string {
   return text
     .replace(LEGACY_MEDIA_ATTACHED_PATTERN, PRUNED_HISTORY_MEDIA_REFERENCE_MARKER)
@@ -228,7 +224,8 @@ export function pruneProcessedHistoryImages(messages: AgentMessage[]): AgentMess
         ? (readRuntimePromptMediaFacts(message) ?? readPersistedMediaFacts(message) ?? [])
         : [];
     const hasOwnedMedia = media.length > 0;
-    const structuredMediaWasPruned = wasStructurallyMediaPruned(message);
+    const structuredMediaWasPruned =
+      asNonArrayRecord(Reflect.get(message, "__openclaw")).mediaImagePruned === true;
     const pruneText = (text: string) =>
       hasOwnedMedia
         ? replaceOwnedMediaProjection(text, media)
