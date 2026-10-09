@@ -1,5 +1,6 @@
-// Imported by a dispatch-from-config entrypoint to keep its mocked suite in one Vitest module graph.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+// Imported by a dispatch-from-config entrypoint to keep its mocked suite in one Vitest module graph.
+import { createUnheldReplyDispatchLease } from "../../agents/prepared-model-runtime.test-support.js";
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
@@ -177,7 +178,7 @@ describe("dispatchReplyFromConfig", () => {
     );
     const runtimeLoaders = await import("./dispatch-from-config.runtime-loaders.js");
     const preparedLoader = vi.spyOn(runtimeLoaders, "loadPreparedModelRuntime").mockResolvedValue({
-      loadPublishedGatewayReplyDispatchRuntime: preparedLookup,
+      acquirePublishedGatewayReplyDispatchRuntime: preparedLookup,
     } as never);
     const dispatch = withDispatchProcessedOutcomeSink(() =>
       dispatchReplyFromConfig({
@@ -1103,18 +1104,21 @@ describe("dispatchReplyFromConfig", () => {
       if (agentId !== "main") {
         throw new Error(`unexpected prepared reply dispatch owner ${agentId}`);
       }
-      return Object.freeze({
-        agentId: "main",
-        agentDir: "/tmp/main-agent",
-        workspaceDir: "/tmp/main-workspace",
-        config: cfg,
-        modelCatalog: { entries: [], routeVariants: [] },
-        inboundPluginRegistry: createTestRegistry([]),
-      });
+      return createUnheldReplyDispatchLease(
+        Object.freeze({
+          agentId: "main",
+          agentDir: "/tmp/main-agent",
+          workspaceDir: "/tmp/main-workspace",
+          config: cfg,
+          modelCatalog: { entries: [], routeVariants: [] },
+          inboundPluginRegistry: createTestRegistry([]),
+          pluginGeneration: {} as never,
+        }),
+      );
     });
     const runtimeLoaders = await import("./dispatch-from-config.runtime-loaders.js");
     const preparedLoader = vi.spyOn(runtimeLoaders, "loadPreparedModelRuntime").mockResolvedValue({
-      loadPublishedGatewayReplyDispatchRuntime: preparedLookup,
+      acquirePublishedGatewayReplyDispatchRuntime: preparedLookup,
     } as never);
 
     let result: Awaited<ReturnType<typeof dispatchReplyFromConfig>>;

@@ -7,7 +7,10 @@ import {
   resolveAgentWorkspaceDir,
   resolveSessionAgentId,
 } from "../../agents/agent-scope.js";
-import type { PreparedReplyDispatchRuntime } from "../../agents/prepared-model-runtime.types.js";
+import type {
+  PreparedReplyDispatchLease,
+  PreparedReplyDispatchRuntime,
+} from "../../agents/prepared-model-runtime.types.js";
 import { normalizeExplicitSessionKey } from "../../config/sessions/explicit-session-key-normalization.js";
 import {
   deriveInboundMessageHookContext,
@@ -69,10 +72,12 @@ import { isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
 
+/** Gathers one dispatch attempt; resources it admits are disposed by the attempt's owner. */
 export async function gatherDispatchRequest(
   params: DispatchFromConfigParams,
   messageAuditTerminal: InboundMessageAuditTerminalRecorder | undefined,
-  allowActiveQueueResolution = false,
+  allowActiveQueueResolution: boolean,
+  dispatchResources: AsyncDisposableStack,
 ) {
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const ctx = isFinalizedInboundContext(params.ctx)
@@ -432,22 +437,28 @@ export async function gatherDispatchRequest(
   const preparedReplyDispatchAgentId = boundAcpDispatchSessionKey
     ? resolveSessionAgentId({ sessionKey, config: cfg, fallbackAgentId: ctx.AgentId })
     : sessionAgentId;
+  let preparedReplyDispatchLease: PreparedReplyDispatchLease | undefined;
   let preparedReplyDispatchRuntime: PreparedReplyDispatchRuntime | undefined;
   let preparedTtsPreferences: PreparedTtsPreferences;
   try {
     // Channel monitors can retain an older config across hot reloads. The Gateway
     // publication owns admission; outside its lifecycle this returns undefined.
-    preparedReplyDispatchRuntime = await traceReplyPhase(
+    // Recording the generation and holding it are one step: a publication committed before
+    // the turn's run lease must not retire the generation this dispatch admitted.
+    preparedReplyDispatchLease = await traceReplyPhase(
       "reply.load_prepared_dispatch_runtime",
       async () => {
-        const { loadPublishedGatewayReplyDispatchRuntime } = await loadPreparedModelRuntime();
-        return await loadPublishedGatewayReplyDispatchRuntime({
-          agentId: preparedReplyDispatchAgentId,
-          demand: params.replyOptions?.isHeartbeat ? "scheduled" : "interactive",
-          abortSignal: params.replyOptions?.abortSignal,
-        });
+        const { acquirePublishedGatewayReplyDispatchRuntime } = await loadPreparedModelRuntime();
+        return dispatchResources.use(
+          await acquirePublishedGatewayReplyDispatchRuntime({
+            agentId: preparedReplyDispatchAgentId,
+            demand: params.replyOptions?.isHeartbeat ? "scheduled" : "interactive",
+            abortSignal: params.replyOptions?.abortSignal,
+          }),
+        );
       },
     );
+    preparedReplyDispatchRuntime = preparedReplyDispatchLease?.runtime;
     preparedTtsPreferences = await prepareTtsPreferences();
     params.replyOptions?.abortSignal?.throwIfAborted();
     params.replyOptions?.operatorAuthority?.assertCurrent();
@@ -600,6 +611,7 @@ export async function gatherDispatchRequest(
     inboundAudio,
     sessionTtsAuto,
     workspaceDir,
+    preparedReplyDispatchLease,
     preparedReplyDispatchRuntime,
     preparedTtsPreferences,
     pluginRegistry,

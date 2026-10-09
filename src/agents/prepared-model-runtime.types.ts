@@ -139,6 +139,14 @@ export type PreparedReplyDispatchRuntime = Readonly<{
   pluginGeneration: PreparedModelRuntimePluginGeneration;
 }>;
 
+/** A dispatch record that keeps its admitted generation borrowable until the turn disposes it. */
+export type PreparedReplyDispatchLease = Readonly<{
+  runtime: PreparedReplyDispatchRuntime;
+  /** The configured snapshot admitted with runtime; undefined once disposed or never held. */
+  borrowSnapshot: () => PreparedModelRuntimeSnapshot | undefined;
+  [Symbol.asyncDispose]: () => Promise<void>;
+}>;
+
 export type PreparedModelRuntimeStores = {
   authStorage: AuthStorage;
   modelRegistry: ModelRegistry;

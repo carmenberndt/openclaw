@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
+import { createUnheldReplyDispatchLease } from "../../agents/prepared-model-runtime.test-support.js";
 import { createChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
 import {
   clearRuntimeConfigSnapshot,
@@ -1410,17 +1411,19 @@ describe("dispatchReplyFromConfig", () => {
     } satisfies OpenClawConfig;
     const preparedRuntimeModule = await import("../../agents/prepared-model-runtime.js");
     const preparedLookup = vi
-      .spyOn(preparedRuntimeModule, "loadPublishedGatewayReplyDispatchRuntime")
+      .spyOn(preparedRuntimeModule, "acquirePublishedGatewayReplyDispatchRuntime")
       .mockResolvedValue(
-        Object.freeze({
-          agentId: "main",
-          agentDir: "/tmp/prepared-agent",
-          workspaceDir: "/tmp/prepared-workspace",
-          config: runtimeCfg,
-          modelCatalog: { entries: [], routeVariants: [] },
-          inboundPluginRegistry: createTestRegistry([]),
-          pluginGeneration: {} as never,
-        }),
+        createUnheldReplyDispatchLease(
+          Object.freeze({
+            agentId: "main",
+            agentDir: "/tmp/prepared-agent",
+            workspaceDir: "/tmp/prepared-workspace",
+            config: runtimeCfg,
+            modelCatalog: { entries: [], routeVariants: [] },
+            inboundPluginRegistry: createTestRegistry([]),
+            pluginGeneration: {} as never,
+          }),
+        ),
       );
 
     const overrideCfg = {
@@ -1550,17 +1553,19 @@ describe("dispatchReplyFromConfig", () => {
     } as OpenClawConfig;
     const preparedRuntimeModule = await import("../../agents/prepared-model-runtime.js");
     const preparedLookup = vi
-      .spyOn(preparedRuntimeModule, "loadPublishedGatewayReplyDispatchRuntime")
+      .spyOn(preparedRuntimeModule, "acquirePublishedGatewayReplyDispatchRuntime")
       .mockResolvedValue(
-        Object.freeze({
-          agentId: "main",
-          agentDir: "/tmp/prepared-agent",
-          workspaceDir: "/tmp/prepared-workspace",
-          config: runtimeCfg,
-          modelCatalog: { entries: [], routeVariants: [] },
-          inboundPluginRegistry: createTestRegistry([]),
-          pluginGeneration: {} as never,
-        }),
+        createUnheldReplyDispatchLease(
+          Object.freeze({
+            agentId: "main",
+            agentDir: "/tmp/prepared-agent",
+            workspaceDir: "/tmp/prepared-workspace",
+            config: runtimeCfg,
+            modelCatalog: { entries: [], routeVariants: [] },
+            inboundPluginRegistry: createTestRegistry([]),
+            pluginGeneration: {} as never,
+          }),
+        ),
       );
     const dispatcher = createDispatcher();
     const ctx = buildTestCtx({ Provider: "discord", Surface: "discord" });

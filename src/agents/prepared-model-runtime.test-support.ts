@@ -1,3 +1,8 @@
+import type {
+  PreparedReplyDispatchLease,
+  PreparedReplyDispatchRuntime,
+} from "./prepared-model-runtime.types.js";
+
 type PreparedModelRuntimeTestApi = {
   resetPreparedModelRuntimeSnapshotsForTest(): Promise<void>;
 };
@@ -21,4 +26,11 @@ export async function resetPreparedGatewayModelCatalogForTest(): Promise<void> {
   await import("../gateway/server-start.js");
   await import("../gateway/server-model-catalog.js");
   await resetPreparedModelCatalogStateForTest();
+}
+
+/** Wraps a fixture dispatch record as a lease that holds no generation. */
+export function createUnheldReplyDispatchLease(
+  runtime: PreparedReplyDispatchRuntime,
+): PreparedReplyDispatchLease {
+  return { runtime, borrowSnapshot: () => undefined, [Symbol.asyncDispose]: async () => {} };
 }

@@ -6,6 +6,13 @@ import {
 } from "./prepared-model-runtime.test-harness.js";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import { dispatchLowLevelChannelReplyFromConfig } from "../auto-reply/reply/dispatch-from-config.js";
+import { runPreparedReply } from "../auto-reply/reply/get-reply-run.js";
+import type { RunPreparedReplyParams } from "../auto-reply/reply/get-reply-run.types.js";
+import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
+import { getPreparedReplyDispatchRuntime } from "../auto-reply/reply/prepared-reply-dispatch-context.js";
+import { createReplyDispatcher } from "../auto-reply/reply/reply-dispatcher.js";
+import type { ReplyPayload } from "../auto-reply/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { modelsHandlers } from "../gateway/server-methods/models.js";
 import { registerGatewayModelCatalogPrivateAccess } from "../gateway/server-model-catalog-auth.js";
@@ -30,18 +37,31 @@ import { createPluginRegistryOwner } from "../plugins/runtime.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import * as catalogWorker from "./prepared-model-catalog-worker.js";
+import { getPreparedModelRuntimePluginGeneration } from "./prepared-model-runtime-generation-scope.js";
 import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
 import {
   acquireReadOnlyPreparedModelRuntime,
   applyRemoteModelCatalogUpdate,
   beginPreparedModelRuntimePluginDrain,
   getPreparedModelRuntimeSnapshot,
+  loadPublishedGatewayReplyDispatchRuntime,
   prepareModelRuntimeSnapshot,
   refreshPreparedModelRuntimeSnapshots,
 } from "./prepared-model-runtime.js";
 import { closePreparedModelRuntimeSnapshots } from "./prepared-model-runtime.lifecycle.js";
 import { registerPreparedModelRuntimePublicationListener } from "./prepared-model-runtime.publication-events.js";
 import { PreparedModelRuntimePublicationQueue } from "./prepared-model-runtime.publication-queue.js";
+
+const reply = vi.hoisted(() => ({ context: vi.fn(), execute: vi.fn() }));
+vi.mock("../auto-reply/reply/get-reply-run-context.js", () => ({
+  prepareReplyRunContext: reply.context,
+}));
+vi.mock("../auto-reply/reply/get-reply-run-admission.js", () => ({
+  prepareReplyRunAdmission: async (context: unknown) => context,
+}));
+vi.mock("../auto-reply/reply/get-reply-run-execute.js", () => ({
+  executePreparedReplyRun: reply.execute,
+}));
 
 const fixture = usePreparedModelRuntimeHarness({
   label: "remote-publication",
@@ -108,9 +128,11 @@ async function setup() {
     );
     return { entries, routeVariants: entries };
   });
+  // Match Gateway startup publication, which lets admitted turns bind Gateway subagents.
   await refreshPreparedModelRuntimeSnapshots(config, {
     gatewayLifecycle: true,
     catalogMode: "static",
+    allowGatewaySubagentBinding: true,
   });
   stored.mockReturnValue(bundle(300));
 }
@@ -192,6 +214,56 @@ it("keeps downloaded catalogs pending while plugin work drains", async ({ signal
     queueSpy.mockRestore();
     pricingSpy.mockRestore();
   }
+});
+
+it("finishes an admitted reply on its dispatch generation when a catalog is adopted before its lease", async () => {
+  await setup();
+  const deliver = vi.fn(async (_payload: ReplyPayload) => undefined);
+  const dispatcher = createReplyDispatcher({ deliver });
+  let admitted: ReturnType<typeof getPreparedReplyDispatchRuntime>;
+  reply.context.mockImplementation(async () => ({
+    kind: "run",
+    workspaceDir: admitted?.workspaceDir,
+    thinkingRuntime: "openclaw",
+  }));
+  reply.execute.mockImplementation(async () => {
+    expect(getPreparedModelRuntimePluginGeneration()).toBe(admitted?.pluginGeneration);
+    return { text: "finished" };
+  });
+
+  const result = await dispatchLowLevelChannelReplyFromConfig({
+    cfg: config,
+    ctx: finalizeInboundContext({
+      Body: "hello",
+      From: "synthetic-user",
+      To: "synthetic-bot",
+      AgentId: "default",
+      SessionKey: "agent:default:main",
+      MessageSid: "catalog-adoption-before-lease",
+      Provider: "synthetic-channel",
+      Surface: "synthetic-channel",
+      ChatType: "direct",
+      InboundAccessAuthorized: true,
+    }),
+    dispatcher,
+    replyResolver: async () => {
+      admitted = getPreparedReplyDispatchRuntime();
+      // The hosted catalog lands after dispatch recorded its generation, before the turn's lease.
+      expect(await applyRemoteModelCatalogUpdate(() => config)).toBe("published");
+      return await runPreparedReply({
+        provider: "custom",
+        model: "remote-200",
+      } as RunPreparedReplyParams);
+    },
+  });
+  dispatcher.markComplete();
+  await dispatcher.waitForIdle();
+
+  expect(result.queuedFinal).toBe(true);
+  expect(deliver.mock.calls.map(([payload]) => payload.text)).toEqual(["finished"]);
+  expect(admitted?.pluginGeneration.remoteCatalog?.generatedAt).toBe(200);
+  const next = await loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+  expect(next?.pluginGeneration.remoteCatalog?.generatedAt).toBe(300);
 });
 
 it("does not reuse a dynamic build captured before a remote publication", async () => {

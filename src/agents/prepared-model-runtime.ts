@@ -127,6 +127,8 @@ const replyDispatchPublication = new PreparedReplyDispatchPublicationOwner({
   ensureReady: (params) => ensureGatewayPreparedModelRuntimeReady(params),
 });
 export const loadPublishedGatewayReplyDispatchRuntime = replyDispatchPublication.load;
+/** Admits a reply dispatch and holds its generation until the returned lease is disposed. */
+export const acquirePublishedGatewayReplyDispatchRuntime = replyDispatchPublication.acquire;
 
 let releaseProcessLifetime: (() => void) | undefined;
 function captureModelRuntimeLifetime(): () => void {

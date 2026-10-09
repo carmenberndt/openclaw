@@ -3,8 +3,10 @@ import { createAbortError, racePromiseWithAbortSignal } from "../infra/abort-sig
 import { resolvePublishedModelCatalogOwner } from "./prepared-model-catalog-owner.js";
 import { assertPreparedModelRuntimeAdmissionCanWait } from "./prepared-model-runtime-admission.js";
 import { PreparedModelRuntimeOwnerNotPublishedError } from "./prepared-model-runtime.errors.js";
+import { ownPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import type {
   PreparedModelRuntimeOwner,
+  PreparedReplyDispatchLease,
   PreparedReplyDispatchRuntime,
 } from "./prepared-model-runtime.types.js";
 
@@ -119,9 +121,46 @@ export class PreparedReplyDispatchPublicationOwner {
     );
   }
 
-  readonly load = async (
+  /** Reads the published record for callers that take their own run lease immediately. */
+  readonly load = (
     params: PreparedReplyDispatchLoadParams,
-  ): Promise<PreparedReplyDispatchRuntime | undefined> => {
+  ): Promise<PreparedReplyDispatchRuntime | undefined> => this.#admit(params, (runtime) => runtime);
+
+  /**
+   * Reads the published record and holds its generation in the same synchronous step, so a
+   * publication committed before the turn's run lease cannot retire what dispatch admitted.
+   */
+  readonly acquire = (
+    params: PreparedReplyDispatchLoadParams,
+  ): Promise<PreparedReplyDispatchLease | undefined> =>
+    this.#admit(params, (runtime) => this.#hold(runtime));
+
+  // Custody keeps the generation's registries open without joining plugin replacement drains;
+  // the run lease that borrows the snapshot retains plugin work as any turn lease does.
+  #hold(runtime: PreparedReplyDispatchRuntime): PreparedReplyDispatchLease {
+    const owner = this.host.getConfiguredOwner(runtime.agentId);
+    const snapshot =
+      owner?.pluginGeneration === runtime.pluginGeneration ? owner.snapshot : undefined;
+    // An owner that already left this record's generation has nothing to hold; the turn's run
+    // lease then fails closed exactly as it would for an unheld record.
+    let release = snapshot
+      ? ownPreparedPluginGeneration(runtime.pluginGeneration).retain()
+      : undefined;
+    return Object.freeze({
+      runtime,
+      borrowSnapshot: () => (release ? snapshot : undefined),
+      [Symbol.asyncDispose]: async () => {
+        const releaseCustody = release;
+        release = undefined;
+        await releaseCustody?.();
+      },
+    });
+  }
+
+  async #admit<T>(
+    params: PreparedReplyDispatchLoadParams,
+    onPublished: (runtime: PreparedReplyDispatchRuntime) => T,
+  ): Promise<T | undefined> {
     const { agentId, abortSignal } = params;
     let demandPrepared = false;
     for (;;) {
@@ -160,7 +199,7 @@ export class PreparedReplyDispatchPublicationOwner {
           `prepared reply dispatch runtime owner was not published for ${agentId}`,
         );
       }
-      return runtime;
+      return onPublished(runtime);
     }
-  };
+  }
 }

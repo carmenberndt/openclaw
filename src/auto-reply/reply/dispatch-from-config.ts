@@ -91,10 +91,13 @@ async function dispatchReplyFromConfigInner(
   messageAuditTerminal: ReturnType<typeof createInboundMessageAuditTerminal>,
   allowActiveQueueResolution: boolean,
 ): Promise<DispatchFromConfigResult> {
+  // Holds what this attempt admitted, including its model-runtime generation, until it settles.
+  await using dispatchResources = new AsyncDisposableStack();
   const gathered = await gatherDispatchRequest(
     params,
     messageAuditTerminal,
     allowActiveQueueResolution,
+    dispatchResources,
   );
   if (gathered.status === "complete") {
     return gathered.result;

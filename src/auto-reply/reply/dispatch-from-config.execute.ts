@@ -72,6 +72,7 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
   const replyResolver = bindPreparedReplyDispatchRuntime(
     params.configOverride ? undefined : state.preparedReplyDispatchRuntime,
     state.replyResolver,
+    state.preparedReplyDispatchLease?.borrowSnapshot,
   );
   let pendingContinuation = false;
   let pendingContinuationSettlement: PendingContinuationSettlement | undefined;

@@ -5,7 +5,10 @@ import { prepareReplyRunAdmission } from "./get-reply-run-admission.js";
 import { prepareReplyRunContext, type PreparedReplyRunContext } from "./get-reply-run-context.js";
 import { executePreparedReplyRun } from "./get-reply-run-execute.js";
 import type { RunPreparedReplyParams } from "./get-reply-run.types.js";
-import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
+import {
+  getPreparedReplyDispatchRuntime,
+  getPreparedReplyDispatchSnapshotBorrow,
+} from "./prepared-reply-dispatch-context.js";
 
 async function executePreparedReplyContext(context: PreparedReplyRunContext) {
   const admission = await prepareReplyRunAdmission(context);
@@ -28,26 +31,32 @@ export async function runPreparedReply(
 
   const { acquireAgentRunPreparedModelRuntime } =
     await import("../../agents/prepared-model-runtime.js");
-  await using lease = await acquireAgentRunPreparedModelRuntime(
-    {
-      config: dispatchRuntime.config,
-      agentId: dispatchRuntime.agentId,
-      agentDir: dispatchRuntime.agentDir,
-      allowGatewaySubagentBinding: true,
-      workspaceDir: context.workspaceDir,
-      runtimePluginSelections: [
+  // Dispatch holds its admitted generation, so a newer publication cannot fail this turn here.
+  await using lease = await withPreparedModelRuntimePluginGenerationScope(
+    dispatchRuntime.pluginGeneration,
+    () =>
+      acquireAgentRunPreparedModelRuntime(
         {
-          provider: params.provider,
-          modelId: params.model,
-          runtime: context.thinkingRuntime,
+          config: dispatchRuntime.config,
+          agentId: dispatchRuntime.agentId,
+          agentDir: dispatchRuntime.agentDir,
+          allowGatewaySubagentBinding: true,
+          workspaceDir: context.workspaceDir,
+          runtimePluginSelections: [
+            {
+              provider: params.provider,
+              modelId: params.model,
+              runtime: context.thinkingRuntime,
+            },
+          ],
         },
-      ],
-    },
-    {
-      catalogMode: "static",
-      pluginGeneration: dispatchRuntime.pluginGeneration,
-      abortSignal: params.opts?.abortSignal,
-    },
+        {
+          catalogMode: "static",
+          pluginGeneration: dispatchRuntime.pluginGeneration,
+          abortSignal: params.opts?.abortSignal,
+        },
+      ),
+    getPreparedReplyDispatchSnapshotBorrow(),
   );
   let leaseActive = true;
   try {

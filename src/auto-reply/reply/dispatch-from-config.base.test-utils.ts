@@ -1,4 +1,3 @@
-// Imported by dispatch-from-config.test.ts to keep its mocked suite in one Vitest module graph.
 import { AsyncResource } from "node:async_hooks";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +6,8 @@ import {
   clearActiveEmbeddedRun,
   setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.js";
+// Imported by dispatch-from-config.test.ts to keep its mocked suite in one Vitest module graph.
+import { createUnheldReplyDispatchLease } from "../../agents/prepared-model-runtime.test-support.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { PluginHookReplyDispatchEvent } from "../../plugins/hook-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -133,7 +134,7 @@ describe("dispatchReplyFromConfig", () => {
     );
     const preparedRuntime = await import("../../agents/prepared-model-runtime.js");
     const preparedLookup = vi
-      .spyOn(preparedRuntime, "loadPublishedGatewayReplyDispatchRuntime")
+      .spyOn(preparedRuntime, "acquirePublishedGatewayReplyDispatchRuntime")
       .mockResolvedValue(undefined);
     try {
       await dispatchReplyFromConfig({
@@ -180,19 +181,21 @@ describe("dispatchReplyFromConfig", () => {
       pluginGeneration: {} as never,
     });
     const preparedLookup = vi
-      .spyOn(preparedRuntimeModule, "loadPublishedGatewayReplyDispatchRuntime")
-      .mockResolvedValueOnce(preparedRuntime)
+      .spyOn(preparedRuntimeModule, "acquirePublishedGatewayReplyDispatchRuntime")
+      .mockResolvedValueOnce(createUnheldReplyDispatchLease(preparedRuntime))
       .mockResolvedValue(
-        Object.freeze({
-          ...preparedRuntime,
-          workspaceDir: "/tmp/replacement-workspace",
-        }),
+        createUnheldReplyDispatchLease(
+          Object.freeze({
+            ...preparedRuntime,
+            workspaceDir: "/tmp/replacement-workspace",
+          }),
+        ),
       );
     const replyResolver = vi.fn(
       async (_ctx: MsgContext, _opts?: GetReplyOptions, configOverride?: OpenClawConfig) => {
         expect(configOverride).toBeUndefined();
         receivedPreparedRuntime = getPreparedReplyDispatchRuntime();
-        replacementPreparedRuntime = await preparedLookup({ agentId: "main" });
+        replacementPreparedRuntime = (await preparedLookup({ agentId: "main" }))?.runtime;
         expect(getPreparedReplyDispatchRuntime()).toBe(receivedPreparedRuntime);
         return { text: "hi" } satisfies ReplyPayload;
       },
