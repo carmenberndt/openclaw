@@ -20,11 +20,10 @@ import { createMockTypingController } from "../auto-reply/reply/test-helpers.js"
 import type { OpenClawConfig } from "../config/config.js";
 import { clearCronJobActive, markCronJobActive, resetCronActiveJobs } from "../cron/active-jobs.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
-import {
-  createReplyOperation,
-  waitForReplyRunSuccessorAdmission,
-} from "../sessions/session-controller.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { isSessionRunActive } from "../sessions/session-controller.queries.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import { type HeartbeatDeps, runHeartbeatOnce } from "./heartbeat-runner.js";
@@ -359,28 +358,39 @@ describe("heartbeat runner skips when target session is busy", () => {
     "does not infer admission rejection from a replacement run after an empty heartbeat",
     heartbeatCase(async ({ seed, run, replySpy }) => {
       const sessionKey = await seed();
-      let operation: ReturnType<typeof createReplyOperation> | undefined;
+      const heartbeatEntered = createDeferredCore();
+      const replacementQueued = createDeferredCore();
+      const releaseReplacement = createDeferredCore();
       replySpy.mockImplementation(async (_ctx, options: InternalGetReplyOptions | undefined) => {
         const runState = resolveReplyOperationRunState(options);
         if (!runState || !options?.replyOperation) {
           throw new Error("Expected heartbeat reply operation state");
         }
         runState.admission = { status: "owned" };
+        heartbeatEntered.resolve();
+        await replacementQueued.promise;
         options.replyOperation.complete();
-        await waitForReplyRunSuccessorAdmission(sessionKey, null);
-        operation = createReplyOperation({
-          sessionKey,
-          sessionId: "racing-visible-session",
-          resetTriggered: false,
-        });
-        operation.setPhase("running");
         return undefined;
       });
+      const heartbeat = run();
+      await heartbeatEntered.promise;
+      // The replacement queues on the session mailbox like a real visible turn and
+      // takes the slot as soon as the empty heartbeat releases its claim.
+      const replacement = withSessionTurn(
+        { sessionKey, sessionId: "racing-visible-session" },
+        async (operation) => {
+          operation?.setPhase("running");
+          await releaseReplacement.promise;
+        },
+      );
+      replacementQueued.resolve();
       try {
-        expect((await run()).status).toBe("ran");
+        expect((await heartbeat).status).toBe("ran");
+        expect(isSessionRunActive("racing-visible-session")).toBe(true);
         expect(replySpy).toHaveBeenCalledOnce();
       } finally {
-        operation?.complete();
+        releaseReplacement.resolve();
+        await replacement;
       }
     }),
   );
