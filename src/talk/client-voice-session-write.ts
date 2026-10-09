@@ -12,7 +12,6 @@ import {
   assertPreparedSessionSourceCurrent,
   prepareSessionSourceAuthority,
   composeSessionSourceAssertion,
-  releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
   type SessionSourceAssertion,
   type SessionSourcePredicateFacts,
@@ -32,11 +31,13 @@ import { mergeSessionEntry, type InternalSessionEntry } from "../config/sessions
 import { assertDatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
-import type { OpenClawAgentDatabaseAdmissionExecution } from "../state/openclaw-agent-db-admission.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db-contract.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
-import type { AgentDatabaseRequestExecutionSource } from "../state/openclaw-agent-execution-contract.js";
+import type {
+  AgentDatabaseRequestExecutionSource,
+  OpenClawAgentDatabaseAdmissionExecution,
+} from "../state/openclaw-agent-execution-admission-contract.js";
 import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import {
   runOpenClawAgentWorkerWrite,
@@ -45,6 +46,7 @@ import {
 import {
   assertClientVoiceSessionSettlementCurrent,
   withClientVoiceSessionSettlement,
+  withClientVoiceSessionResources,
 } from "./client-voice-session-lifecycle.js";
 import {
   captureClientVoiceSessionSource,
@@ -104,6 +106,7 @@ export function captureClientVoiceSessionWriter(params: {
             if (!authority?.transaction) {
               throw new Error("Voice session authority omitted its prepared assertion");
             }
+            // SAFETY: voice.session.mutate publishes its typed transaction authority through this admission.
             authority.transaction.assertCurrent(facts.facts as SessionPendingInputAuthorityFacts);
           }
           if (
@@ -111,7 +114,7 @@ export function captureClientVoiceSessionWriter(params: {
             facts.kind === "voice-session-source" &&
             typeof facts.index === "number"
           ) {
-            // The paired worker compares these source rows in its current transaction.
+            // SAFETY: voice.session.mutate forwards the typed facts from readRefusedSessionSource.
             authority?.checks[facts.index]?.refuse(facts.facts as SessionSourcePredicateFacts);
             throw new Error("Voice session source refusal omitted its prepared assertion");
           }
@@ -288,8 +291,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
     );
   }
   const resources: Array<Pick<PreparedSessionSourceAuthority, "release">> = [];
-  const errors: unknown[] = [];
-  try {
+  return withClientVoiceSessionResources(resources, async () => {
     const selected = await captureClientVoiceEntrySource(params, assertLifetimeCurrent);
     resources.push(selected.execution);
     return await runOpenClawAgentWriteAdmission(
@@ -377,12 +379,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
       },
       true,
     );
-  } catch (error) {
-    errors.push(error);
-    throw error;
-  } finally {
-    await releaseSessionSourceAuthorities(resources, errors);
-  }
+  });
 }
 
 export type ClientVoiceSessionMutationAuthority = {
@@ -404,8 +401,7 @@ export async function mutateAuthorizedClientVoiceSession<T>(
   publish: (record: ClientVoiceSessionRecord | undefined) => T,
 ): Promise<T> {
   const resources: Array<Pick<PreparedSessionSourceAuthority, "release">> = [];
-  const errors: unknown[] = [];
-  try {
+  return withClientVoiceSessionResources(resources, async () => {
     const sourceCandidates = params.source
       ? captureSessionStoreReadCandidates(params.source.storePath)
       : [];
@@ -641,12 +637,7 @@ export async function mutateAuthorizedClientVoiceSession<T>(
       },
       true,
     );
-  } catch (error) {
-    errors.push(error);
-    throw error;
-  } finally {
-    await releaseSessionSourceAuthorities(resources, errors);
-  }
+  });
 }
 
 /** Create a call record or resume the same open call across transport restarts. */
@@ -658,6 +649,7 @@ export async function createOrResumeClientVoiceSession(
     origin: "client" | "relay";
     transcriptCapable?: boolean;
     voiceSessionId?: string;
+    physicalSource?: ClientVoiceSessionSource;
     now?: number;
   },
   retainedWriter?: ClientVoiceSessionWriter,
@@ -666,10 +658,14 @@ export async function createOrResumeClientVoiceSession(
   return withClientVoiceSessionSettlement(
     async () => {
       const voiceSessionId = params.voiceSessionId?.trim() || randomUUID();
-      const writer = retainedWriter ?? captureClientVoiceSessionWriter({ agentId: params.agentId });
-      const errors: unknown[] = [];
-      try {
-        return await mutateAuthorizedClientVoiceSession(
+      const writer =
+        retainedWriter ??
+        captureClientVoiceSessionWriter({
+          agentId: params.agentId,
+          physicalSource: params.physicalSource,
+        });
+      return withClientVoiceSessionResources(retainedWriter ? [] : [writer], () =>
+        mutateAuthorizedClientVoiceSession(
           params,
           writer,
           () => ({
@@ -683,15 +679,10 @@ export async function createOrResumeClientVoiceSession(
             now: params.now ?? Date.now(),
           }),
           () => voiceSessionId,
-        );
-      } catch (error) {
-        errors.push(error);
-        throw error;
-      } finally {
-        await releaseSessionSourceAuthorities(retainedWriter ? [] : [writer], errors);
-      }
+        ),
+      );
     },
     undefined,
-    retainedWriter?.settlementContext,
+    retainedWriter?.settlementContext ?? params.physicalSource?.settlementContext,
   );
 }

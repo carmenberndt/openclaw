@@ -12,10 +12,8 @@ import {
   releaseSessionSourceAuthorities,
 } from "../../../config/sessions/session-source-authority.js";
 import { createPluginRuntime } from "../../../plugins/runtime/index.js";
-import {
-  withOpenClawAgentDatabaseAsync,
-  withOpenClawAgentDatabaseRuntime,
-} from "../../../state/openclaw-agent-db.js";
+import { readOpenClawAgentDatabaseIdentity } from "../../../state/openclaw-agent-db-identity.js";
+import { withOpenClawAgentDatabaseRuntime } from "../../../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission } from "../../../state/openclaw-agent-write-admission.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -27,11 +25,17 @@ import {
   bindAuthorizedClientVoiceConfirmation,
   type ClientVoiceConfirmationGrant,
 } from "../../../talk/client-voice-confirmation.js";
-import { resolveOpenClientVoiceSessionId } from "../../../talk/client-voice-session-read.js";
+import {
+  assertClientVoiceSessionOpen,
+  resolveOpenClientVoiceSessionId,
+} from "../../../talk/client-voice-session-read.js";
+import {
+  captureClientVoiceSessionSourceOptions,
+  createClientVoiceSessionSource,
+} from "../../../talk/client-voice-session-source.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import {
   appendClientVoiceTranscript,
-  assertClientVoiceSessionOpen,
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
   registerClientVoiceConsultRun,
@@ -95,6 +99,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         );
         return;
       }
+      const voiceOptions = captureClientVoiceSessionSourceOptions(agentId);
       const prepareVoiceSession = async (assertStoreCurrent?: () => void) => {
         const requester = readGatewayRequestMutationAuthority(request);
         const preparedRequester = await prepareSessionSourceAuthority(requester.assertCurrent);
@@ -113,21 +118,30 @@ export const talkClientHandlers: GatewayRequestHandlers = {
               preparedRequester.assertCurrent();
             }
           };
-          const admit = preparedRequester.opaqueCommitGuard
-            ? withOpenClawAgentDatabaseAsync
-            : withOpenClawAgentDatabaseRuntime;
-          await admit(
-            { agentId },
-            () => undefined,
-            preparedRequester.opaqueCommitGuard
-              ? () => {
-                  assertPreparationCurrent();
-                  requester.assertCurrent();
-                  request.sessionMutationAuthorization?.assertCurrent();
-                }
-              : assertPreparationCurrent,
+          // SDK callbacks may read SQLite; keep them outside the worker admission grants.
+          if (preparedRequester.opaqueCommitGuard) {
+            requester.assertCurrent();
+          }
+          const physicalSource = await withOpenClawAgentDatabaseRuntime(
+            voiceOptions,
+            (database) => {
+              const identity = readOpenClawAgentDatabaseIdentity(database);
+              if (typeof identity.identity !== "string") {
+                throw new Error("Voice metadata requires its admitted persistent database");
+              }
+              return createClientVoiceSessionSource(voiceOptions, {
+                key: `file:${identity.identity}`,
+                canonicalPath: identity.canonicalPath,
+                birthtime: identity.birthtime,
+              });
+            },
+            assertPreparationCurrent,
             request.signal,
           );
+          if (preparedRequester.opaqueCommitGuard) {
+            requester.assertCurrent();
+          }
+          physicalSource.assertCurrent();
           assertStoreCurrent?.();
           request.sessionMutationAuthorization?.assertCurrent();
           // Shipped clients may consult without ever creating a voice session (old app,
@@ -138,10 +152,11 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             relaySessionId ??
             (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined);
           if (selectedVoiceSessionId === undefined) {
-            const inferred = await resolveOpenClientVoiceSessionId({
-              agentId,
-              sessionKey: params.sessionKey,
-            });
+            const inferred = await resolveOpenClientVoiceSessionId(
+              { agentId, sessionKey: params.sessionKey },
+              physicalSource.options,
+            );
+            physicalSource.assertCurrent();
             // Another consult may have created and bound this connection during the read.
             selectedVoiceSessionId =
               (connId ? readLegacyVoiceBinding(connId, params.sessionKey) : undefined) ?? inferred;
@@ -156,6 +171,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
               agentId,
               sessionKey: params.sessionKey,
               origin: "client",
+              physicalSource,
               requester: borrowedRequester,
               source: {
                 storePath: target.storePath,
@@ -201,11 +217,10 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           assertStoreCurrent?.();
           request.sessionMutationAuthorization?.assertCurrent();
           const parsedArgs = parseRealtimeVoiceAgentConsultArgs(params.args ?? {});
-          const origin = assertClientVoiceSessionOpen({
-            agentId,
-            sessionKey: params.sessionKey,
-            voiceSessionId,
-          });
+          const origin = assertClientVoiceSessionOpen(
+            { agentId, sessionKey: params.sessionKey, voiceSessionId },
+            physicalSource,
+          );
           if (origin === "relay" && (!relaySessionId || !connId)) {
             throw new Error(
               "relay-owned voice sessions require relaySessionId and connection ownership",
@@ -220,9 +235,10 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           }
           // Only validated calls may replace the legacy client's connection binding.
           if (connId && !relaySessionId) {
+            physicalSource.assertCurrent();
             rememberLegacyVoiceBinding({ connId, sessionKey: params.sessionKey, voiceSessionId });
           }
-          return { voiceSessionId, confirmationGrant };
+          return { voiceSessionId, confirmationGrant, physicalSource };
         } catch (error) {
           errors.push(error);
           throw error;
@@ -235,7 +251,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         // Legacy selection and publication share the writer FIFO; relay flushes cannot hold it.
         preparedVoiceSession = relaySessionId
           ? await prepareVoiceSession()
-          : await runOpenClawAgentWriteAdmission({ agentId }, (_identity, assertCurrent) =>
+          : await runOpenClawAgentWriteAdmission(voiceOptions, (_identity, assertCurrent) =>
               prepareVoiceSession(assertCurrent),
             );
       } catch (err) {
@@ -260,7 +276,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
             voiceSessionId,
             runId,
             config: request.context.getRuntimeConfig(),
-            physicalSource,
+            physicalSource: physicalSource ?? preparedVoiceSession.physicalSource,
             onRegistered,
             requester: readGatewayRequestMutationAuthority(request).assertCurrent,
             source: {

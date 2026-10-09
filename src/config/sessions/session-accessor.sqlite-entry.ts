@@ -68,13 +68,13 @@ import {
   type SessionEntryPatchOperation,
 } from "./session-entry-patch-operation.js";
 import { captureSessionEntryPatchSource } from "./session-entry-patch-source.js";
-import { patchSessionEntryInWorker } from "./session-entry-patch.js";
 import type {
-  SessionEntryPatchGuard,
   SessionEntryUpdater,
   SqliteSessionEntryPatchOptions,
   SqliteSessionEntrySnapshotPatchParams,
-} from "./session-entry-patch.types.js";
+} from "./session-entry-patch-source.js";
+import { patchSessionEntryInWorker } from "./session-entry-patch.js";
+import type { SessionEntryPatchGuard } from "./session-entry-patch.types.js";
 import { buildSessionCreationStamp } from "./session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import { kickSessionHistoryDiskBudgetMaintenance } from "./session-history-eviction.js";

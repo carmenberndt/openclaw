@@ -16,6 +16,7 @@ import {
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { withClientVoiceSessionResources } from "./client-voice-session-lifecycle.js";
 import type { ClientVoiceSessionSource } from "./client-voice-session-source.js";
 import type {
   ClientVoiceSessionRecord,
@@ -619,7 +620,7 @@ export function createClientVoiceMutationDigestDeliveryOptions(
         agentId: source.options.agentId,
         physicalSource: source,
       });
-      try {
+      return withClientVoiceSessionResources([writer], async () => {
         if (delivery.confirmed) {
           await writer.mutate({
             ...delivery.confirmed,
@@ -650,9 +651,7 @@ export function createClientVoiceMutationDigestDeliveryOptions(
           conversation,
         );
         return true;
-      } finally {
-        await writer.release();
-      }
+      });
     },
     warn: (message) => console.warn(`[talk] deferred voice mutation digest failed: ${message}`),
   };

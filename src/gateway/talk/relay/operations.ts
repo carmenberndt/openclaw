@@ -442,8 +442,9 @@ export function cancelTalkRealtimeRelayProviderToolCall(
     return undefined;
   }
 
-  const run = session.activeAgentToolCalls.get(relayCallId)?.run;
-  if (run && session.activeAgentRuns.get(run.runId) === run) {
+  const registration = session.activeAgentToolCalls.get(relayCallId);
+  if (registration?.isCurrent()) {
+    const { run } = registration;
     abortChatRunById(session.context, {
       runId: run.runId,
       sessionKey: run.sessionKey,

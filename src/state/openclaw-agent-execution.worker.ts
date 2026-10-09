@@ -80,10 +80,10 @@ import {
   loadAgentPendingInputOperations,
   loadAgentArchivePruningOperations,
   loadUsageCacheOperations,
-  loadAgentVoiceSessionOperations,
   prepareAgentTranscript,
   type RegisteredAgentWorkerOperations,
 } from "./openclaw-agent-execution-operations.js";
+import { loadAgentVoiceSessionOperations } from "./openclaw-agent-execution-voice-operations.js";
 import type { AgentWorkerOperationContext } from "./openclaw-agent-operation-context.js";
 import {
   requireOpenClawStateDatabaseIdentity,

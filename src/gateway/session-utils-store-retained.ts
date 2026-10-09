@@ -4,8 +4,8 @@ import type { QualifiedSessionEntryAccessTarget } from "../config/sessions/sessi
 import { withSessionEntriesFromStoresInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import { captureIncognitoSessionBinding } from "../config/sessions/session-incognito-binding.js";
+import type { SessionMember } from "../config/sessions/session-membership-facts.types.js";
 import { listSessionMembers } from "../config/sessions/session-sharing-store.js";
-import type { SessionMember } from "../config/sessions/session-sharing-store.kernel.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
   prepareSessionRowPublicationScope,

@@ -19,9 +19,10 @@ import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
 } from "./openclaw-agent-db.paths.js";
+import type { AgentDatabaseGenerationClaim } from "./openclaw-agent-execution-admission-contract.js";
 import type {
-  AgentDatabaseGenerationClaim,
   AgentDatabaseNativeGeneration,
+  AgentDatabaseFileExecutionOwner,
   AgentDatabaseExecutionFileIdentity,
 } from "./openclaw-agent-execution-contract.js";
 import { getOpenClawDatabaseMaintenanceScope } from "./openclaw-state-db-async-lifecycle.js";
@@ -173,4 +174,53 @@ export function captureBorrowedAgentDatabaseGenerationClaim(
       claim.assertCurrent();
     },
   };
+}
+
+export function assertAgentDatabaseCreationIdentity({
+  pathname,
+  existing,
+  identity,
+  expectedIdentity,
+  expectedCreationIdentity,
+}: {
+  pathname: string;
+  existing: AgentDatabaseFileExecutionOwner | { kind: "ephemeral" } | undefined;
+  identity: DatabasePathIdentity;
+  expectedIdentity: AgentDatabaseExecutionFileIdentity | undefined;
+  expectedCreationIdentity: DatabasePathIdentity;
+}): void {
+  const capturesAbsence = expectedCreationIdentity.key.startsWith("path:");
+  const observed =
+    capturesAbsence && existing?.kind === "file" ? existing.creationIdentity : identity;
+  if (
+    expectedIdentity ||
+    (capturesAbsence &&
+      (agentDatabaseLifecycle.databases.has(pathname) ||
+        agentDatabaseLifecycle.pending.has(pathname))) ||
+    (!capturesAbsence &&
+      (!expectedCreationIdentity.key.startsWith("file:") ||
+        typeof expectedCreationIdentity.birthtime !== "string")) ||
+    observed?.key !== expectedCreationIdentity.key ||
+    observed.canonicalPath !== expectedCreationIdentity.canonicalPath ||
+    observed.birthtime !== expectedCreationIdentity.birthtime
+  ) {
+    throw new Error("Agent creation no longer owns its originally observed target");
+  }
+}
+
+export function assertCapturedAgentDatabaseFileOwner(
+  existing: AgentDatabaseFileExecutionOwner | { kind: "ephemeral" },
+  options: OpenClawAgentDatabaseOptions,
+  agentId: string,
+  pathname: string,
+): asserts existing is AgentDatabaseFileExecutionOwner {
+  if (existing.kind !== "file") {
+    throw new Error("Agent namespace belongs to an incognito execution owner");
+  }
+  if (existing.agentId !== agentId) {
+    throw new Error(
+      `OpenClaw agent database ${pathname} is already open for agent ${existing.agentId}; requested agent ${agentId}.`,
+    );
+  }
+  assertAgentDatabaseExecutionSharedState(options, existing.sharedDatabaseKey);
 }

@@ -17,10 +17,10 @@ import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-work
 import { getChildLogger } from "../../logging/logger.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
+import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-admission-contract.js";
 import type {
   AgentDatabaseExecutionScope,
   AgentDatabaseOperations,
-  AgentDatabaseRequestExecutionSource,
   OpenClawAgentDatabaseExecution,
 } from "../../state/openclaw-agent-execution-contract.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";

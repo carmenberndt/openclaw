@@ -19,6 +19,7 @@ import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-e
 import {
   assertClientVoiceSessionSettlementCurrent,
   captureClientVoiceSessionSettlementContext,
+  type captureClientVoiceSessionSettlement,
 } from "./client-voice-session-lifecycle.js";
 import type { ClientVoiceRunBinding } from "./client-voice-session-store.js";
 
@@ -224,3 +225,11 @@ export async function prepareClientVoiceSessionSourceChecks(
     throw error;
   }
 }
+
+export type ClientVoiceRun = {
+  binding: ClientVoiceRunBinding;
+  source: ClientVoiceSessionSource;
+  settlement?: ReturnType<typeof captureClientVoiceSessionSettlement>;
+  stopObserving?: () => void;
+  retired?: true;
+};

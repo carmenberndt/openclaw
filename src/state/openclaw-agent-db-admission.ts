@@ -65,7 +65,7 @@ import {
   type OpenClawAgentDatabaseValidation,
 } from "./openclaw-agent-db-validation-cache.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
-import type { OpenClawAgentDatabaseExecution } from "./openclaw-agent-execution-contract.js";
+import type { OpenClawAgentDatabaseAdmissionExecution } from "./openclaw-agent-execution-admission-contract.js";
 import { runOpenClawAgentWorkerWrite } from "./openclaw-agent-write-admission.js";
 import {
   getOpenClawDatabaseMaintenanceScope,
@@ -77,11 +77,6 @@ import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db-contract.js
 export type OpenClawAgentDatabaseWriteAdmission = <T>(
   run: (assertCurrent: () => void, validation?: OpenClawAgentDatabaseValidation) => T | Promise<T>,
 ) => Promise<T>;
-
-export type OpenClawAgentDatabaseAdmissionExecution = Pick<
-  OpenClawAgentDatabaseExecution,
-  "agentId" | "path" | "assertCurrent" | "prepare" | "captureGenerationClaim"
->;
 
 /** Refusal must unwind ownership without entering corruption repair or changing its caller error. */
 function assertAgentDatabaseOpenAuthority(

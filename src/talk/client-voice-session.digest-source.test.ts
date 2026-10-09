@@ -7,6 +7,7 @@ import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import * as sessionEvents from "../config/sessions/session-accessor.sqlite-events.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { emitTrustedDiagnosticEvent } from "../infra/diagnostic-events.js";
+import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import * as agentDatabases from "../state/openclaw-agent-db.js";
@@ -74,6 +75,53 @@ describe("client voice digest physical sources", () => {
     } finally {
       warning.mockRestore();
       vi.useRealTimers();
+    }
+  });
+
+  it("does not retry an unknown digest marker when writer cleanup also fails", async () => {
+    const target = { agentId: "main", sessionKey: "agent:main:main" };
+    await seedSession(target.sessionKey, { channel: "discord", to: "channel:unknown-marker" });
+    const voiceSessionId = await createOrResumeClientVoiceSession({ ...target, origin: "client" });
+    await recordMutation(voiceSessionId);
+    await completeRun(`run-${voiceSessionId}`);
+    const unknown = new SqliteWorkerError("synthetic unknown digest marker", "outcome-unknown");
+    const cleanupError = new Error("synthetic digest writer release failure");
+    const capture = voiceWriters.captureClientVoiceSessionWriter;
+    let attempts = 0;
+    const captureSpy = vi
+      .spyOn(voiceWriters, "captureClientVoiceSessionWriter")
+      .mockImplementation((params) => {
+        const writer = capture(params);
+        if (params.physicalSource) {
+          attempts += 1;
+          vi.spyOn(writer, "mutate").mockRejectedValueOnce(unknown);
+          const release = writer.release.bind(writer);
+          vi.spyOn(writer, "release").mockImplementation(async () => {
+            await release();
+            throw cleanupError;
+          });
+        }
+        return writer;
+      });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await closeClientVoiceSession({ ...target, voiceSessionId, config: {} });
+      await settleDigestAttempts();
+      await closeClientVoiceSession({ ...target, voiceSessionId, config: {} });
+      await settleDigestAttempts();
+      expect(attempts).toBe(1);
+      expect(sendDurableMessageBatch).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("settlement is unknown"));
+      expect(clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)).toMatchObject({
+        status: "closed",
+      });
+      expect(
+        clientVoiceSessionTesting.readRecord(target.agentId, voiceSessionId)?.digestDeliveredAt,
+      ).toBeUndefined();
+    } finally {
+      await settleDigestAttempts();
+      warn.mockRestore();
+      captureSpy.mockRestore();
     }
   });
 

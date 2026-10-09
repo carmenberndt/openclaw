@@ -1,3 +1,4 @@
+import { isAgentEventLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import type { ClientVoiceSessionSource } from "../../../talk/client-voice-session-source.js";
 import { registerClientVoiceConsultRun } from "../../../talk/client-voice-session.js";
@@ -84,12 +85,22 @@ export function createRelayAgentRunRegistration(
         ? previous
         : { runId: params.runId, sessionKey: params.sessionKey };
     const chat = session.context.chatAbortControllers.get(params.runId);
+    const chatGeneration = chat?.lifecycleGeneration;
     let installed = false;
     const ownsSlot = () =>
       callId
         ? session.activeAgentToolCalls.get(callId) === registration
         : run.standalone === registration;
-    const isCurrent = () => session.activeAgentRuns.get(params.runId) === run && ownsSlot();
+    const ownsChat = () =>
+      session.context.chatAbortControllers.get(params.runId) === chat &&
+      (!chat ||
+        (!chat.controller.signal.aborted &&
+          chat.registrationCleanupRequested !== true &&
+          chat.lifecycleGeneration === chatGeneration &&
+          (chatGeneration === undefined ||
+            isAgentEventLifecycleGenerationCurrent(chatGeneration))));
+    const isCurrent = () =>
+      ownsChat() && session.activeAgentRuns.get(params.runId) === run && ownsSlot();
     const canReleaseVoice = () =>
       isCurrent() && !hasRelayAgentRunRegistrations(session, run, registration);
     const release = () => {
@@ -133,6 +144,9 @@ export function createRelayAgentRunRegistration(
     };
     const assertCallerCurrent = () => {
       params.assertCurrent?.();
+      if (!ownsChat()) {
+        throw new Error("Realtime relay run registration changed while waiting");
+      }
       if (getRelaySession(params.relaySessionId, params.connId) !== session) {
         throw new Error("Realtime relay session changed during run registration");
       }

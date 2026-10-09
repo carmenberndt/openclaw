@@ -48,6 +48,9 @@ export type OpenClawAgentDatabaseRegistryReadResult =
   | { status: "available"; entries: OpenClawRegisteredAgentDatabase[] }
   | { status: "unavailable" };
 
+/** An in-process witness from the canonical invalidator, never serialized as authority. */
+export type AgentDatabaseRegistryChange = Readonly<{ previous: symbol; current: symbol }>;
+
 export type OpenClawAgentDatabaseRegistrationCommit = Readonly<{
   agentId: string;
   agentPath: string;

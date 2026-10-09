@@ -8,14 +8,14 @@ import type {
   SqliteWorkerStore,
 } from "../infra/sqlite-worker-contract.js";
 import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
-import type {
-  SqliteWorkerAdmissionFactory,
-  SqliteWorkerAdmissionRequest,
-} from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { AgentCreationClaimWitness } from "./agent-creation-claim.js";
 import type { OpenClawAgentDatabase } from "./openclaw-agent-db-contract.js";
-import type { AgentDatabaseRegistryChange } from "./openclaw-agent-db-registry-listing.js";
+import type {
+  AgentDatabaseGenerationClaim,
+  AgentDatabaseRequestExecutionSource,
+  OpenClawAgentDatabaseAdmissionExecution,
+} from "./openclaw-agent-execution-admission-contract.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
 import type { RegisteredAgentWorkerOperations } from "./openclaw-agent-execution-operations.js";
 
@@ -33,35 +33,18 @@ export type AgentDatabaseExecutionFileIdentity = Pick<
   "kind" | "physicalIdentity" | "birthtime" | "nativeLocation"
 >;
 
-/** A borrowed native generation, never a file locator that can adopt a later open. */
-export type AgentDatabaseGenerationClaim = {
-  readonly identity: string;
-  readonly incarnation: string;
-  assertCurrent(): void;
-};
-
 export type AgentDatabaseExecutionScope = Pick<
   SqliteWorkerStore<AgentDatabaseOperations>,
   "execute"
 >;
 
-export type OpenClawAgentDatabaseExecution = {
-  readonly agentId: string;
-  readonly path: string;
+export type OpenClawAgentDatabaseExecution = OpenClawAgentDatabaseAdmissionExecution & {
   /** The accepted native receipt; reading this never adopts the current pathname. */
   readonly fileIdentity: AgentDatabaseExecutionFileIdentity | undefined;
   /** Accept the admitted native handle used by a synchronous SDK operation. */
   adoptNativeDatabase(database: OpenClawAgentDatabase): Promise<void>;
-  assertCurrent(): void;
-  captureGenerationClaim(): AgentDatabaseGenerationClaim;
   /** Reuse only a native generation whose preparation and registration publication settled. */
   capturePreparedGenerationClaim(): AgentDatabaseGenerationClaim | undefined;
-  /** Reuse native preparation; host handle admission explicitly requests current schema proof. */
-  prepare(
-    source: AgentDatabaseRequestExecutionSource,
-    signal?: AbortSignal,
-    options?: { readmitSchema: true },
-  ): Promise<void>;
   /** Admit a write against existing storage; a missing store remains missing. */
   runExisting<T>(
     source: AgentDatabaseRequestExecutionSource,
@@ -154,15 +137,3 @@ export type AgentDatabaseOperations = AgentDatabaseDomainOperations &
     "database.prepareWrite": { input: undefined; output: void };
     "database.recordIntegrity": { input: undefined; output: boolean };
   };
-
-/** A request owner composes its retained admission with the native owner's validation. */
-export type AgentDatabaseRequestExecutionSource = {
-  assertCurrent(): void;
-  onRegistryChange?: (change: AgentDatabaseRegistryChange) => void;
-  createAdmission(params: {
-    attachment: { kind: "agent-execution"; startupJournal: boolean };
-    nativeLocations: readonly string[];
-    authorize(request: SqliteWorkerAdmissionRequest): void;
-    assertCurrent(): void;
-  }): SqliteWorkerAdmissionFactory;
-};

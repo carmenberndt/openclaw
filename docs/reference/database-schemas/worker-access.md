@@ -1958,6 +1958,9 @@ operation checks its own current authority even when reusing a writer.
 Non-opaque native operations use the existing runtime admission owner to prepare
 cold targets in the worker. Bootstrap grants check physical custody, lifetime, and prepared requester authority;
 full native source authority is rechecked after admission and before native writes.
+Tool-call requests also prepare cold targets through that worker owner when they
+carry opaque SDK callbacks. Those callbacks run before and after preparation on
+the host, outside worker admission grants.
 Talk entry initialization uses a closed ensure operation in the existing entry
 writer. Cold admission retains the original executor and hands its acknowledged
 physical source into the entry operation. Complete selector-family inventories
@@ -1983,6 +1986,13 @@ Consult registration retains requester, session-source, and accepted-work author
 through the queue and commit, then publishes its run binding before execution
 starts. Chat-backed relays use that same registration once, carrying the relay's
 live cancellation fence. Lifetime-only registrations keep the direct worker path.
+Native consults install their chat controller before awaiting voice registration,
+so status pruning cannot discard a pending run. Its exact controller and lifecycle
+generation remain current through backend preparation; failed registration releases
+that controller without removing a same-ID successor.
+Client tool calls carry their admitted physical voice source through legacy
+selection and chat dispatch. Relay registration and cancellation check the captured
+controller's identity, abort state, cleanup state, and lifecycle generation.
 The relay retains its creator's physical source through coalesced creation,
 registration, transcript queues, and close. Only that creator can publish its
 acknowledged source; later operations borrow writers from that source after
@@ -2005,7 +2015,9 @@ successor.
 Transcript failure reservations remain durable before the
 fallible append. Same-store append and success bookkeeping commit together, then
 observers consume the acknowledged transcript and voice facts. Ambiguous custom
-selectors resolve through the existing reader before choosing the atomic append;
+selectors resolve through the existing reader before choosing the atomic append.
+An omitted transcript path resolves from the conversation agent and captured
+environment, independently of a retained voice metadata path;
 only the selected physical identity can establish a shared voice store. Gateway
 close rejects new bookkeeping and joins accepted persistence independently of
 scheduler cancellation; unknown write outcomes never authorize automatic replay.
@@ -2014,6 +2026,10 @@ their native owner until the atomic incognito cutover. Existing synchronous
 tool-policy and pre-backend admission checks still refresh foreign commits through
 the facts reader. Schemas, stored formats, retention, durability, and update behavior
 are unchanged.
+The voice lifecycle owner awaits every source and writer release. It reports
+cleanup failures after acknowledged success without discarding the committed
+result; primary failures retain their causes, including unknown write outcomes
+that must not be replayed.
 
 Session entry replacement receipts carry final entry, membership, category,
 participant, Board-presence, and activity-watermark facts from the committing

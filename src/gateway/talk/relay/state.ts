@@ -467,12 +467,19 @@ export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
 /** Omitting the abort reason releases relay correlation while accepted work continues. */
 export function retireRelayAgentRuns(session: RelaySession, reason?: string): void {
   if (reason !== undefined) {
-    for (const [runId, { sessionKey }] of session.activeAgentRuns) {
-      abortChatRunById(session.context, {
-        runId,
-        sessionKey,
-        stopReason: reason,
-      });
+    for (const [runId, run] of session.activeAgentRuns) {
+      const current =
+        run.standalone?.isCurrent() ||
+        [...session.activeAgentToolCalls.values()].some(
+          (registration) => registration.run === run && registration.isCurrent(),
+        );
+      if (current) {
+        abortChatRunById(session.context, {
+          runId,
+          sessionKey: run.sessionKey,
+          stopReason: reason,
+        });
+      }
     }
   }
   session.activeAgentRuns.clear();

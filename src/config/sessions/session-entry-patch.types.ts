@@ -1,16 +1,8 @@
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
-import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
 import type { ConversationAuthority } from "./conversation-authority.types.js";
-import type {
-  SessionEntryPatchContext,
-  SessionEntryPatchOptions,
-} from "./session-accessor.sqlite-contract.js";
 import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
-import type { ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
 import type { SessionEntryPatchOperation } from "./session-entry-patch-operation.js";
-import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionTranscriptWatermark } from "./session-history-read.types.js";
 import type {
   SessionSourceAssertion,
@@ -19,38 +11,6 @@ import type {
   SessionSourceTransactionGrant,
 } from "./session-source-authority.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
-
-export type SqliteSessionEntryPatchOptions = SessionEntryPatchOptions & {
-  /** Exact captured writer under its caller's foreground reservation; never a new owner. */
-  retainedExecution?: OpenClawAgentDatabaseExecution;
-  /** Audited internal updaters: no nested writer admission; guards retain only host authority. */
-  workerGuard?: SessionEntryPatchGuard;
-  /** Recheck owner cancellation after async preparation, immediately before committing. */
-  shouldCommit?: () => boolean;
-  /** Synchronous owner bookkeeping after COMMIT, before identity observers can cancel the caller. */
-  onCommitted?: (entry: SessionEntry) => void;
-  /** Exact source acknowledged by the writer; never discover it after the operation yields. */
-  onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: SessionEntry) => void;
-};
-
-export type SessionEntryUpdater = (
-  entry: SessionEntry,
-  context: SessionEntryPatchContext,
-) => Promise<Partial<SessionEntry> | null> | Partial<SessionEntry> | null;
-
-export type SqliteSessionEntrySnapshotPatchParams = {
-  capturedSource?: CapturedSessionEntryReadSource;
-  operationLabel: "session-entry.patch" | "session-entry-target.patch";
-  validateCanonicalKeys: boolean;
-  options: SqliteSessionEntryPatchOptions;
-  selection: SessionEntryPatchSelection;
-  readSnapshot: (database: OpenClawAgentDatabase) => SqliteLifecycleTargetSnapshot;
-  resolved: ResolvedSqliteScope;
-  sessionKey: string;
-  storePath: string;
-  // Callback preparation precedes BEGIN; fixed operations evaluate the transaction's current rows.
-  update: SessionEntryUpdater | SessionEntryPatchOperation;
-};
 
 export type SessionEntryPatchSelection =
   | { kind: "entry"; sessionKey: string; exact: boolean }

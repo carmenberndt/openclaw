@@ -39,6 +39,7 @@ vi.mock("../../../talk/client-voice-session-lifecycle.js", async (importOriginal
 vi.mock("../../../talk/client-voice-session-write.js", () => ({
   captureClientVoiceSessionWriter: voiceSessionMocks.captureClientVoiceSessionWriter,
 }));
+// mock-isolation: The queue-only fixture has no physical voice database to capture.
 vi.mock("../../../talk/client-voice-session-source.js", () => ({
   captureClientVoiceSessionSource: voiceSessionMocks.captureClientVoiceSessionSource,
 }));

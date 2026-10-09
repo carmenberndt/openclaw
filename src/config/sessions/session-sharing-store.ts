@@ -10,11 +10,11 @@ import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite
 import type { SessionCollaborationScope } from "./session-collaboration-scope.js";
 import { withSessionStoreReaderInWorker } from "./session-entry-read-runtime.js";
 import { captureIncognitoSessionOperation } from "./session-incognito-binding.js";
+import type { SessionMember } from "./session-membership-facts.types.js";
 import {
   hasSessionMemberInDatabase,
   listSessionMembersInDatabase,
   readSessionMembersInDatabase,
-  type SessionMember,
   type SessionMembersSnapshot,
 } from "./session-sharing-store.kernel.js";
 import { projectionLane } from "./session-transcript-worker-resources.js";

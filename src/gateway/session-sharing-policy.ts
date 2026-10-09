@@ -122,7 +122,7 @@ export async function withSessionSharingTarget<T>(
   consume: (facts: {
     target: SessionSharingTarget | null;
     storageTarget: Pick<SessionSharingTarget, "agentId" | "canonicalKey" | "storePath">;
-    members: readonly import("../config/sessions/session-sharing-store.kernel.js").SessionMember[];
+    members: readonly import("../config/sessions/session-membership-facts.types.js").SessionMember[];
     assertCurrent: () => void;
   }) => T,
 ): Promise<T> {

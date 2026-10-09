@@ -22,13 +22,13 @@ import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.
 import { agentDatabaseLifecycle } from "./openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
+import type { AgentDatabaseRequestExecutionSource } from "./openclaw-agent-execution-admission-contract.js";
 import { watchAgentDatabaseExecutionConfig } from "./openclaw-agent-execution-config.js";
 import type {
   AgentDatabaseExecutionFileIdentity,
   AgentDatabaseExecutionScope,
   AgentDatabaseFileExecutionOwner,
   AgentDatabaseNativeGeneration,
-  AgentDatabaseRequestExecutionSource,
   OpenClawAgentDatabaseExecution,
 } from "./openclaw-agent-execution-contract.js";
 import {
@@ -37,6 +37,8 @@ import {
 } from "./openclaw-agent-execution-incognito.js";
 import { createAgentDatabaseNativeGeneration } from "./openclaw-agent-execution-native.js";
 import {
+  assertAgentDatabaseCreationIdentity,
+  assertCapturedAgentDatabaseFileOwner,
   assertAgentDatabaseExecutionSharedState,
   assertBorrowedAgentDatabaseFileIdentity,
   captureBorrowedAgentDatabaseGenerationClaim,
@@ -126,23 +128,13 @@ function captureFileAgentDatabaseExecution(
     const identity = readDatabasePathIdentitySync(pathname);
     existing ??= executions.get(identity.canonicalPath);
     if (expectedCreationIdentity) {
-      const capturesAbsence = expectedCreationIdentity.key.startsWith("path:");
-      const observed =
-        capturesAbsence && existing?.kind === "file" ? existing.creationIdentity : identity;
-      if (
-        constraints.expectedIdentity ||
-        (capturesAbsence &&
-          (agentDatabaseLifecycle.databases.has(pathname) ||
-            agentDatabaseLifecycle.pending.has(pathname))) ||
-        (!capturesAbsence &&
-          (!expectedCreationIdentity.key.startsWith("file:") ||
-            typeof expectedCreationIdentity.birthtime !== "string")) ||
-        observed?.key !== expectedCreationIdentity.key ||
-        observed.canonicalPath !== expectedCreationIdentity.canonicalPath ||
-        observed.birthtime !== expectedCreationIdentity.birthtime
-      ) {
-        throw new Error("Agent creation no longer owns its originally observed target");
-      }
+      assertAgentDatabaseCreationIdentity({
+        pathname,
+        existing,
+        identity,
+        expectedIdentity: constraints.expectedIdentity,
+        expectedCreationIdentity,
+      });
     }
     if (!existing) {
       return createAgentDatabaseExecution(options, {
@@ -155,15 +147,7 @@ function captureFileAgentDatabaseExecution(
       });
     }
   }
-  if (existing.kind !== "file") {
-    throw new Error("Agent namespace belongs to an incognito execution owner");
-  }
-  if (existing.agentId !== agentId) {
-    throw new Error(
-      `OpenClaw agent database ${pathname} is already open for agent ${existing.agentId}; requested agent ${agentId}.`,
-    );
-  }
-  assertAgentDatabaseExecutionSharedState(options, existing.sharedDatabaseKey);
+  assertCapturedAgentDatabaseFileOwner(existing, options, agentId, pathname);
   return existing.borrow(
     pathname,
     constraints.expectedIdentity,

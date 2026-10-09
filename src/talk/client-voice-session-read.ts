@@ -4,7 +4,13 @@ import { withSessionHistoryWorkerDatabase } from "../config/sessions/session-tra
 import { resolveStateDir } from "../config/state-dir.js";
 import type { OpenClawAgentDatabaseOptions } from "../state/openclaw-agent-db-contract.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
-import type { VoiceSessionLookup, VoiceSessionMatch } from "./client-voice-session-store.js";
+import type { ClientVoiceSessionSource } from "./client-voice-session-source.js";
+import {
+  readOwnedVoiceSessionFacts,
+  type ClientVoiceRunBinding,
+  type VoiceSessionLookup,
+  type VoiceSessionMatch,
+} from "./client-voice-session-store.js";
 
 /** Use the existing agent reader's custody and revocation lifecycle. */
 export async function lookupClientVoiceSessions(
@@ -35,10 +41,24 @@ export function resolveClientVoiceAgentSessionId(params: {
 }
 
 /** Resolve the unique open client-owned call for legacy tool-call clients. */
-export async function resolveOpenClientVoiceSessionId(params: {
-  agentId: string;
-  sessionKey: string;
-}): Promise<string | undefined> {
-  const matches = await lookupClientVoiceSessions({ kind: "legacy", ...params });
+export async function resolveOpenClientVoiceSessionId(
+  params: { agentId: string; sessionKey: string },
+  source?: Pick<OpenClawAgentDatabaseOptions, "env" | "path">,
+): Promise<string | undefined> {
+  const matches = await lookupClientVoiceSessions({ kind: "legacy", ...params }, source);
   return matches.length === 1 ? matches[0]?.voiceSessionId : undefined;
+}
+
+/** Validate ownership and open state before starting a voice-bound consult. */
+export function assertClientVoiceSessionOpen(
+  params: ClientVoiceRunBinding,
+  source?: ClientVoiceSessionSource,
+): "client" | "relay" {
+  source?.assertCurrent();
+  const record = readOwnedVoiceSessionFacts(params, source?.options);
+  source?.assertCurrent();
+  if (record.status !== "open") {
+    throw new Error("voice session is closed");
+  }
+  return record.origin;
 }

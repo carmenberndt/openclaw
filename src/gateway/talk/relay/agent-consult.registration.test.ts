@@ -254,43 +254,162 @@ describe("relay consult registration authority", () => {
     },
   );
 
-  it("does not abort a replacement chat controller when registration fails", async ({ signal }) => {
-    const { relay, target, chat } = createRegistrationFixture();
-    const held = createDeferred();
-    const resume = createDeferred();
-    const pending = registerTalkRealtimeRelayAgentRun({
-      ...target,
-      callId: "controller-call",
-      registerVoice: async () => {
+  it.for(["creation", "registration", "failure", "aborted", "cleanup"] as const)(
+    "preserves chat controller ownership across the %s wait",
+    async (phase, { signal }) => {
+      const { relay, target, chat } = createRegistrationFixture();
+      const callId = adoptRelayProviderToolCallId(relay, "controller-call")!;
+      const held = createDeferred();
+      const resume = createDeferred();
+      const waitForReplacement = async () => {
         held.resolve();
         await resume.promise;
-        throw new Error("registration refused");
-      },
-    });
-    const settled = pending.catch((error: unknown) => error);
-    await withinTest(held.promise, signal);
-    chat.cleanup();
-    const replacement = registerChatAbortController({
-      chatAbortControllers: relay.context.chatAbortControllers,
-      runId: target.runId,
-      sessionId: "replacement-chat",
-      sessionKey: target.sessionKey,
-      timeoutMs: 60_000,
-    });
-    try {
-      resume.resolve();
-      expect(await settled).toMatchObject({ message: "registration refused" });
-      expect(replacement.controller.signal.aborted).toBe(false);
-      adoptRelayProviderToolCallId(relay, "replacement-call");
-      await registerTalkRealtimeRelayAgentRun({ ...target, callId: "replacement-call" });
-      cancelTalkRealtimeRelayProviderToolCall(relay, "replacement-call");
-      expect(replacement.controller.signal.aborted).toBe(true);
-    } finally {
-      resume.resolve();
-      await settled;
-      replacement.cleanup();
-    }
-  });
+      };
+      const create = voiceSessions.createOrResumeClientVoiceSession;
+      const creating =
+        phase === "creation"
+          ? vi
+              .spyOn(voiceSessions, "createOrResumeClientVoiceSession")
+              .mockImplementationOnce(async (...args) => {
+                const result = await create(...args);
+                await waitForReplacement();
+                return result;
+              })
+          : undefined;
+      const register = voiceSessions.registerClientVoiceConsultRun;
+      const registering =
+        phase === "registration" || phase === "aborted" || phase === "cleanup"
+          ? vi
+              .spyOn(voiceSessions, "registerClientVoiceConsultRun")
+              .mockImplementationOnce(async (...args) => {
+                const release = await register(...args);
+                await waitForReplacement();
+                return release;
+              })
+          : undefined;
+      const pending = registerTalkRealtimeRelayAgentRun({
+        ...target,
+        callId,
+        ...(phase === "failure"
+          ? {
+              registerVoice: async () => {
+                await waitForReplacement();
+                throw new Error("registration refused");
+              },
+            }
+          : {}),
+      });
+      const settled = pending.catch((error: unknown) => error);
+      let replacement: typeof chat | undefined;
+      try {
+        await withinTest(held.promise, signal);
+        if (phase === "aborted" || phase === "cleanup") {
+          const entry = chat.entry!;
+          if (phase === "aborted") {
+            chat.controller.abort();
+          } else {
+            entry.projectSessionTerminalPending = true;
+            chat.cleanup();
+          }
+          expect(relay.context.chatAbortControllers.get(target.runId)).toBe(entry);
+        } else {
+          chat.cleanup();
+          replacement = registerChatAbortController({
+            chatAbortControllers: relay.context.chatAbortControllers,
+            runId: target.runId,
+            sessionId: "replacement-chat",
+            sessionKey: target.sessionKey,
+            timeoutMs: 60_000,
+          });
+        }
+        resume.resolve();
+        const result = await settled;
+        cancelTalkRealtimeRelayProviderToolCall(relay, "controller-call");
+        if (replacement) {
+          expect(replacement.controller.signal.aborted).toBe(false);
+        }
+        expect(result).toMatchObject({
+          message:
+            phase === "failure"
+              ? "registration refused"
+              : "Realtime relay run registration changed while waiting",
+        });
+        expect(relay.activeAgentRuns.size).toBe(0);
+        expect(relay.activeAgentToolCalls.size).toBe(0);
+        expect(voiceSessions.resolveClientVoiceRunBinding(target.runId)).toBeUndefined();
+        expect(clientVoiceSessionTesting.readRecord("main", relay.id)?.consultRunIds).toEqual(
+          phase === "registration" || phase === "aborted" || phase === "cleanup"
+            ? [target.runId]
+            : [],
+        );
+        if (replacement) {
+          adoptRelayProviderToolCallId(relay, "replacement-call");
+          await registerTalkRealtimeRelayAgentRun({ ...target, callId: "replacement-call" });
+          cancelTalkRealtimeRelayProviderToolCall(relay, "replacement-call");
+          expect(replacement.controller.signal.aborted).toBe(true);
+        }
+      } finally {
+        resume.resolve();
+        await settled;
+        replacement?.cleanup();
+        if (chat.entry) {
+          chat.entry.projectSessionTerminalPending = false;
+        }
+        chat.cleanup();
+        registering?.mockRestore();
+        creating?.mockRestore();
+      }
+    },
+  );
+
+  it.for(["provider", "close", "close-without-controller"] as const)(
+    "keeps a later controller alive after settled registration (%s)",
+    async (operation) => {
+      const { relay, target, chat } = createRegistrationFixture();
+      if (operation === "close-without-controller") {
+        chat.cleanup();
+      }
+      const callId =
+        operation === "close"
+          ? undefined
+          : adoptRelayProviderToolCallId(relay, "settled-controller-call");
+      const registration = await registerTalkRealtimeRelayAgentRun({ ...target, callId });
+      chat.cleanup();
+      const replacement = registerChatAbortController({
+        chatAbortControllers: relay.context.chatAbortControllers,
+        runId: target.runId,
+        sessionId: "replacement-chat",
+        sessionKey: target.sessionKey,
+        timeoutMs: 60_000,
+      });
+      try {
+        if (operation === "provider") {
+          cancelTalkRealtimeRelayProviderToolCall(relay, "settled-controller-call");
+        } else {
+          await closeRelaySession(relay, "completed", { disposition: "abort" });
+        }
+        expect(replacement.controller.signal.aborted).toBe(false);
+        expect(relay.activeAgentRuns.size).toBe(0);
+        expect(relay.activeAgentToolCalls.size).toBe(0);
+        if (operation === "provider") {
+          adoptRelayProviderToolCallId(relay, "replacement-call");
+          const successor = await registerTalkRealtimeRelayAgentRun({
+            ...target,
+            callId: "replacement-call",
+          });
+          registration.release();
+          expect(successor.isCurrent()).toBe(true);
+          cancelTalkRealtimeRelayProviderToolCall(relay, "replacement-call");
+          expect(replacement.controller.signal.aborted).toBe(true);
+          successor.release();
+        }
+      } finally {
+        registration.release();
+        replacement.cleanup();
+        chat.cleanup();
+      }
+    },
+  );
 
   it("retries a known refused voice write in the database admitted by its creator", async () => {
     const originalEnv = { ...process.env };
@@ -494,7 +613,7 @@ describe("relay consult registration authority", () => {
     },
   );
 
-  it.for(["current", "caller", "relay"] as const)(
+  it.for(["current", "caller", "relay", "controller"] as const)(
     "fences delegated voice registration while queued (%s)",
     async (revoked, { signal }) => {
       const context = createGatewayRequestContext(makeContextParams());
@@ -517,6 +636,17 @@ describe("relay consult registration authority", () => {
         throw new Error("Expected the created relay owner");
       }
       const sessionKey = relay.sessionTarget.sessionKey;
+      const chat =
+        revoked === "controller"
+          ? registerChatAbortController({
+              chatAbortControllers: context.chatAbortControllers,
+              runId: "run-1",
+              sessionId: "queued-chat",
+              sessionKey,
+              timeoutMs: 60_000,
+            })
+          : undefined;
+      let replacement: typeof chat;
       const queued = createDeferred();
       const entered = createDeferred();
       const releaseQueue = createDeferred();
@@ -581,6 +711,15 @@ describe("relay consult registration authority", () => {
           callerCurrent = false;
         } else if (revoked === "relay") {
           relay.toolCalls.markCancelled(["call-1"], "cancelled-turn");
+        } else if (revoked === "controller") {
+          chat?.cleanup();
+          replacement = registerChatAbortController({
+            chatAbortControllers: context.chatAbortControllers,
+            runId: "run-1",
+            sessionId: "replacement-chat",
+            sessionKey,
+            timeoutMs: 60_000,
+          });
         }
         releaseQueue.resolve();
         const error = await settled;
@@ -599,17 +738,24 @@ describe("relay consult registration authority", () => {
             message:
               revoked === "caller"
                 ? "Accepted caller was cancelled"
-                : "Realtime provider cancelled the tool call before run registration",
+                : revoked === "controller"
+                  ? "Realtime relay run registration changed while waiting"
+                  : "Realtime provider cancelled the tool call before run registration",
           });
           expect(voiceSessions.resolveClientVoiceRunBinding("run-1")).toBeUndefined();
         }
         expect(relay.activeAgentRuns.size).toBe(0);
         expect(relay.activeAgentToolCalls.size).toBe(0);
+        if (replacement) {
+          expect(replacement.controller.signal.aborted).toBe(false);
+        }
       } finally {
         releaseQueue.resolve();
         await settled;
         await blocker;
         release?.();
+        replacement?.cleanup();
+        chat?.cleanup();
       }
     },
   );

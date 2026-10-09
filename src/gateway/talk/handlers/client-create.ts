@@ -56,10 +56,12 @@ import {
 } from "../client-gateway-control.js";
 import { talkRequestError } from "../request-error.js";
 import {
+  assertTalkClientSessionEntryDeadline,
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
   buildTalkRealtimeConfig,
   resolveTalkRealtimeProviderInstructions,
+  resolveTalkClientLaunchError,
 } from "../session-config.js";
 import { readTalkRealtimeInitialItems } from "../session-history.js";
 import { requirePreparedTalkSessionTarget } from "../session-target.js";
@@ -118,42 +120,20 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       requested.model,
     );
     const mode = params.mode ?? realtimeConfig.mode ?? "realtime";
-    if (mode !== "realtime") {
-      return rejectRequest(
-        ErrorCodes.INVALID_REQUEST,
-        `talk.client.create only supports mode="realtime"; use talk.catalog for ${mode} provider discovery`,
-      );
-    }
     const brain = params.brain ?? realtimeConfig.brain ?? "agent-consult";
-    if (brain !== "agent-consult") {
-      return rejectRequest(
-        ErrorCodes.INVALID_REQUEST,
-        `talk.client.create only supports brain="agent-consult"`,
-      );
-    }
     const transport = params.transport ?? realtimeConfig.transport;
     const wantsCameraFrames = params.capabilities?.includes("camera-frame") === true;
     const wantsGatewayControl = params.capabilities?.includes("gateway-control-v1") === true;
     const clientControl = wantsGatewayControl ? { owner: "gateway" as const } : undefined;
-    if (wantsGatewayControl && wantsCameraFrames) {
-      return rejectRequest(
-        ErrorCodes.INVALID_REQUEST,
-        "gateway-control-v1 supports audio-only WebRTC sessions",
-      );
-    }
-    if (transport === "managed-room") {
-      return rejectRequest(
-        ErrorCodes.UNAVAILABLE,
-        "managed-room realtime Talk sessions are not available in the browser UI yet",
-      );
-    }
-    if (transport === "gateway-relay") {
-      return rejectRequest(
-        ErrorCodes.INVALID_REQUEST,
-        wantsCameraFrames
-          ? "gateway-relay does not support browser video frames"
-          : `talk.client.create is client-owned; use talk.session.create for gateway-relay`,
-      );
+    const transportError = resolveTalkClientLaunchError({
+      mode,
+      brain,
+      transport,
+      wantsGatewayControl,
+      wantsCameraFrames,
+    });
+    if (transportError) {
+      return rejectRequest(transportError.code, transportError.message);
     }
     const launchOptions = buildRealtimeVoiceLaunchOptions({
       requested,
@@ -493,9 +473,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
             session.expiresAt === undefined
               ? undefined
               : session.expiresAt - REALTIME_VOICE_CLIENT_SESSION_MIN_TTL_MS;
-          if (sessionEntryDeadlineAt !== undefined && Date.now() >= sessionEntryDeadlineAt) {
-            throw new Error("Realtime browser session expired during startup; try again");
-          }
+          assertTalkClientSessionEntryDeadline(sessionEntryDeadlineAt);
           // Existing rows use the admitted identity; the live guards below and
           // voice transaction still revalidate it. Missing rows are initialized
           // only after the provider returns a usable client transport.
@@ -584,14 +562,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
                       assertCurrent: () => {
                         requester.assertPreparationCurrent();
                         gatewayControlOwner?.assertOpen();
-                        if (
-                          sessionEntryDeadlineAt !== undefined &&
-                          Date.now() >= sessionEntryDeadlineAt
-                        ) {
-                          throw new Error(
-                            "Realtime browser session expired during startup; try again",
-                          );
-                        }
+                        assertTalkClientSessionEntryDeadline(sessionEntryDeadlineAt);
                       },
                     },
                     writer,

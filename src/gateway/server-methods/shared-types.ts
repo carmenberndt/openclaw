@@ -501,7 +501,7 @@ export type SessionMutationAuthorization = {
       sessionKey: string;
       entry: import("../../config/sessions/types.js").SessionEntry | undefined;
       readSource?: import("../../config/sessions/session-entry-read-source.types.js").CapturedSessionEntryReadSource;
-      members: readonly import("../../config/sessions/session-sharing-store.kernel.js").SessionMember[];
+      members: readonly import("../../config/sessions/session-membership-facts.types.js").SessionMember[];
     },
     consume: () => T,
     assertSourceCurrent: () => void,

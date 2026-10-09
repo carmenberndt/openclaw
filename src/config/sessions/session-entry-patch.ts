@@ -105,7 +105,7 @@ export async function patchSessionEntryInWorker(params: {
         if (!isRecord(value.authority)) {
           throw new Error("Entry ensure omitted its transaction authority facts");
         }
-        // The paired kernel supplies the current preimage while its write lock remains held.
+        // SAFETY: session-entry-patch.worker supplies typed authority from its locked preimage.
         transactionFacts = value.authority as SessionPendingInputAuthorityFacts;
         ensureIdentitySource.assertCurrent(transactionFacts);
       }

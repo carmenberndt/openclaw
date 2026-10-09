@@ -246,6 +246,7 @@ vi.mock("../../../talk/client-voice-session-read.js", async (importOriginal) => 
     await importOriginal<typeof import("../../../talk/client-voice-session-read.js")>();
   return {
     ...actual,
+    assertClientVoiceSessionOpen: mocks.assertClientVoiceSessionOpen,
     resolveClientVoiceAgentSessionId: mocks.resolveClientVoiceAgentSessionId,
     resolveOpenClientVoiceSessionId: mocks.resolveOpenClientVoiceSessionId,
   };
@@ -255,7 +256,6 @@ vi.mock("../../../talk/client-voice-session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../talk/client-voice-session.js")>();
   return {
     ...actual,
-    assertClientVoiceSessionOpen: mocks.assertClientVoiceSessionOpen,
     closeStaleClientVoiceSessions: mocks.closeStaleClientVoiceSessions,
     createOrResumeClientVoiceSession: mocks.createOrResumeClientVoiceSession,
     registerClientVoiceConsultRun: mocks.registerClientVoiceConsultRun,

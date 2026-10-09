@@ -8,7 +8,6 @@ import { appendExpectedSessionTranscriptTurn } from "../config/sessions/session-
 import type { SessionTranscriptWriteScope } from "../config/sessions/session-accessor.types.js";
 import { isNativeSessionEntryRead } from "../config/sessions/session-entry-read-request.js";
 import { withSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
-import { releaseSessionSourceAuthorities } from "../config/sessions/session-source-authority.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target-paths.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -17,11 +16,13 @@ import {
   onTrustedToolExecutionEvent,
   type TrustedToolExecutionEvent,
 } from "../infra/diagnostic-events.js";
+import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../infra/sqlite-worker-identity.js";
 import { captureGatewayRootWorkReleaseObserver } from "../process/gateway-work-admission.js";
+import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import {
   type ClientVoiceConfirmationUtteranceContext,
@@ -39,12 +40,14 @@ import {
 import {
   captureClientVoiceSessionSettlement,
   withClientVoiceSessionSettlement,
+  withClientVoiceSessionResources,
 } from "./client-voice-session-lifecycle.js";
 import { lookupClientVoiceSessions } from "./client-voice-session-read.js";
 import {
   captureClientVoiceSessionSource,
   matchesClientVoiceRunSource,
   type ClientVoiceSessionSource,
+  type ClientVoiceRun,
 } from "./client-voice-session-source.js";
 import {
   type ClientVoiceRunBinding,
@@ -52,7 +55,6 @@ import {
   operationKey,
   readVoiceSessionRecord as readRecord,
   readVoiceSessionFacts,
-  readOwnedVoiceSessionFacts,
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
 } from "./client-voice-session-store.js";
 import {
@@ -69,14 +71,6 @@ import {
   voiceTranscriptEventId,
 } from "./voice-transcript.js";
 
-type ClientVoiceRun = {
-  binding: ClientVoiceRunBinding;
-  source: ClientVoiceSessionSource;
-  settlement?: ReturnType<typeof captureClientVoiceSessionSettlement>;
-  stopObserving?: () => void;
-  retired?: true;
-};
-
 const voiceSessionByRunId = new Map<string, ClientVoiceRun>();
 const voiceSessionOperations = new VoiceTranscriptOperationRegistry();
 let unsubscribeToolEffects: (() => void) | undefined;
@@ -89,7 +83,8 @@ async function closeVoiceSessionOperationOwner(
   return withClientVoiceSessionSettlement(
     async () => {
       const writer = retainedWriter ?? captureClientVoiceSessionWriter(params);
-      try {
+      const resources = retainedWriter ? [] : [writer];
+      return withClientVoiceSessionResources(resources, async () => {
         let closed: boolean | undefined;
         await voiceSessionOperations.close(
           operationKey(params.agentId, params.voiceSessionId),
@@ -102,11 +97,7 @@ async function closeVoiceSessionOperationOwner(
           return await closeVoiceSessionOperationOwner(params, writer);
         }
         return closed ?? false;
-      } finally {
-        if (!retainedWriter) {
-          await writer.release();
-        }
-      }
+      });
     },
     undefined,
     params.physicalSource?.settlementContext ?? retainedWriter?.settlementContext,
@@ -125,11 +116,9 @@ async function recordClientVoiceToolEffect(event: TrustedToolExecutionEvent): Pr
       withClientVoiceSessionSettlement(
         async () => {
           const writer = captureClientVoiceSessionWriter({ ...binding, physicalSource: source });
-          try {
-            await writer.mutate({ ...binding, kind: "effect", event, now: Date.now() });
-          } finally {
-            await writer.release();
-          }
+          await withClientVoiceSessionResources([writer], () =>
+            writer.mutate({ ...binding, kind: "effect", event, now: Date.now() }),
+          );
         },
         undefined,
         source.settlementContext,
@@ -224,85 +213,88 @@ export async function registerClientVoiceConsultRun(
   const capture = () => captureClientVoiceSessionSettlement(writer.settlementContext);
   let settlement: ReturnType<typeof capture> | undefined;
   let registered: ClientVoiceRun | undefined;
-  const errors: unknown[] = [];
-  try {
-    settlement = (sameBinding ? previous.settlement?.run(capture) : undefined) ?? capture();
-    const accepted = settlement;
-    return await accepted.run(() => {
-      const mutation: VoiceSessionMutation = {
-        kind: "consult",
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-        voiceSessionId: params.voiceSessionId,
-        runId: params.runId,
-        now: Date.now(),
-      };
-      const publish = (record: ClientVoiceSessionRecord | undefined) => {
-        const source = writer.source;
-        // A queued replay still commits, but cannot revive its retired run owner.
-        const retired = sameBinding && previous.retired;
-        let owner = retired ? undefined : voiceSessionByRunId.get(params.runId);
-        if (!retired && !matchesClientVoiceRunSource(owner, params, source)) {
-          if (owner) {
-            retireClientVoiceRun(params.runId, owner);
-          }
-          owner = {
-            binding: Object.freeze({
-              agentId: params.agentId,
-              voiceSessionId: params.voiceSessionId,
-              sessionKey: params.sessionKey,
-            }),
-            source,
-            ...(observeRelease ? { settlement: accepted } : {}),
-          };
-          registered = owner;
-          voiceSessionByRunId.set(params.runId, owner);
-          const published = owner;
-          owner.stopObserving = observeRelease?.((reason) =>
-            retireClientVoiceRun(params.runId, published, reason === "settled"),
-          );
-        }
-        // Replays re-arm a closed call's digest without replacing its accepted owner.
-        if (record?.status === "closed" && params.config) {
-          mutationDigestDeliveryOwner.record({
-            agentId: params.agentId,
-            voiceSessionId: params.voiceSessionId,
-            context: {
-              config: params.config,
-              source: owner?.source ?? (sameBinding ? previous.source : source),
-            },
-          });
-        }
-        ensureToolEffectSubscription();
-        const release = () => {
-          if (owner) {
-            retireClientVoiceRun(params.runId, owner);
-          }
-        };
-        // Publish cleanup with the binding, before resource release can suspend.
-        params.onRegistered?.(release);
-        return release;
-      };
-      return params.requester || params.source
-        ? mutateAuthorizedClientVoiceSession(params, writer, () => mutation, publish)
-        : writer.mutate(mutation, publish);
-    });
-  } catch (error) {
-    errors.push(error);
-    if (registered) {
+  return withClientVoiceSessionResources(
+    () => (settlement && settlement !== registered?.settlement ? [settlement, writer] : [writer]),
+    async () => {
       try {
-        retireClientVoiceRun(params.runId, registered, false);
-      } catch (releaseError) {
-        errors.push(releaseError);
+        settlement = (sameBinding ? previous.settlement?.run(capture) : undefined) ?? capture();
+        const accepted = settlement;
+        return await accepted.run(() => {
+          const mutation: VoiceSessionMutation = {
+            kind: "consult",
+            agentId: params.agentId,
+            sessionKey: params.sessionKey,
+            voiceSessionId: params.voiceSessionId,
+            runId: params.runId,
+            now: Date.now(),
+          };
+          const publish = (record: ClientVoiceSessionRecord | undefined) => {
+            const source = writer.source;
+            // A queued replay still commits, but cannot revive its retired run owner.
+            const retired = sameBinding && previous.retired;
+            let owner = retired ? undefined : voiceSessionByRunId.get(params.runId);
+            if (!retired && !matchesClientVoiceRunSource(owner, params, source)) {
+              if (owner) {
+                retireClientVoiceRun(params.runId, owner);
+              }
+              owner = {
+                binding: Object.freeze({
+                  agentId: params.agentId,
+                  voiceSessionId: params.voiceSessionId,
+                  sessionKey: params.sessionKey,
+                }),
+                source,
+                ...(observeRelease ? { settlement: accepted } : {}),
+              };
+              registered = owner;
+              voiceSessionByRunId.set(params.runId, owner);
+              const published = owner;
+              owner.stopObserving = observeRelease?.((reason) =>
+                retireClientVoiceRun(params.runId, published, reason === "settled"),
+              );
+            }
+            // Replays re-arm a closed call's digest without replacing its accepted owner.
+            if (record?.status === "closed" && params.config) {
+              mutationDigestDeliveryOwner.record({
+                agentId: params.agentId,
+                voiceSessionId: params.voiceSessionId,
+                context: {
+                  config: params.config,
+                  source: owner?.source ?? (sameBinding ? previous.source : source),
+                },
+              });
+            }
+            ensureToolEffectSubscription();
+            const release = () => {
+              if (owner) {
+                retireClientVoiceRun(params.runId, owner);
+              }
+            };
+            // Publish cleanup with the binding, before resource release can suspend.
+            params.onRegistered?.(release);
+            return release;
+          };
+          // Standalone guards stay in the captured writer's admission checks.
+          return params.requester || params.source
+            ? mutateAuthorizedClientVoiceSession(params, writer, () => mutation, publish)
+            : writer.mutate(mutation, publish);
+        });
+      } catch (error) {
+        if (registered) {
+          try {
+            retireClientVoiceRun(params.runId, registered, false);
+          } catch (releaseError) {
+            throw createSqliteLifecycleAggregateError(
+              [error, releaseError],
+              "Voice session registration and cleanup failed",
+              error,
+            );
+          }
+        }
+        throw error;
       }
-    }
-    throw error;
-  } finally {
-    await releaseSessionSourceAuthorities(
-      settlement && settlement !== registered?.settlement ? [settlement, writer] : [writer],
-      errors,
-    );
-  }
+    },
+  );
 }
 
 /** Return the open voice-call binding for one executing run. */
@@ -322,20 +314,6 @@ export function isClientVoiceSessionConfirmable(binding: ClientVoiceRunBinding):
     record?.transcriptCapable === true ||
     record?.hasUserTranscript === true
   );
-}
-
-/** Validate ownership and open state before starting a voice-bound consult. */
-export function assertClientVoiceSessionOpen(
-  params: ClientVoiceRunBinding,
-  source?: ClientVoiceSessionSource,
-): "client" | "relay" {
-  source?.assertCurrent();
-  const record = readOwnedVoiceSessionFacts(params, source?.options);
-  source?.assertCurrent();
-  if (record.status !== "open") {
-    throw new Error("voice session is closed");
-  }
-  return record.origin;
 }
 
 function appendVoiceTranscript(
@@ -375,7 +353,8 @@ function appendVoiceTranscript(
   return withClientVoiceSessionSettlement(
     async () => {
       const writer = retainedWriter ?? captureClientVoiceSessionWriter(normalized);
-      try {
+      const resources = retainedWriter ? [] : [writer];
+      return withClientVoiceSessionResources(resources, async () => {
         await voiceSessionOperations.run(
           operationKey(normalized.agentId, normalized.voiceSessionId),
           async () => {
@@ -489,14 +468,17 @@ function appendVoiceTranscript(
               }
             };
             const nativeTranscript = isNativeSessionEntryRead(sessionTarget, normalized.agentId);
-            const transcriptStore = sessionTarget.storePath
-              ? resolveUnsuffixedSqliteTargetFromSessionStorePath(sessionTarget.storePath)
-              : undefined;
+            const transcriptStore = resolveUnsuffixedSqliteTargetFromSessionStorePath(
+              sessionTarget.storePath ||
+                resolveOpenClawAgentSqlitePath({
+                  agentId: normalized.agentId,
+                  env: writer.options.env,
+                }),
+            );
             const sharesVoiceStore =
               !nativeTranscript &&
-              (!transcriptStore ||
-                ((transcriptStore.agentId || transcriptStore.shared) &&
-                  transcriptStore.path === writer.options.path));
+              (transcriptStore.agentId || transcriptStore.shared) &&
+              transcriptStore.path === writer.options.path;
             if (sharesVoiceStore) {
               // Entry preparation and failure reservation share their authoritative transaction.
               const prepared = await writer.mutate(
@@ -555,11 +537,7 @@ function appendVoiceTranscript(
           },
           { weight: normalized.text.length },
         );
-      } finally {
-        if (!retainedWriter) {
-          await writer.release();
-        }
-      }
+      });
     },
     undefined,
     retainedWriter?.settlementContext,
@@ -588,15 +566,12 @@ export async function flushClientVoiceSessionWrites(
     return;
   }
   const writer = retainedWriter ?? captureClientVoiceSessionWriter(params);
-  try {
+  const resources = retainedWriter ? [] : [writer];
+  await withClientVoiceSessionResources(resources, async () => {
     await voiceSessionOperations.flush(operationKey(params.agentId, params.voiceSessionId));
     // Join the accepted agent-writer prefix, including synchronous diagnostic producers.
     await runOpenClawAgentWriteAdmission(writer.options, () => writer.assertCurrent());
-  } finally {
-    if (!retainedWriter) {
-      await writer.release();
-    }
-  }
+  });
 }
 
 /** Append one finalized relay-owned transcript item idempotently. */
