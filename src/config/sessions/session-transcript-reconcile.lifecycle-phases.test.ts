@@ -4,7 +4,7 @@ import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "nod
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import { openNodeSqliteDatabase, requireNodeSqlite } from "../../infra/node-sqlite.js";

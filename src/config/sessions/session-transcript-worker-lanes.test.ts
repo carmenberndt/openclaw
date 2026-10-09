@@ -46,8 +46,13 @@ const observed = vi.hoisted(() => ({
   replaceWorkers: [] as Array<() => () => Promise<void>>,
 }));
 
-// Transport controls normally represent an admitted store; the cold-admission
-// regression below exercises the real writer queue before such facts exist.
+// Transport controls model settled native preparation and its published format facts;
+// cold-admission regressions exercise the real writer queue before either exists.
+vi.mock("../../infra/sqlite-database-admission.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/sqlite-database-admission.js")>()),
+  hasSqliteDatabaseSchemaAdmissionForPath: () => observed.preparedDatabase,
+}));
+
 vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/openclaw-agent-execution.js")>()),
   captureExistingOpenClawAgentDatabaseExecution: (options: { path: string }) => {
