@@ -6,6 +6,7 @@ import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.s
 import * as sharingStore from "../../config/sessions/session-sharing-store.js";
 import { addSessionMember } from "../../config/sessions/session-sharing-store.native.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
+import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -150,31 +151,26 @@ it("refuses revoked managers and dirty membership at the worker commit grant", a
         const projection = getSessionRowProjection(requestContext)!;
         const target = projection.sharingTarget({ key: sessionKey, agentId: "main" })!;
         const before = await sharingStore.readSessionMembersInWorker(scope);
-        const createAdmission = admission.createSqliteWorkerOperationAdmission;
         let reachedCommit = false;
-        const gate = vi
-          .spyOn(admission, "createSqliteWorkerOperationAdmission")
-          .mockImplementation((callback, attachment) =>
-            createAdmission((request, grant) => {
-              if (request.stage === "commit") {
-                reachedCommit = true;
-                if (change === "caller") {
-                  manager.invalidated = true;
-                } else if (change === "role") {
-                  manager.connect.scopes = ["operator.read", "operator.write"];
-                } else {
-                  sessionChanges.emit({ all: true, scope: "stores" });
-                  expect(projection.hasMembership(target.storePath, target.storeKey, "owner")).toBe(
-                    true,
-                  );
-                  expect(
-                    projection.sharingTargetState({ key: sessionKey, agentId: "main" }).status,
-                  ).toBe("pending");
-                }
-              }
-              return callback(request, grant);
-            }, attachment),
-          );
+        const gate = probe.admission(admission, (request, grant, callback) => {
+          if (request.stage === "commit") {
+            reachedCommit = true;
+            if (change === "caller") {
+              manager.invalidated = true;
+            } else if (change === "role") {
+              manager.connect.scopes = ["operator.read", "operator.write"];
+            } else {
+              sessionChanges.emit({ all: true, scope: "stores" });
+              expect(projection.hasMembership(target.storePath, target.storeKey, "owner")).toBe(
+                true,
+              );
+              expect(
+                projection.sharingTargetState({ key: sessionKey, agentId: "main" }).status,
+              ).toBe("pending");
+            }
+          }
+          return callback(request, grant);
+        });
         try {
           // Add a new member or remove an existing one so rollback has an observable result.
           await expect(
