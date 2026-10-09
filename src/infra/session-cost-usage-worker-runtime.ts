@@ -274,8 +274,18 @@ export async function runUsageCostWorker(
     incognito.authority,
     target,
     async (compute) => {
+      const initialStats = target
+        ? {
+            value: await compute.execute({
+              type: "session.compute.usage.stats",
+              input: { ...target, request: {} },
+            }),
+          }
+        : undefined;
       const instances = target
-        ? [{ ...target, updatedAtMs: 0 }]
+        ? initialStats?.value?.lastMutationAtMs !== undefined
+          ? [{ ...target, updatedAtMs: initialStats.value.lastMutationAtMs }]
+          : []
         : await compute.execute({ type: "session.compute.store.inventory", input: {} });
       instances.forEach(({ sessionKey }) => {
         incognito.retainSource?.(sessionKey);
@@ -283,7 +293,7 @@ export async function runUsageCostWorker(
       return runPreparedUsageCostWorker(
         captured,
         capturedOperation,
-        createIncognitoUsageCostAdapter(compute, target, marker, instances),
+        createIncognitoUsageCostAdapter(compute, target, marker, instances, initialStats),
       );
     },
     operation.kind === "refresh" ? undefined : (incognito.admissionSignal ?? getAsyncWorkSignal()),

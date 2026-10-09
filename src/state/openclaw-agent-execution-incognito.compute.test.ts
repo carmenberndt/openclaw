@@ -21,6 +21,7 @@ import {
   waitForSessionTranscriptIndexReconcile,
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-transcript-reconcile.js";
+import * as usageWorkerScope from "../config/sessions/session-transcript-worker-runtime.js";
 import { isSessionCostUsageRefreshRunning } from "../infra/session-cost-usage-cache.sqlite.js";
 import { resolveUsageCostPricingFingerprint } from "../infra/session-cost-usage-pricing-context.js";
 import {
@@ -521,17 +522,89 @@ it("reads explicit retained usage windows and preserves their discovery", async 
   });
 });
 
-it("observes a pending actor append before usage inventory, stats and rollup publication", async () => {
+it("observes a pending actor append before usage inventory, stats and rollup publication", async ({
+  signal,
+}) => {
   const target = await create("fifo");
   const before = await stats(target);
   assert(before);
   const barrier = await hold();
+  const appendReceived = createDeferredCore();
+  const releaseAppend = createDeferredCore();
+  const inventoryReadQueued = createDeferredCore();
+  const stopObserving = probe.observe(async (type) => {
+    if (type === "session.message.append") {
+      appendReceived.resolve();
+      await releaseAppend.promise;
+    }
+  });
+  const withCompute = actor.sessions.withCompute;
+  let firstCompute = true;
+  const computeObserved = vi
+    .spyOn(actor.sessions, "withCompute")
+    .mockImplementation((caller, selected, operation, operationSignal, onRead) => {
+      const inventory = firstCompute;
+      firstCompute = false;
+      return withCompute(
+        caller,
+        selected,
+        (compute) =>
+          operation({
+            assertCurrent: compute.assertCurrent,
+            execute(command) {
+              const pending = compute.execute(command);
+              if (inventory) {
+                inventoryReadQueued.resolve();
+              }
+              return pending;
+            },
+          }),
+        operationSignal,
+        onRead,
+      );
+    });
+  const withWorkerDatabases = usageWorkerScope.withSessionCostUsageWorkerDatabases;
+  const workerObserved = vi
+    .spyOn(usageWorkerScope, "withSessionCostUsageWorkerDatabases")
+    .mockImplementation((options, operation) =>
+      withWorkerDatabases(options, (scope) =>
+        operation({
+          ...scope,
+          async run(input, workerOptions) {
+            await appendReceived.promise;
+            return scope.run(input, workerOptions);
+          },
+        }),
+      ),
+    );
+  const pending: Promise<unknown>[] = [barrier.held];
   try {
     const written = append(target, "committed usage");
+    pending.push(written);
     const inventory = usage(target, { kind: "inventory" });
+    pending.push(inventory);
     const readStats = stats(target);
+    pending.push(readStats);
+    const initial = Promise.all([written, inventory, readStats, barrier.held]);
     barrier.release.resolve();
-    const [result, files, after] = await Promise.all([written, inventory, readStats, barrier.held]);
+    await withinTest(
+      awaitGateBeforeSettlement(
+        appendReceived.promise,
+        initial,
+        "append did not reach publication",
+      ),
+      signal,
+    );
+    await withinTest(
+      awaitGateBeforeSettlement(
+        inventoryReadQueued.promise,
+        initial,
+        "inventory did not queue behind the pending append",
+      ),
+      signal,
+    );
+    releaseAppend.resolve();
+    const [result, files, after] = await withinTest(initial, signal);
     assert(result.ok && after);
     expect(after.eventCount).toBe(before.eventCount + 1);
     expect(files).toEqual({
@@ -568,7 +641,11 @@ it("observes a pending actor append before usage inventory, stats and rollup pub
     });
   } finally {
     barrier.release.resolve();
-    await barrier.held;
+    releaseAppend.resolve();
+    await Promise.allSettled(pending);
+    stopObserving();
+    computeObserved.mockRestore();
+    workerObserved.mockRestore();
   }
 });
 
