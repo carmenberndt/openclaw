@@ -24,11 +24,13 @@ const identitySchema = z.object({
   os: z.string().min(1).max(128),
   executablePath: z.string().max(4096),
 });
-const policyValuesSchema = z.object({
-  policyValues: z.object({
-    chrome: z.object({ policies: z.record(z.string(), policyEntrySchema) }),
-  }),
+const chromePoliciesSchema = z.object({
+  chrome: z.object({ policies: z.record(z.string(), policyEntrySchema) }),
 });
+const policyExportSchema = z.union([
+  z.object({ policyValues: chromePoliciesSchema }),
+  z.object({ policyGroups: chromePoliciesSchema }),
+]);
 
 export type NativeBrowserPolicy = z.infer<typeof policyEntrySchema>;
 export type NativeBrowserPolicyReport =
@@ -81,15 +83,16 @@ export function parseNativePolicyValues(
       detail: `Automatic native policy inspection has not been verified for ${browserIdentity.browser} on ${browserIdentity.os}. Inspect its policy page manually.`,
     };
   }
-  const parsed = policyValuesSchema.safeParse(raw);
+  const parsed = policyExportSchema.safeParse(raw);
   if (!parsed.success) {
     throw new Error(
       "This browser's native policy export format is unsupported. Inspect chrome://policy manually.",
     );
   }
-  const { policyValues } = parsed.data;
+  const groups =
+    "policyValues" in parsed.data ? parsed.data.policyValues : parsed.data.policyGroups;
   const policies = Object.fromEntries(
-    Object.entries(policyValues.chrome.policies).toSorted(([a], [b]) => a.localeCompare(b)),
+    Object.entries(groups.chrome.policies).toSorted(([a], [b]) => a.localeCompare(b)),
   );
   return {
     state: Object.keys(policies).length ? "effective" : "none",

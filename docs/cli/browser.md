@@ -96,8 +96,9 @@ check their native diagnostics before treating them as protection. `none` means
 the browser reported no entries. `unsupported`, `unverified`, and `failed` never
 mean policy is absent. Routine `status` reports availability without opening tabs.
 
-Automatic inspection is verified with Linux Google Chrome and Chromium 144.
-Other versions must provide the same native page format. macOS and Windows
+Automatic inspection is verified with Linux Google Chrome and Chromium 144,
+and Google Chrome 154. Other versions must provide one of these native page
+formats. macOS and Windows
 use native policy normally; automatic inspection is unavailable until verified
 on those platforms. Inspect the browser's policy page there. Other derivatives,
 Chrome MCP, the extension relay, and non-Chromium engines do not advertise

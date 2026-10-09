@@ -322,9 +322,7 @@ export function registerBrowserManageCommands(
             }`,
             `profileColor: ${status.color}`,
             ...(status.nativePolicy
-              ? [
-                  `nativePolicy: ${status.nativePolicy.state}${"detail" in status.nativePolicy ? `; ${status.nativePolicy.detail}` : ""}`,
-                ]
+              ? [`nativePolicy: ${status.nativePolicy.state}; ${status.nativePolicy.detail}`]
               : []),
             ...(status.graphics
               ? [`graphics: ${formatBrowserGraphicsSummary(status.graphics)}`]
