@@ -1,4 +1,4 @@
-import { resolveAgentRoute, resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
+import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import { captureSessionEntryCurrentCheck } from "openclaw/plugin-sdk/session-binding-runtime";
 import {
   getConversationSession,
@@ -20,7 +20,7 @@ import { getSlackSessionRuns } from "../session-run-targets.js";
 import {
   qualifySlackConversationId,
   qualifySlackRoutePeerId,
-  resolveSlackEnterpriseMainDmSessionKey,
+  resolveSlackAgentRoute,
 } from "../workspace-routing.js";
 
 type SlackRoutingContextDeps = Pick<
@@ -88,35 +88,21 @@ export function resolveSlackRoutingContext(params: {
     routedThreadId ?? (isDirectMessage && isThreadReply ? threadTs : undefined);
   const bindingRoute = resolveSlackConversationBindingRoute({
     cfg: ctx.cfg,
-    resolveRoute: ({ boundAgentId, bindingOwnerAvailable }) => {
-      const route = resolveAgentRoute({
+    resolveRoute: ({ boundAgentId, bindingOwnerAvailable }) =>
+      resolveSlackAgentRoute({
         cfg:
           boundAgentId || !bindingOwnerAvailable
             ? { session: ctx.cfg.session }
             : normalizeSlackRouteBindingConfig(ctx.cfg),
         defaultAgentId: boundAgentId,
-        channel: "slack",
         accountId: account.accountId,
         teamId: eventScope?.teamId || ctx.teamId || undefined,
         peer: {
           kind: chatType,
-          id: qualifySlackRoutePeerId({
-            id: chatType === "direct" ? (message.user ?? "unknown") : message.channel,
-            kind: chatType === "direct" ? "user" : "channel",
-            eventScope,
-          }),
+          id: isDirectMessage ? (message.user ?? "unknown") : message.channel,
         },
-      });
-      if (!eventScope || chatType !== "direct" || route.dmScope !== "main") {
-        return route;
-      }
-      const sessionKey = resolveSlackEnterpriseMainDmSessionKey({
-        baseSessionKey: route.sessionKey,
-        accountId: account.accountId,
         eventScope,
-      });
-      return { ...route, sessionKey, mainSessionKey: sessionKey };
-    },
+      }),
     accountId: account.accountId,
     baseConversationId,
     runtimeBindingThreadId,
