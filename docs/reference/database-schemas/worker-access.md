@@ -92,6 +92,45 @@ This foundation adds no SQL, schema validation, persistent storage, SDK
 deprecation, or migration. Admission continues to own validation; receipt
 installation consumes the physical facts already captured by that owner.
 
+### Foreign observation and recertification
+
+The shared-state current-reader owner retains one unpinned probe connection per
+physical database while borrowers are active. Aliases share that connection;
+each borrower keeps its own source, admission, and cleanup authority. Closing one
+borrower does not close another's probe. Database retirement closes the shared
+connection and invalidates every certification, including refreshes still in flight.
+
+`runSqliteForeignUse` shares one `PRAGMA data_version` observation per physical
+owner in a final synchronous use. Nested guards share the frame, and captured
+frames refuse use after return or an await. Different physical databases require
+separate probes. The observation compares only versions from its original
+connection; it adds no schema, format, integrity, index, or filesystem timestamp
+checks. Existing physical identity and admission checks remain with the lifecycle
+owner. Incognito continues to use its actor authority rather than a file probe.
+
+A domain starts a refresh before its coherent worker read and accepts it only
+after observing the same connection again. Foreign commits, tracked same-handle
+mutations, schema revocation, unknown state, and owner closure retire certification.
+A newer refresh supersedes an older pending refresh. Failed preparation can be
+retried; a committed mutation or side effect must never be replayed. Domain owners
+still own complete postimages, explicit absence, pending writes, and supersession
+under the receipt contract above. Freshness alone does not certify writer coverage.
+
+Installing a known worker receipt never advances the probe baseline: another
+connection's commit can include a foreign revocation in the same interval. Even
+an own-worker-only write therefore requires conservative recertification. This
+extra work belongs in measurements. An unregistered same-handle prototype bypass
+remains outside managed mutation coverage; its domains retain native guards until
+raw-writer settlement is complete or the synchronous API is removed.
+
+Subagent maintenance uses this owner for its prepared protection snapshot. Its
+legacy synchronous candidate refresh remains in place, and refreshing a candidate
+subset cannot certify the full snapshot for later candidates. Other final-effect
+guards remain unchanged pending their domain coverage and API migrations. A probe
+is a point-in-time observation, not exclusion of foreign writers through a later
+commit or external effect. Schemas, stored bytes, retention, and update behavior
+are unchanged; published updaters need no migration for these process-local facts.
+
 Meeting transcript downloads and JSONL artifacts stream through the existing
 shared-state read worker. One private read-only transaction owns the cursor,
 entry metadata, and optional summary until the consumer and cleanup settle.
@@ -751,6 +790,9 @@ Already admitted readers retain their independent read path. The queue reservati
 ends before consumer callbacks run, and the existing request deadline, cancellation,
 and database revocation cover admission waiting. Read-only access never creates a
 missing store; idle agents still have no durable database until their first write.
+Session event capture retains the physical source reported by the worker after
+cold admission. A first writer that finishes before the read can supply that
+source; a file created after an absent read or replaced after capture is refused.
 No schema, durability, configuration, or update migration changes are required.
 
 Accepted chat input prepares fresh sharing and exact-row facts again before
@@ -1650,6 +1692,17 @@ plugin normalization and CAS, and arbitrary null-returning callbacks retain
 their existing validation contract. These changes require no schema or update
 migration and preserve delivery durability and settlement.
 
+Completed usage commits also carry their pending-switch observation into the
+adjacent cleanup. A matching commit with no pending switch needs no additional
+preparation request; later model selections keep their pending flag. Missing,
+failed, or differently targeted usage commits retain fresh preparation and CAS.
+Final restart-claim cleanup evaluates its exact session, lifecycle, claim, and
+execution fence against the writer transaction's current entry. A refused
+cleanup never installs a replacement session or lifecycle into its run's cache.
+The host retains live
+lifecycle and restart-cancellation checks. These reductions preserve FIFO,
+accepted-write settlement, schemas, stored formats, and update behavior.
+
 First-turn diff-baseline claims and settlement, reply skill snapshots, and child
 agent admission and bookkeeping use that same entry writer. Preparation retains
 the selected physical store; the transaction rereads its entry and same-store
@@ -2292,6 +2345,19 @@ reader when both are needed. These presentation facts retain their event-driven
 lifetime; they never advance a database reader's foreign-commit baseline or
 authorize a later effect. New unpinned database reads still check freshness.
 Schemas, stored bytes, permissions, retention, and update behavior are unchanged.
+
+Activity recap status and automation membership publish their presentation
+scope and certify unchanged stored facts after updating their in-memory owner.
+Resident rows rematerialize those
+fields from retained database facts without another agent or shared-state read.
+These notifications cannot certify missing facts or clear a prior storage
+invalidation; transcript, entry, ACP, and physical-store changes retain their
+own invalidation contracts. New database reads and final authority checks do not
+use these presentation facts as freshness evidence. Input settlement publishes
+runtime liveness after its persistence and cleanup owners finish, retaining the
+existing coalesced event preparation and any pending storage refresh. These
+certificates preserve pending Inbox dismissal authority; real sharing or identity
+changes still revoke it before the existing writer's transaction admission.
 
 Transcript notifications retain complete resident metadata when the committed
 entry has no activity summary. They still revoke in-flight reads and refresh

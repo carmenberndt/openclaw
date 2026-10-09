@@ -156,17 +156,18 @@ export async function captureSessionEventTargetForHost(
           throw read.error;
         }
         if (preparedSource && owner.selectedStore) {
-          // First creation can settle while the read waits for admission. Bind the
-          // file that supplied the row; an existing-file witness never advances.
-          const identity =
-            preparedSource.identity.key.startsWith("path:") && owner.readSource
+          source = {
+            ...preparedSource,
+            // Cold admission may wait for the first writer; bind the file the worker actually read.
+            identity: owner.source
               ? {
                   ...preparedSource.identity,
-                  key: `file:${owner.readSource.databaseIdentity}`,
-                  birthtime: owner.readSource.databaseBirthtime,
+                  key: `file:${owner.source.databaseIdentity}`,
+                  birthtime: owner.source.databaseBirthtime,
                 }
-              : preparedSource.identity;
-          source = { ...preparedSource, identity, selectedStore: { ...owner.selectedStore } };
+              : preparedSource.identity,
+            selectedStore: { ...owner.selectedStore },
+          };
         }
         return read.value;
       },

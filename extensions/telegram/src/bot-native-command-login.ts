@@ -58,13 +58,16 @@ export async function executeTelegramLoginCommand(params: {
     dispatch.threadSpec.id == null
       ? dispatch.threadSpec.scope
       : `${dispatch.threadSpec.scope}:${dispatch.threadSpec.id}`;
-  const flowKey = [
-    "telegram",
-    dispatch.route.accountId,
-    String(dispatch.chatId),
-    threadKey,
-    dispatch.route.agentId,
-  ].join(":");
+  const flow = {
+    flows: activeTelegramProviderLoginFlows,
+    flowKey: [
+      "telegram",
+      dispatch.route.accountId,
+      String(dispatch.chatId),
+      threadKey,
+      dispatch.route.agentId,
+    ].join(":"),
+  };
   const sendLoginMessage = async (text: string, parseMode?: "HTML") => {
     await withTelegramApiErrorLogging({
       operation: "sendMessage",
@@ -116,15 +119,10 @@ export async function executeTelegramLoginCommand(params: {
           assertCurrent(config);
         },
       }),
-    cancelLogin: () =>
-      cancelProviderLoginFlow({
-        flows: activeTelegramProviderLoginFlows,
-        flowKey,
-      }),
+    cancelLogin: () => cancelProviderLoginFlow(flow),
     answerChoice: (command) =>
       answerProviderLoginModelAccess({
-        flows: activeTelegramProviderLoginFlows,
-        flowKey,
+        ...flow,
         command,
         agentId: dispatch.route.agentId,
         readConfig: dispatch.telegramDeps.getRuntimeConfig,
@@ -145,8 +143,7 @@ export async function executeTelegramLoginCommand(params: {
   }
   const loginChoice = prepared.choice;
   const reservation = reserveProviderLoginFlow({
-    flows: activeTelegramProviderLoginFlows,
-    flowKey,
+    ...flow,
     providerLabel: loginChoice.providerLabel,
     signal: dispatch.opts.accountAbortSignal,
   });
@@ -289,8 +286,7 @@ export async function executeTelegramLoginCommand(params: {
     try {
       if (modelAccess) {
         const reply = offerProviderLoginModelAccess({
-          flows: activeTelegramProviderLoginFlows,
-          flowKey,
+          ...flow,
           prepared: modelAccess,
           terminalMessage,
         });
@@ -315,8 +311,7 @@ export async function executeTelegramLoginCommand(params: {
     }
   })().finally(() => {
     releaseProviderLoginFlow({
-      flows: activeTelegramProviderLoginFlows,
-      flowKey,
+      ...flow,
       record: reservation.record,
     });
   });

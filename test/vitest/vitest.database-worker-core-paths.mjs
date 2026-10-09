@@ -1,12 +1,7 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
-  "src/agents/cli-session-store.test.ts",
-  "src/agents/tools/sessions-list-privacy.test.ts",
-  "src/auto-reply/reply/agent-runner-cli-dispatch.test.ts",
-  "src/auto-reply/reply/commands-reset-hooks.test.ts",
-  "src/auto-reply/reply/commands-session-store.test.ts",
-  "src/auto-reply/reply/reply-state.test.ts",
-  "src/auto-reply/reply/session-entry-persistence.test.ts",
+  "src/infra/sqlite-foreign-observation.worker.test.ts",
+  "src/state/openclaw-state-db-current-reader.test.ts",
   "src/cli/admin-state-owner.process.test.ts",
   "src/pairing/pairing-store.test.ts",
   "src/pairing/pairing-store.worker.test.ts",
@@ -280,7 +275,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run/attempt.settled-turn-finalization-context.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.spawn-workspace.context-engine.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.spawn-workspace.orphan.test.ts",
-  "src/agents/embedded-agent-runner/run/attempt.spawn-workspace.diagnostics.test.ts",
   "src/agents/embedded-agent-runner/run/attempt.tool-search-catalog-abort.test.ts",
   "src/agents/mcp-oauth-provider.read.test.ts",
   "src/agents/mcp-oauth-store.test.ts",
@@ -1105,6 +1099,13 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/session-store-runtime.conversation.test.ts",
   "src/plugin-sdk/session-transcript-runtime-visible-delta.test.ts",
   "src/gateway/control-ui-plugin-auth-cookie.test.ts",
+  "src/agents/cli-session-store.test.ts",
+  "src/agents/tools/sessions-list-privacy.test.ts",
+  "src/auto-reply/reply/agent-runner-cli-dispatch.test.ts",
+  "src/auto-reply/reply/commands-reset-hooks.test.ts",
+  "src/auto-reply/reply/commands-session-store.test.ts",
+  "src/auto-reply/reply/reply-state.test.ts",
+  "src/auto-reply/reply/session-entry-persistence.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);

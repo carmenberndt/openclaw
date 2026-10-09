@@ -214,6 +214,69 @@ describe("session event target custody", () => {
     );
   });
 
+  it.each(["before", "after"] as const)(
+    "binds cold event capture to storage created %s the worker read",
+    async (creation) => {
+      await withTargetFixture(
+        async ({ env }) => {
+          const create = () => {
+            const database = openOpenClawAgentDatabase({ agentId: "main", env });
+            writeSessionEntry(database, sessionKey, {
+              sessionId: "created-during-capture",
+              lifecycleRevision: "created-during-capture",
+              updatedAt: 1,
+            });
+          };
+          const originalRead = sessionEntryRead.withSessionEntryReadOnlyInWorker;
+          const reader = vi
+            .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
+            .mockImplementation((input, assertCurrent, consume, prepare) =>
+              originalRead(
+                input,
+                assertCurrent,
+                async (read, owner) => {
+                  if (creation === "after") {
+                    create();
+                  }
+                  return consume(read, owner);
+                },
+                (database, identity) => {
+                  prepare?.(database, identity);
+                  expect(identity.key).toMatch(/^path:/);
+                  if (creation === "before") {
+                    create();
+                  }
+                },
+              ),
+            );
+          try {
+            const capture = captureSessionEventTargetForHost("main", sessionKey, { env });
+            if (creation === "after") {
+              await expect(capture).rejects.toThrow("storage changed after capture");
+              return;
+            }
+            const target = await capture;
+            expect(target).toMatchObject({
+              sessionId: "created-during-capture",
+              lifecycleRevision: "created-during-capture",
+            });
+            reader.mockRestore();
+            const prepared = await prepareSessionEventTargetForHost(target);
+            try {
+              prepared.assertCurrent();
+            } finally {
+              prepared.release();
+            }
+            expect(dispatch).not.toHaveBeenCalled();
+          } finally {
+            reader.mockRestore();
+          }
+        },
+        { empty: true, native: true },
+      );
+    },
+  );
+
   it.for([false, true])(
     "joins cold native preparation before settling cancellation (retained occurrence: %s)",
     async (preserve, { signal }) => {
@@ -290,48 +353,6 @@ describe("session event target custody", () => {
       );
     },
   );
-
-  it("captures the admitted file when first creation settles before the row read", async () => {
-    await withTargetFixture(
-      async ({ env }) => {
-        const read = sessionEntryRead.withSessionEntryReadOnlyInWorker;
-        let materialized = false;
-        const reader = vi
-          .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
-          .mockImplementation((input, assertCurrent, consume, prepare) =>
-            read(input, assertCurrent, consume, (database, identity) => {
-              prepare?.(database, identity);
-              if (!materialized) {
-                expect(identity.key).toMatch(/^path:/);
-                materialized = true;
-                writeSessionEntry(openOpenClawAgentDatabase(database), sessionKey, {
-                  sessionId: "concurrent-first-session",
-                  lifecycleRevision: "first",
-                  updatedAt: 1,
-                });
-              }
-            }),
-          );
-        try {
-          const target = await captureSessionEventTargetForHost("main", sessionKey, { env });
-          expect(materialized).toBe(true);
-          expect(target).toMatchObject({
-            sessionId: "concurrent-first-session",
-            lifecycleRevision: "first",
-          });
-          const prepared = await prepareSessionEventTargetForHost(target);
-          try {
-            prepared.assertCurrent();
-          } finally {
-            prepared.release();
-          }
-        } finally {
-          reader.mockRestore();
-        }
-      },
-      { empty: true, native: true },
-    );
-  });
 
   it.each(["fresh", "retained", "revoked", "already-revoked", "foreign"] as const)(
     "keeps cold capture read-only and prepares storage only for authorized fresh work: %s",
