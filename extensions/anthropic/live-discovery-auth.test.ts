@@ -98,26 +98,53 @@ describe("anthropic live model discovery auth", () => {
       {
         id: "claude-brand-new-9",
         type: "model",
+        display_name: "Claude Brand New 9",
         max_input_tokens: 1_000_000,
         max_tokens: 128_000,
         capabilities: {
-          // Advertises the Claude 5 contract our predicates do not yet grant an
-          // unrecognized id, so the gate must keep it hidden.
-          thinking: { types: { adaptive: { supported: true } } },
+          image_input: { supported: true },
+          thinking: {
+            supported: true,
+            types: { adaptive: { supported: true }, disabled: { supported: true } },
+          },
           effort: { xhigh: { supported: true }, max: { supported: true } },
         },
+      },
+      {
+        id: "claude-unshaped-9",
+        type: "model",
+        max_input_tokens: 200_000,
+        max_tokens: 64_000,
       },
     ];
     const provider = buildAnthropicProvider();
     const result = await provider.catalog?.run?.(buildCatalogContext("sk-ant-oat01-test-token"));
-    const ids = new Set(
-      result && "provider" in result ? (result.provider.models ?? []).map((model) => model.id) : [],
+    const models = new Map(
+      result && "provider" in result
+        ? (result.provider.models ?? []).map((model) => [model.id, model])
+        : [],
     );
 
-    expect(ids.has("claude-opus-5")).toBe(true);
+    expect(models.has("claude-opus-5")).toBe(true);
     // Shipped but absent from the live response: must survive discovery.
-    expect(ids.has("claude-mythos-5")).toBe(true);
-    // Unknown id whose advertised capabilities disagree with our contracts stays gated out.
-    expect(ids.has("claude-brand-new-9")).toBe(false);
+    expect(models.has("claude-mythos-5")).toBe(true);
+    // An unknown id ships with the capabilities Anthropic advertised, which request shaping reads.
+    expect(models.get("claude-brand-new-9")).toMatchObject({
+      name: "Claude Brand New 9",
+      input: ["text", "image"],
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+      params: {
+        claudeCapabilities: {
+          adaptiveThinking: true,
+          disabledThinking: true,
+          xhighEffort: true,
+          maxEffort: true,
+        },
+      },
+    });
+    // Without advertised capabilities an unknown id has no request contract to follow.
+    expect(models.has("claude-unshaped-9")).toBe(false);
   });
 });
