@@ -63,6 +63,45 @@ function patchSessionEntryCore(
   return patchInternalSessionEntry(scope, update, { workerGuard: {}, ...options });
 }
 
+it("ends an absent live-switch selection without committing and keeps newer flags and callback CAS", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const f = fixture();
+    const initial = f.read()!;
+    const newer = { ...initial, liveModelSwitchPending: true, modelOverride: "new-selection" };
+    const update = vi.fn(() => ({ liveModelSwitchPending: undefined }));
+    const onCommitted = vi.fn();
+    const options = {
+      skipMaintenance: true,
+      prepareIf: { kind: "live-model-switch-pending" as const },
+      onCommitted,
+    };
+    delivery.afterPrepare = () => {
+      delivery.afterPrepare = undefined;
+      replaceSessionEntrySync(f.scope, newer);
+    };
+
+    await expect(patchSessionEntryCore(f.scope, update, options)).resolves.toBeNull();
+    expect(delivery.commands).toEqual(["session.entry.patch.prepare"]);
+    expect(update).not.toHaveBeenCalled();
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(f.read()).toMatchObject(newer);
+
+    delivery.beforeCommit = () => {
+      delivery.beforeCommit = undefined;
+      replaceSessionEntrySync(f.scope, { ...newer, modelOverride: "latest-selection" });
+    };
+    await expect(patchSessionEntryCore(f.scope, update, options)).rejects.toBeInstanceOf(
+      SqliteSessionMutationConflictError,
+    );
+    expect(update).toHaveBeenCalledOnce();
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(f.read()).toMatchObject({
+      liveModelSwitchPending: true,
+      modelOverride: "latest-selection",
+    });
+  });
+});
+
 it("preserves cold serialization and snapshot revisions for synchronous SDK commit guards", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const f = fixture();

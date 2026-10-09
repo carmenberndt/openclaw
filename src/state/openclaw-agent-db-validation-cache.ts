@@ -293,6 +293,24 @@ export function captureOpenClawAgentDatabaseReadValidation(
   };
 }
 
+/** Retire a replaced file's proof before capturing its successor's publication guard. */
+export function retireReplacedAgentValidation(
+  agentId: string,
+  pathname: string,
+  expectedIdentity?: { physicalIdentity: string },
+): void {
+  if (!expectedIdentity) {
+    return;
+  }
+  const retainedValidation = getOpenClawAgentDatabaseValidationForTransfer({
+    agentId,
+    path: pathname,
+  });
+  if (retainedValidation && retainedValidation.identity !== expectedIdentity.physicalIdentity) {
+    invalidateOpenClawAgentDatabaseValidation(pathname, retainedValidation.identity);
+  }
+}
+
 /** Native admission supplies the checked file identity; no host SQLite handle is needed. */
 export function captureOpenClawAgentDatabaseValidationTransfer(
   database: Pick<ValidationDatabase, "agentId" | "path">,

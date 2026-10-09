@@ -1,6 +1,7 @@
 /** Keeps automatic auth profiles stable unless reset, unavailable, or recovering a preference. */
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { resolveSessionAuthProfileOverrideSource } from "../../config/sessions/auth-profile-override-provenance.js";
+import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import {
   sessionEntryCommitGuardOptions,
   type SessionSourceAssertion,
@@ -286,6 +287,7 @@ async function resolveSessionAuthProfileOverride(params: {
   modelId: string;
   agentId: string;
   agentDir: string;
+  reader?: SessionEntryCohortReader;
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
@@ -317,7 +319,7 @@ async function resolveSessionAuthProfileOverride(params: {
     !sessionEntry.authProfileOverride?.trim() &&
     !params.requesterProfileId &&
     !hasConfiguredAuthProfiles &&
-    !(await hasAnyAuthProfileStoreSourceAsync(agentDir))
+    !(await hasAnyAuthProfileStoreSourceAsync(agentDir, params.reader))
   ) {
     return { profileId: undefined, store: undefined };
   }
@@ -548,10 +550,8 @@ async function resolveSessionAuthProfileOverride(params: {
   let next = current;
   if (retryableHigherPriorityProfile) {
     next = retryableHigherPriorityProfile;
-  } else if (isNewSession || shouldRotateCurrent) {
+  } else if (isNewSession || shouldRotateCurrent || !current) {
     next = pickAvailable(currentUnavailable ? undefined : current);
-  } else if (!current) {
-    next = pickAvailable();
   }
 
   if (!next) {
@@ -588,6 +588,7 @@ export async function resolveSessionAuthSelection(params: {
   configuredProfileId?: string;
   harnessRuntime?: string;
   agentDir: string;
+  reader?: SessionEntryCohortReader;
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;

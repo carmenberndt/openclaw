@@ -1,4 +1,5 @@
 /** Prepares the admitted writer context and teardown tracker for one attempt. */
+import { getReplyOperationSessionReader } from "../../../auto-reply/reply/reply-run-registry.state.js";
 import { prepareCronRootSessionGeneration } from "../../../config/sessions/session-delivery-generation.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import {
@@ -21,6 +22,7 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
     | "abortSignal"
     | "config"
     | "runId"
+    | "replyOperation"
     | "sessionFile"
     | "sessionId"
     | "sessionKey"
@@ -96,6 +98,7 @@ export async function prepareEmbeddedAttemptTranscriptLifecycle(input: {
     sessionFile: attempt.sessionFile,
     sessionKey: attempt.sessionKey,
     sessionTarget: fencedSessionTarget,
+    sessionReader: getReplyOperationSessionReader(attempt.replyOperation),
     ...(initialWriter ? { initialWriter } : {}),
     assertCommitAllowed: composeSessionSourceAssertion(
       [assertAdmittedActive, generation?.assertCurrent],

@@ -15,16 +15,12 @@ import {
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import {
   borrowOpenClawAgentDatabase,
-  captureOpenClawAgentDatabaseExecution,
   openSqliteWorkerStore,
   openOpenClawAgentSqliteWorkerStore,
   runSqliteWorkerStoreWrite,
   type OpenClawAgentSqliteWorkerStore,
-  type OpenClawAgentDatabaseExecution,
   type SqliteWorkerStore,
   runQueuedStoreWrite,
-  readOpenClawAgentDatabaseIdentity,
-  supportsOpenClawAgentDatabaseExecution,
   withOpenClawAgentDatabaseWrite,
   type StoreWriterQueue,
 } from "openclaw/plugin-sdk/sqlite-runtime";
@@ -40,6 +36,7 @@ import {
   openMemoryDatabaseReadOnlyAtPath,
 } from "./manager-db.js";
 import { withMemoryIndexGeneration } from "./manager-index-generation-lease.js";
+import { withMemoryPublicationExecution } from "./manager-publication-lifetime.js";
 import type {
   MemoryEmbeddingCacheMutation,
   MemoryPublicationConnection,
@@ -637,31 +634,7 @@ export class MemoryIndexDatabase {
   }
 
   async withPublicationGeneration(run: () => Promise<void>): Promise<void> {
-    let execution: OpenClawAgentDatabaseExecution | undefined;
-    if (
-      this.writeOptions &&
-      !this.readOnly &&
-      supportsOpenClawAgentDatabaseExecution(this.writeOptions)
-    ) {
-      const source = readOpenClawAgentDatabaseIdentity({ db: this.db });
-      if (this.closed || !this.db.isOpen || typeof source.identity !== "string") {
-        throw new Error("Memory publication requires its live file owner");
-      }
-      // Retain before preparation yields; a no-op generation never opens a native worker.
-      execution = captureOpenClawAgentDatabaseExecution(this.writeOptions, {
-        expectedIdentity: {
-          kind: "file",
-          physicalIdentity: source.identity,
-          nativeLocation: source.filename,
-          birthtime: source.birthtime,
-        },
-      });
-    }
-    try {
-      await run();
-    } finally {
-      await execution?.release();
-    }
+    await withMemoryPublicationExecution(this, run);
   }
 
   closeShadow(): Promise<void> {

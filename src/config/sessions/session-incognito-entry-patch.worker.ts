@@ -2,7 +2,7 @@ import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js"
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import { applySessionEntryPatchInDatabase } from "./session-accessor.sqlite-entry-mutation.js";
-import { sessionEntryPatchPredicateMatches } from "./session-entry-patch-guard.js";
+import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
 import { readSessionEntryPatchSnapshot } from "./session-entry-patch.worker.js";
 import type {
   IncognitoEntryPatchOperations,
@@ -50,7 +50,12 @@ export function createIncognitoEntryPatchWorker(
           let sourceValidation: SessionSourceValidation | undefined;
           admit("transaction", keys, { guarded });
           let result: IncognitoEntryPatchResult = { entry: null, wrote: false };
-          if (sessionEntryPatchPredicateMatches(database, sessionKey, input.shouldCommitIf)) {
+          const predicate = readSessionEntryPatchPredicate(
+            database,
+            sessionKey,
+            input.shouldCommitIf,
+          );
+          if (predicate.matches) {
             const mutation = applySessionEntryPatchInDatabase(database, {
               ...input,
               readSnapshot: (owner) => readSessionEntryPatchSnapshot(owner, selection),
@@ -77,7 +82,14 @@ export function createIncognitoEntryPatchWorker(
                 },
               },
             });
-            result = { entry: mutation.entry, wrote: Boolean(mutation.identity) };
+            result = {
+              entry: mutation.entry,
+              wrote: Boolean(mutation.identity),
+              transcriptPredicate:
+                mutation.entry.sessionId === predicate.transcriptPredicate?.sessionId
+                  ? predicate.transcriptPredicate
+                  : undefined,
+            };
           }
           admit("commit", keys, { guarded, value: result, sourceValidation });
           return result;

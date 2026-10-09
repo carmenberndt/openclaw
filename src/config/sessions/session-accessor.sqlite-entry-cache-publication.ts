@@ -42,7 +42,6 @@ import {
   type SessionEntryPublicationRecord,
   type SessionEntryReplacementPublication,
   type SessionEntryCreationOperation,
-  type SessionEntryPlaceholder,
   type SessionTranscriptInitializationPublication,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
@@ -68,6 +67,7 @@ export {
   readPreparedSessionEntryChange,
   readPreparedSessionEntryPublicationSource,
   readPreparedSessionSharingChange,
+  readSessionEntryCreationTransition,
 } from "./session-accessor.sqlite-entry-cache-publication-state.js";
 export type {
   PreparedSessionEntryChanges,
@@ -211,29 +211,6 @@ export function assertSessionEntryCreationPublication(
   assertSessionEntryCreationTarget(preparedSharingChanges.operations.get(operation), target);
 }
 
-export function readSessionEntryCreationTransition(
-  change: SessionRowChange,
-  operation: SessionEntryCreationOperation,
-): SessionEntryPlaceholder | undefined {
-  const record = preparedSharingChanges.changes.get(change);
-  const receipt = record?.kind === "placeholder" ? record.receipt : undefined;
-  const creation = preparedSharingChanges.operations.get(operation);
-  if (!creation) {
-    return undefined;
-  }
-  try {
-    assertSessionEntryCreationCurrent(creation);
-  } catch {
-    return undefined;
-  }
-  return receipt?.committed &&
-    receipt.creation === creation &&
-    receipt.databaseIdentity === readSessionEntryCreationIdentity(creation) &&
-    receipt.sessionKey === creation.sessionKey
-    ? receipt.placeholder
-    : undefined;
-}
-
 /** Only the actual inserted-placeholder producer supplies these known row facts. */
 export function publishSessionEntryPlaceholderInsertion(
   database: SessionEntryCacheDatabase & { path: string },
@@ -249,6 +226,7 @@ export function publishSessionEntryPlaceholderInsertion(
       ? current
       : undefined;
   const receipt: PlaceholderReceipt = {
+    kind: "placeholder",
     creation,
     databaseIdentity: creation ? readSessionEntryCreationIdentity(creation) : database.db,
     sessionKey,
@@ -625,6 +603,7 @@ export function retainSessionEntryWorkerPublication(params: {
                   sharingChange: "changed",
                   databaseIdentity: params.databaseIdentity,
                   receipt: {
+                    kind: "placeholder",
                     creation,
                     databaseIdentity: params.databaseIdentity,
                     sessionKey,
@@ -639,6 +618,23 @@ export function retainSessionEntryWorkerPublication(params: {
                     sharingChange,
                     prepared,
                     readCurrent,
+                    ...(!unknown &&
+                    ownsCreation &&
+                    current(sessionKey) &&
+                    sharingEntry &&
+                    !replacement?.previous.has(sessionKey) &&
+                    !owner.metadataSuperseded.has(sessionKey)
+                      ? {
+                          creation: {
+                            kind: "entry" as const,
+                            creation,
+                            databaseIdentity: params.databaseIdentity,
+                            sessionKey,
+                            entry: sharingEntry,
+                            committed: true as const,
+                          },
+                        }
+                      : {}),
                   }
                 : { kind: "marker", sharingChange, databaseIdentity: params.databaseIdentity },
           );

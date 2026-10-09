@@ -11,6 +11,7 @@ vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
 vi.mock("./session-history-eviction.js", () => ({ kickSessionHistoryDiskBudgetMaintenance() {} }));
 
 const delivery = vi.hoisted(() => ({
+  afterPrepare: undefined as (() => void) | undefined,
   afterCommit: undefined as (() => void) | undefined,
   beforeCommit: undefined as (() => void) | undefined,
   commands: [] as string[],
@@ -39,6 +40,9 @@ vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
                     delivery.beforeCommit?.();
                   }
                   const result = await worker.execute(command, commandOptions);
+                  if (command.type === "session.entry.patch.prepare") {
+                    delivery.afterPrepare?.();
+                  }
                   if (command.type === "session.entry.patch.commit") {
                     delivery.afterCommit?.();
                   }
@@ -53,6 +57,7 @@ vi.mock("../../state/openclaw-agent-execution.js", async (importOriginal) => {
 });
 
 afterEach(() => {
+  delivery.afterPrepare = undefined;
   delivery.afterCommit = undefined;
   delivery.beforeCommit = undefined;
   delivery.commands = [];

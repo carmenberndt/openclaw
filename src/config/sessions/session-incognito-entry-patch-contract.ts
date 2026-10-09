@@ -11,6 +11,7 @@ import type { InternalSessionEntry } from "./types.js";
 export type IncognitoEntryPatchResult = {
   entry: InternalSessionEntry | null;
   wrote: boolean;
+  transcriptPredicate?: SessionEntryPatchCommitted["transcriptPredicate"];
   refusedSource?: SessionEntryPatchCommitted["refusedSource"];
 };
 
