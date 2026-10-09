@@ -10,6 +10,9 @@ struct ManagedNodeGatewayMigrationTests {
         var calls: [String] = []
         var version = "2026.9.6"
         var updateFails = false
+        var setupRecoveryAtDispatch: [Bool] = []
+        var canonicalRepairFails = false
+        var canonicalVersion: String?
         var healthFails = false
         var seedFails = false
         var serviceExists = true
@@ -45,8 +48,23 @@ struct ManagedNodeGatewayMigrationTests {
         var operations: ManagedNodeGatewayMigration.Operations {
             .init(
                 checkCurrent: {},
-                updateVersion: { _, version in
+                repairCanonicalUpdate: { receipt in
+                    self.calls.append("canonical")
+                    if self.canonicalRepairFails {
+                        throw ManagedNodeGatewayMigration.Failure(message: "canonical repair failed")
+                    }
+                    if let version = self.canonicalVersion {
+                        return .superseded(receipt, installedVersion: version, compatible: true)
+                    }
+                    self.version = receipt.toVersion
+                    return .repaired(PostAppUpdateReceipt(
+                        fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt,
+                        notificationAttempts: receipt.notificationAttempts, notificationInFlight: receipt.notificationInFlight,
+                        runtimeBuildID: receipt.runtimeBuildID, setupRecovery: receipt.setupRecovery))
+                },
+                updateVersion: { _, version, setupRecovery in
                     self.calls.append("update")
+                    self.setupRecoveryAtDispatch.append(setupRecovery)
                     if self.updateFails { throw ManagedNodeGatewayMigration.Failure(message: "offline") }
                     self.version = version
                     if let updatedPackageDirectory = self.updatedPackageDirectory {
@@ -230,6 +248,225 @@ struct ManagedNodeGatewayMigrationTests {
         #expect(fixture.calls == ["capture", "service", "seed", "capture", "bun", "health"])
     }
 
+    @Test(arguments: ["same-version", "older-version", "failed"])
+    func `canonical package repair precedes selected Node work`(_ scenario: String) async throws {
+        let fixture = Fixture()
+        if scenario == "older-version" { fixture.version = "2026.8.1" }
+        fixture.canonicalRepairFails = scenario == "failed"
+        let pending = PostAppUpdateReceipt(
+            fromVersion: "2026.8.1", toVersion: "2026.9.6", recordedAt: .distantPast,
+            gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
+        if fixture.canonicalRepairFails {
+            await #expect(throws: ManagedNodeGatewayMigration.Failure.self) {
+                try await ManagedNodeGatewayMigration.run(
+                    candidate: fixture.candidate, targetVersion: pending.toVersion,
+                    pendingSetupRecovery: pending, operations: fixture.operations)
+            }
+            #expect(fixture.calls == ["canonical"])
+            return
+        }
+        let outcome = try await ManagedNodeGatewayMigration.run(
+            candidate: fixture.candidate, targetVersion: pending.toVersion,
+            pendingSetupRecovery: pending, operations: fixture.operations)
+        if scenario == "older-version" {
+            guard case .versionUpdated = outcome else {
+                Issue.record("Canonical version changes retain the installed service's two-activation boundary")
+                return
+            }
+            #expect(fixture.calls == ["canonical", "capture"])
+        } else {
+            guard case .migrated = outcome else {
+                Issue.record("Verified same-version canonical repair must allow the runtime phase")
+                return
+            }
+            #expect(fixture.calls == ["canonical", "capture", "service", "seed", "capture", "bun", "health"])
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `canonical repair rediscovers relocated absent CLI without adopting another retained selection`(
+        replaceRetained: Bool) async throws
+    {
+        let home = try makeTempDirForTests()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let state = AppProfile.current.stateDirectoryURL(homeDirectory: home)
+        let oldRoot = state.appendingPathComponent("tools/node-before")
+        let newRoot = state.appendingPathComponent("tools/node-after")
+        let alias = state.appendingPathComponent("tools/node")
+        let oldEntry = oldRoot.appendingPathComponent("lib/node_modules/openclaw/openclaw.mjs")
+        let newEntry = newRoot.appendingPathComponent("lib/node_modules/openclaw/dist/entry.js")
+        for (root, entry) in [(oldRoot, oldEntry), (newRoot, newEntry)] {
+            let node = root.appendingPathComponent("bin/node")
+            let package = root.appendingPathComponent("lib/node_modules/openclaw")
+            try FileManager.default.createDirectory(at: node.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: entry.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: entry)
+            try Data(#"{"name":"openclaw","version":"2026.9.6"}"#.utf8)
+                .write(to: package.appendingPathComponent("package.json"))
+            try Data("#!/bin/sh\nprintf 'OpenClaw 2026.9.6\\n'\n".utf8).write(to: node)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: node.path)
+        }
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: oldRoot)
+        let config = state.appendingPathComponent("openclaw.json")
+        try Data(#"{"gateway":{"mode":"local"}}"#.utf8).write(to: config)
+        try await TestIsolation.withIsolatedState(
+            launchAgentHomeDirectory: home,
+            env: ["OPENCLAW_STATE_DIR": state.path, "OPENCLAW_CONFIG_PATH": config.path, "OPENCLAW_GATEWAY_PORT": nil],
+            defaults: [cliInstallPolicyKey: "exact", connectionModeKey: "local", onboardingSeenKey: true])
+        {
+            let appState = AppStateStore.shared
+            let onboarding = appState.onboardingSeen
+            let mode = appState.connectionMode
+            appState.onboardingSeen = true
+            appState.connectionMode = .local
+            GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(true)
+            GatewayLaunchAgentManager.setTestingDaemonStatusPayload("""
+            {"ok":true,"service":{"loaded":false,"runtimeIntent":{"status":"known","revision":"absent"}}}
+            """)
+            defer {
+                appState.onboardingSeen = onboarding
+                appState.connectionMode = mode
+                GatewayLaunchAgentManager.setTestingInterceptDaemonCommands(false)
+                GatewayLaunchAgentManager.setTestingDaemonStatusPayload(nil)
+            }
+            let original = try #require(try GatewayLaunchAgentManager.legacyManagedNodeCLI(homeDirectory: home))
+            var retained = original
+            let candidate = ManagedNodeGatewayMigration.Candidate(
+                cli: original, snapshot: nil, version: "2026.9.6",
+                port: GatewayEnvironment.gatewayPort(), allowUnconfigured: false)
+            var actions: [String] = []
+            var operations = ManagedNodeGatewayMigration.liveOperations(
+                checkCurrent: {}, resolveLegacyCLI: { retained },
+                verifyHealth: { actions.append("health") },
+                setServiceHosting: { current in retained = current.cli
+                    actions.append("service")
+                }, statusHandler: { _ in })
+            operations.repairCanonicalUpdate = { receipt in
+                actions.append("canonical")
+                try FileManager.default.removeItem(at: alias)
+                try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: newRoot)
+                try FileManager.default.removeItem(at: oldEntry)
+                if replaceRetained { retained = .init(prefix: ["/operator/node", "/operator/entry.js"], sqliteLibrary: nil) }
+                return .repaired(PostAppUpdateReceipt(
+                    fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt))
+            }
+            operations.seed = { current in
+                #expect(current.cli.prefix.last == newEntry.path)
+                actions.append("seed")
+                return BundledRuntime(root: state.appendingPathComponent("unlaunched-runtime"))
+            }
+            operations.install = { _, _ in actions.append("install") }
+            operations.restore = { _ in Issue.record("Successful recapture must not require restoration") }
+            let pending = PostAppUpdateReceipt(
+                fromVersion: "2026.8.1", toVersion: candidate.version, recordedAt: .distantPast,
+                gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
+            if replaceRetained {
+                await #expect(throws: ManagedNodeGatewayMigration.Failure.self) {
+                    try await ManagedNodeGatewayMigration.run(
+                        candidate: candidate, targetVersion: pending.toVersion,
+                        pendingSetupRecovery: pending, operations: operations)
+                }
+                #expect(actions == ["canonical"])
+                #expect(retained.prefix.first == "/operator/node")
+            } else {
+                let outcome = try await ManagedNodeGatewayMigration.run(
+                    candidate: candidate, targetVersion: pending.toVersion,
+                    pendingSetupRecovery: pending, operations: operations)
+                guard case .migrated = outcome else { Issue.record("Expected refreshed same-version runtime migration")
+                    return
+                }
+                #expect(actions == ["canonical", "service", "seed", "install", "health"])
+                #expect(retained.prefix.last == newEntry.path)
+            }
+            #expect(!FileManager.default.fileExists(atPath: oldEntry.path))
+        }
+    }
+
+    @Test func `canonical stage retains caller cancellation`() async throws {
+        let fixture = Fixture()
+        var operations = fixture.operations
+        let repair = operations.repairCanonicalUpdate
+        operations.repairCanonicalUpdate = { receipt in
+            try Task.checkCancellation()
+            return try await repair(receipt)
+        }
+        let pending = PostAppUpdateReceipt(
+            fromVersion: "2026.8.1", toVersion: fixture.version, recordedAt: .distantPast,
+            gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
+        let cancelled = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            _ = try await ManagedNodeGatewayMigration.run(
+                candidate: fixture.candidate, targetVersion: pending.toVersion,
+                pendingSetupRecovery: pending, operations: operations)
+        }
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(fixture.calls.isEmpty)
+    }
+
+    @Test func `expired canonical operation cannot start selected runtime work`() async throws {
+        let fixture = Fixture()
+        var current = true
+        var operations = fixture.operations
+        let repair = operations.repairCanonicalUpdate
+        operations.checkCurrent = {
+            guard current else { throw CancellationError() }
+        }
+        operations.repairCanonicalUpdate = { receipt in
+            let result = try await repair(receipt)
+            current = false
+            return result
+        }
+        let pending = PostAppUpdateReceipt(
+            fromVersion: "2026.8.1", toVersion: fixture.version, recordedAt: .distantPast,
+            gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
+        await #expect(throws: CancellationError.self) {
+            try await ManagedNodeGatewayMigration.run(
+                candidate: fixture.candidate, targetVersion: pending.toVersion,
+                pendingSetupRecovery: pending, operations: operations)
+        }
+        #expect(fixture.calls == ["canonical"])
+    }
+
+    @Test(arguments: ["2026.8.1", "2026.9.6", "2026.9.7"], [false, true])
+    func `superseded canonical intent still reconciles the selected service`(
+        selectedVersion: String, cached: Bool) async throws
+    {
+        let fixture = Fixture()
+        fixture.version = selectedVersion
+        fixture.canonicalVersion = "2026.9.7"
+        let pending = PostAppUpdateReceipt(
+            fromVersion: "2026.8.1", toVersion: "2026.9.6", recordedAt: .distantPast,
+            gatewayUpdateIncomplete: true, coreUpdate: .legacyCanonical)
+        let outcome = try await ManagedNodeGatewayMigration.run(
+            candidate: fixture.candidate, targetVersion: pending.toVersion,
+            pendingSetupRecovery: cached
+                ? CLIInstaller.CanonicalUpdateResult.superseded(
+                    pending, installedVersion: "2026.9.7", compatible: true).receipt : pending,
+            operations: fixture.operations)
+        let canonicalCalls = cached ? [] : ["canonical"]
+        switch selectedVersion {
+        case "2026.8.1":
+            guard case .versionUpdated = outcome else { Issue.record("Expected selected-service update")
+                return
+            }
+            #expect(fixture.calls == canonicalCalls + ["capture", "update", "capture"])
+            #expect(fixture.setupRecoveryAtDispatch == [true])
+        case "2026.9.6":
+            guard case .migrated = outcome else { Issue.record("Expected same-version runtime migration")
+                return
+            }
+            #expect(fixture.calls == canonicalCalls + ["capture", "service", "seed", "capture", "bun", "health"])
+            #expect(fixture.setupRecoveryAtDispatch.isEmpty)
+        default:
+            guard case .preservedNewerRuntime = outcome else { Issue.record("Expected newer service preservation")
+                return
+            }
+            #expect(fixture.calls == canonicalCalls + ["capture"])
+            #expect(fixture.version == selectedVersion)
+            #expect(fixture.setupRecoveryAtDispatch.isEmpty)
+        }
+    }
+
     @Test(arguments: [true, false], [true, false])
     func `same version recovery attempts core repair before runtime work`(serviceExists: Bool, repairFails: Bool) async throws {
         let fixture = Fixture()
@@ -345,7 +582,7 @@ struct ManagedNodeGatewayMigrationTests {
         let fixture = Fixture()
         fixture.version = "2026.8.1"
         var operations = fixture.operations
-        operations.updateVersion = { _, _ in fixture.calls.append("update") }
+        operations.updateVersion = { _, _, _ in fixture.calls.append("update") }
         await #expect(throws: ManagedNodeGatewayMigration.Failure.self) {
             try await ManagedNodeGatewayMigration.run(
                 candidate: fixture.candidate, targetVersion: "2026.9.6", operations: operations)

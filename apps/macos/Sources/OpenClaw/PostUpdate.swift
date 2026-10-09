@@ -143,6 +143,7 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
 
     private let model = PostUpdateModel()
     private var receipt: PostAppUpdateReceipt?
+    private var supersededCanonicalCheckpoint: PostAppUpdateReceipt?
     private var window: NSWindow?
     private var task: Task<Void, Never>?
     private var retryNodeMigration = false
@@ -171,6 +172,7 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
             allowsUpdateWorkflow: BundledRuntime.isBundledApp || !CLIInstallBuild.isDebug)
         else { return false }
         self.migrationOnlyLaunchCheck = pending == nil
+        self.supersededCanonicalCheckpoint = nil
         self.receipt = receipt
         self.run()
         return true
@@ -278,6 +280,11 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
         self.task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.finishUpdate(receipt: receipt, source: source, generation: generation)
+            if self.model.phase == .complete || self.receipt == nil,
+               GatewayProcessManager.shared.canonicalUpdateResult(for: receipt, generation: generation) != nil
+            {
+                GatewayProcessManager.shared.canonicalUpdateStage = nil
+            }
             self.window?.standardWindowButton(.closeButton)?.isEnabled = true
             self.task = nil
         }
@@ -293,7 +300,7 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
         var currentReceipt = self.receipt ?? receipt
         let manager = GatewayProcessManager.shared
         if manager.nodeMigrationCompleted || manager.nodeMigrationVersionUpdated,
-           currentReceipt.coreUpdate == .gateway || currentReceipt.coreUpdate == .legacyCanonical
+           currentReceipt.coreUpdate == .gateway
         {
             currentReceipt = PostAppUpdateReceiptStore.completeCoreRepair(
                 receipt: currentReceipt, owner: currentReceipt.coreUpdate)
@@ -331,14 +338,14 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
             self.show()
             do { try await GatewayProcessManager.shared.retryManagedNodeMigration() } catch {
                 self.receipt = PostAppUpdateReceiptStore.recordMigrationFailure(
-                    receipt: self.checkpointReceipt(currentReceipt))
+                    receipt: self.checkpointReceipt(currentReceipt), setupRecovery: self.migrationOnlyLaunchCheck)
                 self.failRuntimeMigration(error.localizedDescription)
                 return true
             }
         }
         if let failure = GatewayProcessManager.shared.nodeMigrationFailure {
             self.receipt = PostAppUpdateReceiptStore.recordMigrationFailure(
-                receipt: self.checkpointReceipt(currentReceipt))
+                receipt: self.checkpointReceipt(currentReceipt), setupRecovery: self.migrationOnlyLaunchCheck)
             self.show()
             self.failRuntimeMigration(failure)
             return true
@@ -434,6 +441,57 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
         if self.shouldDeferPausedLegacyRuntime(receipt: receipt, connectionMode: connectionMode) {
             self.deferRuntimeVerification()
             return
+        }
+
+        let manager = GatewayProcessManager.shared
+        if receipt.coreUpdate == .legacyCanonical {
+            let targetVersion = receipt.toVersion
+            let checkCurrent: @MainActor @Sendable () async throws -> Void = {
+                guard !Task.isCancelled, !manager.isTerminating,
+                      manager.gatewayStartGeneration == generation,
+                      GatewayEnvironment.appVersionString() == targetVersion
+                else { throw CancellationError() }
+            }
+            do {
+                // Package recovery precedes selected-service work and notification.
+                // Neither an absent node service nor a healthy companion settles it.
+                try await checkCurrent()
+                let result: CLIInstaller.CanonicalUpdateResult
+                if let observed = manager.canonicalUpdateResult(for: receipt, generation: generation) {
+                    result = observed
+                } else {
+                    result = try await CLIInstaller.repairCanonicalUpdateIfNeeded(
+                        receipt: receipt,
+                        checkCurrent: checkCurrent,
+                        statusHandler: { [weak self] message in
+                            self?.model.phase = .updating
+                            self?.model.message = message
+                            self?.show()
+                        })
+                }
+                try await checkCurrent()
+                manager.recordCanonicalUpdate(result, generation: generation)
+                receipt = result.receipt
+                self.receipt = receipt
+                if case let .superseded(checkpoint, _, _) = result {
+                    self.migrationOnlyLaunchCheck = true
+                    self.supersededCanonicalCheckpoint = checkpoint
+                }
+                if self.retryCoreRepair {
+                    self.retryCoreRepair = false
+                    self.retryNodeMigration = Self.allowsNodeMigration(
+                        paused: AppStateStore.shared.isPaused,
+                        canActivate: manager.desiredActive && !manager.isTerminating)
+                }
+            } catch {
+                if error is CancellationError, AppStateStore.shared.isPaused {
+                    self.deferRuntimeVerification()
+                } else {
+                    self.show()
+                    self.fail(message: String(localized: "Gateway update failed."), details: error.localizedDescription)
+                }
+                return
+            }
         }
 
         if await self.finishNodeMigrationIfNeeded(receipt: receipt, connectionMode: connectionMode) { return }
@@ -588,20 +646,20 @@ final class PostUpdateController: NSObject, NSWindowDelegate {
     }
 
     private func checkpointReceipt(_ receipt: PostAppUpdateReceipt) -> PostAppUpdateReceipt {
-        guard self.migrationOnlyLaunchCheck else { return receipt }
-        // A receipt-free reconciliation must remain silent after an interrupted
-        // update too; setup recovery already owns that persisted no-welcome state.
-        return PostAppUpdateReceipt(
-            fromVersion: receipt.fromVersion, toVersion: receipt.toVersion, recordedAt: receipt.recordedAt,
-            gatewayUpdateIncomplete: receipt.gatewayUpdateIncomplete, coreUpdate: receipt.coreUpdate,
-            notificationAttempts: receipt.notificationAttempts, notificationInFlight: receipt.notificationInFlight,
-            runtimeBuildID: receipt.runtimeBuildID, setupRecovery: true)
+        // Only the next real checkpoint transition may replace this exact old
+        // snapshot. It grants no dispatch authority and cannot overwrite foreign progress.
+        defer { self.supersededCanonicalCheckpoint = nil }
+        guard let checkpoint = self.supersededCanonicalCheckpoint,
+              checkpoint.fromVersion == receipt.fromVersion, checkpoint.toVersion == receipt.toVersion,
+              checkpoint.recordedAt == receipt.recordedAt, checkpoint.runtimeBuildID == receipt.runtimeBuildID
+        else { return receipt }
+        return checkpoint
     }
 
     private func markGatewayUpdateIncomplete(receipt: PostAppUpdateReceipt) {
         let updated = PostAppUpdateReceiptStore.setGatewayUpdateIncomplete(
             true,
-            receipt: self.checkpointReceipt(receipt))
+            receipt: self.checkpointReceipt(receipt), setupRecovery: self.migrationOnlyLaunchCheck)
         self.receipt = updated
     }
 
@@ -1201,7 +1259,8 @@ extension PostUpdateController {
                 installedCLI: resolution.installedCLI,
                 onDispatch: {
                     self.receipt = PostAppUpdateReceiptStore.recordCoreUpdateDispatch(
-                        receipt: self.checkpointReceipt(self.receipt ?? receipt), owner: owner)
+                        receipt: self.checkpointReceipt(self.receipt ?? receipt), owner: owner,
+                        setupRecovery: self.migrationOnlyLaunchCheck)
                 },
                 statusHandler: { [weak self] message in
                     self?.model.message = message
@@ -1298,7 +1357,7 @@ extension PostUpdateController {
             } catch {
                 if error is CancellationError, AppStateStore.shared.isPaused { return .deferred }
                 self.receipt = PostAppUpdateReceiptStore.recordMigrationFailure(
-                    receipt: self.checkpointReceipt(self.receipt ?? receipt))
+                    receipt: self.checkpointReceipt(self.receipt ?? receipt), setupRecovery: self.migrationOnlyLaunchCheck)
                 self.failRuntimeMigration(error.localizedDescription)
                 return .failed
             }

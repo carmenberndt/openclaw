@@ -55,6 +55,7 @@ final class GatewayProcessManager {
     var nodeMigrationFailure: String?
     var nodeMigrationVersionUpdated = false
     var nodeMigrationCompleted = false
+    @ObservationIgnored var canonicalUpdateStage: (generation: UInt64, result: CLIInstaller.CanonicalUpdateResult)?
     var nodeMigrationAttempted = false
     var retainedServiceCLI: GatewayLaunchAgentManager.InstalledServiceCLI? {
         didSet {
@@ -153,7 +154,9 @@ final class GatewayProcessManager {
     private var lastObservedGatewayPID: Int32?
     /// Async readiness audits may outlive stop/restart. Only the current generation may publish
     /// their failure state or retain a PID for a later repair.
-    var gatewayStartGeneration: UInt64 = 0
+    var gatewayStartGeneration: UInt64 = 0 {
+        didSet { self.canonicalUpdateStage = nil }
+    }
     var gatewayStartTask: Task<Void, Never>?
     private var gatewayStartTaskGeneration: UInt64?
     private var gatewayStartTaskID: UUID?
