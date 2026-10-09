@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { serialize } from "node:v8";
 import {
   MessageChannel,
   MessagePort,
@@ -22,14 +21,16 @@ import {
   withSqliteDatabaseAdmissionExchange,
   type SqliteDatabaseAdmissions,
 } from "./sqlite-database-admission.js";
-import { deferSqlitePostCommitPublication } from "./sqlite-post-commit.js";
 import { currentSqliteOperationTiming } from "./sqlite-reader-lifecycle.js";
-import { SQLITE_WORKER_MAX_MESSAGE_BYTES, SqliteWorkerError } from "./sqlite-worker-contract.js";
-import type {
-  RetainedWorkerTransactionAdmission,
-  SqliteWorkerNativeSettlement,
-  SqliteWorkerNativeSettlementOwner,
-  SqliteWorkerOperationContext,
+import { SqliteWorkerError } from "./sqlite-worker-contract.js";
+import {
+  deferSqliteWorkerNativeCommitReceipt,
+  readNativeCommitReceipt,
+  type NativeCommitReceipt,
+  type RetainedWorkerTransactionAdmission,
+  type SqliteWorkerNativeSettlement,
+  type SqliteWorkerNativeSettlementOwner,
+  type SqliteWorkerOperationContext,
 } from "./sqlite-worker-operation-settlement.js";
 
 const REQUESTED = 0;
@@ -75,6 +76,13 @@ export type SqliteWorkerAdmissionRequest = {
 };
 
 type AdmissionFailureSource = "authority" | "domain" | "protocol";
+type DatabaseAuthority = {
+  databasePath: string;
+  assertRequest?(): void;
+  assertAccess(): void;
+  assertCreate?(databasePath: string): void;
+  acquireSchema(): { assertCurrent(): void; release(): void };
+};
 
 export type SqliteWorkerOperationAdmission = SqliteWorkerNativeSettlementOwner & {
   readonly port: MessagePort;
@@ -84,13 +92,7 @@ export type SqliteWorkerOperationAdmission = SqliteWorkerNativeSettlementOwner &
   observeRequests(observer: (request: SqliteWorkerAdmissionRequest) => void): void;
   service(): void;
   finish(): void;
-  bindDatabaseAuthority(authority: {
-    databasePath: string;
-    assertRequest?(): void;
-    assertAccess(): void;
-    assertCreate?(databasePath: string): void;
-    acquireSchema(): { assertCurrent(): void; release(): void };
-  }): void;
+  bindDatabaseAuthority(authority: DatabaseAuthority): void;
 };
 
 export type SqliteWorkerAdmissionFactory = (operation: RetainedWorkerTransactionAdmission) => {
@@ -169,16 +171,10 @@ function createOperationAdmission(
   let observingCommit = false;
   let failure: { error: unknown; source: AdmissionFailureSource } | undefined;
   let committed: SqliteWorkerNativeSettlementOwner["committed"];
+  let nativeReceipt: NativeCommitReceipt | undefined;
   let settlement: SqliteWorkerNativeSettlement | undefined;
   let databaseAuthority:
-    | {
-        databasePath: string;
-        assertRequest?(): void;
-        assertAccess(): void;
-        assertCreate?(databasePath: string): void;
-        acquireSchema(): { assertCurrent(): void; release(): void };
-        lease?: { assertCurrent(): void; release(): void };
-      }
+    | (DatabaseAuthority & { lease?: ReturnType<DatabaseAuthority["acquireSchema"]> })
     | undefined;
   const waiting = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const recordFailure = (error: unknown, source: AdmissionFailureSource) => {
@@ -195,14 +191,39 @@ function createOperationAdmission(
       cleanupFailures.push(error);
     }
   };
-  const installCommitted = (receipt: { facts: unknown }) => {
-    if (committed && isDeepStrictEqual(committed, receipt)) {
-      return;
+  const invalidReceipt = () => {
+    recordFailure(
+      new SqliteWorkerError("SQLite worker commit receipt is invalid", "outcome-unknown"),
+      "protocol",
+    );
+  };
+  const installCommitted = (receipt: NativeCommitReceipt): boolean => {
+    if (nativeReceipt) {
+      if (receipt.operationId !== nativeReceipt.operationId) {
+        invalidReceipt();
+        return false;
+      }
+      if (receipt.sequence < nativeReceipt.sequence) {
+        return true;
+      }
+      if (receipt.sequence === nativeReceipt.sequence) {
+        if (!isDeepStrictEqual(nativeReceipt, receipt)) {
+          invalidReceipt();
+          return false;
+        }
+        return true;
+      }
     }
-    committed = receipt;
+    if (settlement) {
+      invalidReceipt();
+      return false;
+    }
+    nativeReceipt = receipt;
+    const publication = { facts: receipt.facts };
+    committed = publication;
     observingCommit = true;
     try {
-      inOwnerContext(() => observeCommit?.(receipt));
+      inOwnerContext(() => observeCommit?.(publication));
     } catch (error) {
       recordFailure(
         Object.assign(
@@ -214,6 +235,7 @@ function createOperationAdmission(
     } finally {
       observingCommit = false;
     }
+    return true;
   };
   const receive = (message: unknown) => {
     started = true;
@@ -314,29 +336,27 @@ function createOperationAdmission(
       return;
     }
     if (isRecord(message) && message.kind === "native-commit") {
-      if (
-        !isRecord(message.committed) ||
-        (settlement && !isDeepStrictEqual(committed, { facts: message.committed.facts }))
-      ) {
-        recordFailure(
-          new SqliteWorkerError("SQLite worker commit receipt is invalid", "outcome-unknown"),
-          "protocol",
-        );
+      const receipt = readNativeCommitReceipt(message.committed);
+      if (!receipt) {
+        invalidReceipt();
         return;
       }
-      installCommitted({ facts: message.committed.facts });
+      installCommitted(receipt);
       return;
     }
     if (isRecord(message) && message.kind === "native-settlement") {
       const value = message.settlement;
+      const receipt = isRecord(value) ? readNativeCommitReceipt(value.committed) : undefined;
       if (
         !isRecord(value) ||
         (value.kind !== "completed" && value.kind !== "unknown") ||
-        (value.committed !== undefined && !isRecord(value.committed)) ||
-        settlement ||
-        (committed &&
-          isRecord(value.committed) &&
-          !isDeepStrictEqual(committed, { facts: value.committed.facts }))
+        (value.committed !== undefined && !receipt) ||
+        (nativeReceipt &&
+          (!receipt ||
+            receipt.operationId !== nativeReceipt.operationId ||
+            receipt.sequence < nativeReceipt.sequence)) ||
+        (settlement &&
+          (settlement.kind !== value.kind || !isDeepStrictEqual(nativeReceipt, receipt)))
       ) {
         recordFailure(
           new SqliteWorkerError("SQLite worker native settlement is invalid", "outcome-unknown"),
@@ -344,8 +364,8 @@ function createOperationAdmission(
         );
         return;
       }
-      if (isRecord(value.committed)) {
-        installCommitted({ facts: value.committed.facts });
+      if (receipt && !installCommitted(receipt)) {
+        return;
       }
       settlement = {
         kind: value.kind,
@@ -653,23 +673,8 @@ export function deferSqliteWorkerCommitReceipt(database: DatabaseSync, facts: un
   if (!scope?.active) {
     throw new SqliteWorkerError("SQLite receipt requires its retained admission", "unavailable");
   }
-  if (serialize(facts).byteLength > SQLITE_WORKER_MAX_MESSAGE_BYTES) {
-    throw new SqliteWorkerError(
-      "SQLite worker commit receipt exceeds the transport limit",
-      "overloaded",
-    );
-  }
-  const captured = structuredClone(facts);
-  if (
-    !deferSqlitePostCommitPublication(database, () => {
-      scope.owner.committed = { facts: captured };
-      scope.owner.port.postMessage({ kind: "native-commit", committed: scope.owner.committed }, []);
-    })
-  ) {
-    throw new Error("SQLite worker receipt requires a transaction publication owner");
-  }
+  deferSqliteWorkerNativeCommitReceipt(scope.owner, database, facts);
 }
-
 /** Called on the SQLite worker, after transaction entry and before its row mutation. */
 export function requestSqliteWorkerOperationAdmission(
   request: SqliteWorkerAdmissionRequest,

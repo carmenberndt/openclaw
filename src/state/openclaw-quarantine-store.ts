@@ -52,6 +52,7 @@ const quarantineSchemaAdmission: SqliteDatabaseAdmissionKey<{
   integrityTable: boolean;
 }> = {
   name: "openclaw.quarantine.schema",
+  schemaDependent: true,
   read(value) {
     if (
       typeof value !== "object" ||
@@ -499,21 +500,22 @@ function readQuarantineDecision(
   if (!row) {
     return undefined;
   }
+  const verifiedGenerationJson = userVersion >= 2 ? row.verified_generation : undefined;
   if (
     (row.kind !== "agent" && row.kind !== "state") ||
     typeof row.reason !== "string" ||
     typeof row.quarantined_at !== "number" ||
     !Number.isInteger(row.quarantined_at) ||
-    (row.verified_generation !== undefined &&
-      row.verified_generation !== null &&
-      typeof row.verified_generation !== "string")
+    (verifiedGenerationJson !== undefined &&
+      verifiedGenerationJson !== null &&
+      typeof verifiedGenerationJson !== "string")
   ) {
     throw new Error(`OpenClaw quarantine store ${storePath} contains an invalid row.`);
   }
-  if (typeof row.verified_generation === "string") {
+  if (typeof verifiedGenerationJson === "string") {
     let verifiedGeneration: SqliteFileGeneration;
     try {
-      verifiedGeneration = parseSqliteFileGeneration(row.verified_generation);
+      verifiedGeneration = parseSqliteFileGeneration(verifiedGenerationJson);
     } catch {
       throw new Error(`OpenClaw quarantine store ${storePath} contains an invalid row.`);
     }

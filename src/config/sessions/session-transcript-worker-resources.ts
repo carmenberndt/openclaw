@@ -124,6 +124,12 @@ export const historyLane = createDatabaseWorkerLane(
   "Session history",
   createSessionTranscriptHistoryPool(SESSION_TRANSCRIPT_FOREGROUND_WORKERS),
 );
+// Search retains its reader while the host checks writable index readiness.
+// It must never occupy the workers serving committed history and metadata.
+export const transcriptSearchLane = createDatabaseWorkerLane(
+  "Session transcript search",
+  createSessionTranscriptHistoryPool(SESSION_TRANSCRIPT_FOREGROUND_WORKERS),
+);
 // Keep list materialization independent of large history pages, with one extra reader per store.
 export const projectionLane = createDatabaseWorkerLane(
   "Session projection",
@@ -132,6 +138,12 @@ export const projectionLane = createDatabaseWorkerLane(
 // Full-store validation cannot yield its snapshot to a foreground history read.
 export const maintenanceLane = createDatabaseWorkerLane(
   "Session maintenance",
+  createSessionTranscriptHistoryPool(),
+);
+// Writers retain FIFO admission through target discovery and cleanup. These reads
+// cannot share a worker with history tasks that await a host-side database write.
+export const targetDiscoveryLane = createDatabaseWorkerLane(
+  "Session target discovery",
   createSessionTranscriptHistoryPool(),
 );
 export const costReadLane = createDatabaseWorkerLane(
@@ -143,7 +155,13 @@ export const costRefreshLane = createDatabaseWorkerLane(
   createUsageCostPool("refresh"),
 );
 
-const historyWorkerLanes = [historyLane, projectionLane, maintenanceLane];
+const historyWorkerLanes = [
+  historyLane,
+  transcriptSearchLane,
+  projectionLane,
+  maintenanceLane,
+  targetDiscoveryLane,
+];
 const databaseWorkerLanes = [...historyWorkerLanes, costReadLane, costRefreshLane];
 const memoryPressure = channel("openclaw.memory.critical");
 let pressureSubscribed = false;

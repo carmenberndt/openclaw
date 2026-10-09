@@ -4,7 +4,10 @@ import {
   getNodeSqliteKysely,
   prepareSqliteQuerySync,
 } from "../infra/kysely-sync.js";
-import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  getSqliteReadScopeRevision,
+} from "../infra/sqlite-schema-facts.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import {
   createNewerSqliteSchemaVersionError,
@@ -39,7 +42,7 @@ const contentVersionQuery = createSqliteQueryCache((db) =>
 export function readStateSchemaContentVersion(
   db: DatabaseSync,
   published?: number,
-  readRow?: StateSchemaContentVersionRowReader,
+  readRow: StateSchemaContentVersionRowReader = readStateSchemaContentVersionRow,
 ): number {
   const admitted = getStateSchemaVersionAdmission(db);
   if (admitted) {
@@ -47,8 +50,13 @@ export function readStateSchemaContentVersion(
   }
   const schema = getAdmittedSqliteSchemaFacts(db);
   const version = schema?.userVersion ?? readSqliteUserVersion(db);
-  const contentVersion = readContentVersionMarker(db, readRow);
-  rememberStateSchemaVersionAdmission(db, { userVersion: version, contentVersion });
+  const revision = getSqliteReadScopeRevision(db);
+  const contentVersion = parseContentVersion(
+    tableExists(db, "config_machine_state") ? readRow(db)?.value_json : undefined,
+  );
+  if (!revision || getSqliteReadScopeRevision(db) === revision) {
+    rememberStateSchemaVersionAdmission(db, { userVersion: version, contentVersion });
+  }
   return Math.max(published ?? version, contentVersion);
 }
 
@@ -56,20 +64,13 @@ export function readStateSchemaContentVersionRow(db: DatabaseSync) {
   return contentVersionQuery(db)().rows[0];
 }
 
-function readContentVersionMarker(
-  db: DatabaseSync,
-  readRow: StateSchemaContentVersionRowReader = readStateSchemaContentVersionRow,
-): number {
-  if (!tableExists(db, "config_machine_state")) {
-    return 0;
-  }
-  const row = readRow(db);
-  if (!row) {
+function parseContentVersion(valueJson: string | null | undefined): number {
+  if (valueJson === undefined) {
     return 0;
   }
   let contentVersion: unknown;
   try {
-    contentVersion = row.value_json === null ? null : JSON.parse(row.value_json);
+    contentVersion = valueJson === null ? null : JSON.parse(valueJson);
   } catch (cause) {
     throw new SqliteSchemaMismatchError(
       `Invalid shared state schema content version in ${CONTENT_VERSION_KEY}.`,

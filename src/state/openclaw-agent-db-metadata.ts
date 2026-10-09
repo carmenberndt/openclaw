@@ -6,7 +6,10 @@ import {
   type SqliteDatabaseAdmissionKey,
 } from "../infra/sqlite-database-admission.js";
 import { schemaAdmission } from "../infra/sqlite-schema-admission.js";
-import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  getSqliteReadScopeRevision,
+} from "../infra/sqlite-schema-facts.js";
 import { classifySqliteTableReadError, tableExists } from "./openclaw-state-db-schema-helpers.js";
 
 export type ExistingAgentSchemaMeta = {
@@ -75,6 +78,7 @@ export function readExistingAgentSchemaMeta(db: DatabaseSync): ExistingAgentSche
   if (!tableExists(db, "schema_meta")) {
     return null;
   }
+  const revision = getSqliteReadScopeRevision(db);
   // Unknown DDL can recreate the same table without its row; catalog text cannot carry this proof.
   let row;
   try {
@@ -99,6 +103,7 @@ export function readExistingAgentSchemaMeta(db: DatabaseSync): ExistingAgentSche
   };
   if (
     schema &&
+    (!revision || getSqliteReadScopeRevision(db) === revision) &&
     getSqliteDatabaseAdmission(db, schemaAdmission)?.admissionId === schema.admissionId
   ) {
     publishAgentSchemaMetadata(db, metadata);

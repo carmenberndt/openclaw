@@ -12,15 +12,25 @@ title: "Database schemas"
 OpenClaw stores control-plane state in the shared state database and agent data in one SQLite database per agent. Schema migrations run forward when a database opens. Older OpenClaw builds refuse databases written by a newer schema.
 
 Native SQLite initialization reads the loaded library's version and extension
-capability in one query before admitting real state databases. Quarantine
+capability in one query before admitting real state databases. Auth-profile
+readers install their lock-wait timeout at connection open.
+Non-mutating WAL observations reuse the loaded library's admitted capability;
+they still observe current WAL frames and read freshness on each use. Quarantine
 decision readers and writers set their existing lock-wait timeout at connection
 open. The quarantine store's format is admitted once per physical database per
-process, while existing guards retain the indexed durable quarantine-row lookup.
+process, while existing guards retain the indexed durable quarantine-row lookup
+in one SQLite snapshot and validate any recorded file generation.
 A separate inspection process can admit a target before the Gateway's verifier
 confirms corruption; its next guard must observe that recorded refusal even when
 the target's physical identity is unchanged. Quarantine rows retain their pathname
 scope, and aliases still share physical format, schema, and integrity facts.
 The persisted schema, WAL safety, and recovery behavior are unchanged.
+
+Managed writes publish committed facts before their public observers. Private
+receipts distinguish explicit absence from incomplete coverage and preserve known
+commits independently of reply delivery. See
+[committed facts and completeness](/reference/database-schemas/worker-access#committed-facts-and-completeness)
+for ordering, rollback, and the writer families that still retain native guards.
 
 SQLite format, schema-version, integrity, canonical-index, and
 table-existence validation runs once per physical database per process load,
@@ -104,8 +114,8 @@ even when the recreated table has the same definition: its primary row must be
 validated once by the next owner lookup. Historical metadata stays with its
 snapshot until positively matched to current committed admission. External row
 edits do not reassign an admitted store. Live session permissions, lease ownership,
-and caller authority retain their current-row checks. This changes no schema,
-stored bytes, or update behavior.
+and caller authority retain their current-row checks. Dynamic authorizers retain
+native metadata reads. This changes no schema, stored bytes, or update behavior.
 
 Registry discovery reuses successful migration checks for the admitted schema
 generation. The minute retention sweep reads deletion history in a worker and
@@ -142,6 +152,11 @@ rollback, schema change, or observed foreign commit invalidates them. A new
 transaction probes freshness before reusing unchanged facts; nested savepoints
 share the transaction's probe. Unexpected transaction loss expires both facts
 and freshness.
+Session revision guards and maintenance snapshots share that admitted transaction's
+freshness probe while continuing to check the local mutation generation. Unpinned
+uses and transactions without an admitted probe still check foreign commits;
+transaction entry, rollback, and settlement retain their existing invalidation.
+No schema, stored bytes, permissions, or update behavior change.
 Returned entries and participant identities remain caller-owned. Transcript
 watermark reads select the hot generation and the retained cold or hot sequence
 in one statement; hot-only readers keep their existing meaning. These query
