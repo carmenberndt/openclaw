@@ -117,7 +117,7 @@ export class ClickClackDiscussionBindingStore {
       return undefined;
     }
     const binding = this.get(sessionKey);
-    if (!binding) {
+    if (!binding || channelKey(binding.serverBaseUrl, binding.channelId) !== key) {
       this.#sessionByChannel.delete(key);
       return undefined;
     }
@@ -150,7 +150,11 @@ export class ClickClackDiscussionBindingStore {
       return undefined;
     }
     const binding = this.get(sessionKey);
-    return binding ? { sessionKey, binding } : undefined;
+    if (!binding || this.#discussionSessionKey(sessionKey, binding) !== sideSessionKey) {
+      this.#mainByDiscussionSession.delete(sideSessionKey);
+      return undefined;
+    }
+    return { sessionKey, binding };
   }
 
   entries(): Array<{ sessionKey: string; binding: ClickClackDiscussionBinding }> {
@@ -189,9 +193,11 @@ export class ClickClackDiscussionBindingStore {
     return { sessionKey: oldestSessionKey, binding };
   }
 
-  #index(sessionKey: string, binding: ClickClackDiscussionBinding): void {
-    this.#sessionByChannel.set(channelKey(binding.serverBaseUrl, binding.channelId), sessionKey);
-    const sideSessionKey = discussionSessionKey({
+  #discussionSessionKey(
+    sessionKey: string,
+    binding: ClickClackDiscussionBinding,
+  ): string | undefined {
+    return discussionSessionKey({
       runtime: this.#runtime,
       agentId: binding.agentId,
       mainSessionKey: sessionKey,
@@ -201,6 +207,11 @@ export class ClickClackDiscussionBindingStore {
       channelId: binding.channelId,
       externalRef: binding.externalRef,
     });
+  }
+
+  #index(sessionKey: string, binding: ClickClackDiscussionBinding): void {
+    this.#sessionByChannel.set(channelKey(binding.serverBaseUrl, binding.channelId), sessionKey);
+    const sideSessionKey = this.#discussionSessionKey(sessionKey, binding);
     if (sideSessionKey) {
       this.#mainByDiscussionSession.set(sideSessionKey, sessionKey);
     }
@@ -211,16 +222,7 @@ export class ClickClackDiscussionBindingStore {
 
   #unindex(sessionKey: string, binding: ClickClackDiscussionBinding): void {
     this.#sessionByChannel.delete(channelKey(binding.serverBaseUrl, binding.channelId));
-    const sideSessionKey = discussionSessionKey({
-      runtime: this.#runtime,
-      agentId: binding.agentId,
-      mainSessionKey: sessionKey,
-      sessionId: binding.sessionId,
-      accountId: binding.accountId,
-      serverBaseUrl: binding.serverBaseUrl,
-      channelId: binding.channelId,
-      externalRef: binding.externalRef,
-    });
+    const sideSessionKey = this.#discussionSessionKey(sessionKey, binding);
     if (sideSessionKey) {
       this.#mainByDiscussionSession.delete(sideSessionKey);
     }

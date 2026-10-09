@@ -12,6 +12,7 @@ import type {
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import { withPluginStatePublication } from "./plugin-state-publication.js";
 import { wrapPluginStateError } from "./plugin-state-store.database.js";
 import type { PluginStateStoreError } from "./plugin-state-store.types.js";
 import {
@@ -136,7 +137,7 @@ async function execute<Key extends keyof PluginStateWorkerOperations>(
     // host lifecycle owner before dispatch so sibling maintenance cannot overtake them.
     const result = await runOpenClawStateWorkerOperation(context, operation, {
       assertCurrent: assertAdmission,
-      createAdmission,
+      createAdmission: withPluginStatePublication(createAdmission, context),
       existingOnly: existingOnly !== undefined,
     });
     if (result === undefined && existingOnly) {
