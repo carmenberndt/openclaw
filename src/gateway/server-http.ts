@@ -54,7 +54,10 @@ import {
   setDefaultSecurityHeaders,
   isWebSocketUpgradeRequest,
 } from "./http-common.js";
-import { finishGatewayHttpAuthorityError } from "./http-request-authority.js";
+import {
+  finishGatewayHttpAuthorityError,
+  runGatewayHttpRequest,
+} from "./http-request-authority.js";
 import {
   markGatewayIngressTransport,
   prepareGatewayIngressAttribution,
@@ -183,13 +186,10 @@ export function createGatewayHttpServer(opts: {
     expectation?: "continue" | "reject",
   ) => {
     markGatewayIngressTransport(req, opts.ingressTransport ?? { kind: "ordinary" });
-    void runHttpConnectionRequest(
-      req,
-      () =>
-        runWithDiagnosticTraceContext(createDiagnosticTraceContext(), () =>
-          handleRequest(req, res, expectation),
-        ),
-      res,
+    void runGatewayHttpRequest(req, res, opts.getGatewayRequestContext?.(), () =>
+      runWithDiagnosticTraceContext(createDiagnosticTraceContext(), () =>
+        handleRequest(req, res, expectation),
+      ),
     ).catch((error: unknown) => {
       console.error("[gateway-http] failed to finalize request:", error);
       if (!res.destroyed) {
@@ -228,8 +228,12 @@ export function createGatewayHttpServer(opts: {
           res.end();
         }
       } catch (error) {
+        if (finishGatewayHttpAuthorityError(res, error)) {
+          return;
+        }
         console.error("[gateway-http] legacy plugin request failed:", error);
         res.destroy(error instanceof Error ? error : undefined);
+        return "failed" as const;
       }
       return;
     }
@@ -736,12 +740,14 @@ export function createGatewayHttpServer(opts: {
       }
 
       respondNotFound(res);
+      return;
     } catch (err) {
       if (finishGatewayHttpAuthorityError(res, err)) {
         return;
       }
       console.error("[gateway-http] unhandled error in request handler:", err);
       finishFailedGatewayHttpResponse(res);
+      return "failed" as const;
     }
   }
 
