@@ -19,6 +19,7 @@ import type { CronToolOptions } from "./tools/cron-tool.types.js";
 import type { QuestionPromptDelivery } from "./tools/question-prompt-send.js";
 import type { SessionsYieldCallback } from "./tools/sessions-yield-tool.js";
 import type { SkillWorkshopRunOptions } from "./tools/skill-workshop-tool-factory.js";
+import type { WebFetchTransport } from "./tools/web-fetch-transport.js";
 
 /** Options shared by the coding-tool factory and its OpenClaw tool surface. */
 export type OpenClawSharedToolsOptions = {
@@ -73,6 +74,8 @@ export type OpenClawSharedToolsOptions = {
   /** Run-owned Workshop authority: review guard and personal library access. */
   skillWorkshop?: SkillWorkshopRunOptions;
   webFetchHostnameAllowlistRef?: { value?: string[] };
+  /** Trusted invocation-bound acquisition for native web_fetch; never model-supplied. */
+  webFetchTransport?: WebFetchTransport;
   webSearchEnabled?: boolean;
   /** Construction fact for prompt guidance; never contains credentials or diagnostics. */
   onWebSearchConfiguration?: (configured: boolean) => void;

@@ -310,6 +310,7 @@ export function createOpenClawTools(
     runtimeWebFetch: runtimeWebTools?.fetch,
     lateBindRuntimeConfig: true,
     hostnameAllowlistRef: options?.webFetchHostnameAllowlistRef,
+    transport: options?.webFetchTransport,
   });
   options?.recordToolPrepStage?.("openclaw-tools:web-fetch-tool");
   const messageTool = options?.disableMessageTool
