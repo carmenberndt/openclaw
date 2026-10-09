@@ -7,7 +7,7 @@ import {
   getGatewayContextLifetime,
   withPluginRuntimeGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-request-scope.js";
-import { runWithSessionControllerCleanup } from "../../../sessions/session-controller.context.js";
+import { runWithSessionControllerCleanup } from "../../../sessions/session-controller.owner-context.js";
 import { createLazyRuntimeModule } from "../../../shared/lazy-runtime.js";
 import type { SpawnSubagentMode } from "../spawn/subagent-spawn.types.js";
 

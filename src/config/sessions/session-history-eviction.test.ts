@@ -23,6 +23,7 @@ vi.mock("../../logging/subsystem.js", async () => {
 import { resetAgentRunRegistryForTest } from "../../infra/agent-run-registry.js";
 import * as sqliteQueries from "../../infra/kysely-sync.js";
 import * as tmpDirOwner from "../../infra/tmp-openclaw-dir.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { closeCachedOpenClawAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
@@ -866,6 +867,51 @@ describe("SQLite historical session disk budget", () => {
         expect.objectContaining({ storePath }),
       );
     });
+  });
+
+  it("finishes a budget sweep kicked inside a turn after that turn is stopped", async () => {
+    // Entry writes kick the store-wide sweep from inside turns; stopping the turn must not
+    // cancel the sweep's eviction mutation through the turn's controller context.
+    await createHistoricalTranscript({
+      content: "kicked " + "x".repeat(64 * 1024),
+      nextSessionId: "kicked-live",
+      sessionId: "kicked-old",
+      sessionKey: "agent:main:kicked-history",
+      updatedAt: 10,
+    });
+    settlePhysicalUsage();
+    const before = await measureSessionPhysicalDiskUsage(storePath);
+    const maintenanceConfig = resolveMaintenanceConfigFromInput({
+      mode: "enforce",
+      maxDiskBytes: before.totalBytes - 1,
+      highWaterBytes: before.totalBytes - 1,
+    });
+    evictionWarnSpy.mockClear();
+    const stop = new AbortController();
+    await withSessionTurn(
+      {
+        storePath,
+        sessionKey: "agent:main:kicking-turn",
+        sessionId: "kicking-turn-session",
+        abortSignal: stop.signal,
+      },
+      async () => {
+        kickSessionHistoryDiskBudgetMaintenance({ storePath, force: true, maintenanceConfig });
+        stop.abort(new Error("turn stopped"));
+      },
+    );
+    await enforceSqliteSessionHistoryDiskBudget({
+      storePath,
+      mode: "warn",
+      maintenance: { maxDiskBytes: null, highWaterBytes: null },
+    });
+
+    expect(evictionWarnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("disk-budget sweep failed"),
+      expect.anything(),
+    );
+    expect(sessionExists("kicked-old")).toBe(false);
+    expect(readArchiveNames("kicked-old")).toHaveLength(1);
   });
 
   it("inspects history after the archive probe loses its cached handle", async () => {

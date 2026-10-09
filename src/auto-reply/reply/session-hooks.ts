@@ -15,6 +15,7 @@ import {
   type SessionEndTranscriptSource,
 } from "../../plugins/session-end-transcript.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
+import { runWithSessionControllerCleanup } from "../../sessions/session-controller.owner-context.js";
 
 type ReplySessionEndReason = Extract<
   PluginHookSessionEndReason,
@@ -85,10 +86,13 @@ export function emitReplySessionStartHook(
 ): void {
   const payload = buildSessionStartHookPayload(params);
   // Lifecycle hooks outlive their requester; deferred plugin work must belong
-  // to the detached scope that keeps the Gateway drain alive until completion.
-  void runWithGatewayDetachedWorkContinuation(async () => {
-    await hookRunner.runSessionStart(payload.event, payload.context);
-  }, "hooks:session-start").catch(() => {});
+  // to the detached scope that keeps the Gateway drain alive until completion,
+  // and must not inherit the requesting turn's controller ownership.
+  void runWithSessionControllerCleanup(() =>
+    runWithGatewayDetachedWorkContinuation(async () => {
+      await hookRunner.runSessionStart(payload.event, payload.context);
+    }, "hooks:session-start"),
+  ).catch(() => {});
 }
 
 export function buildSessionEndHookPayload(
@@ -151,7 +155,9 @@ export function emitReplySessionEndHook(params: {
       )
     : { available: false as const, reason: "unsupported-source" as const };
   const payload = buildSessionEndHookPayload({ ...params, endedTranscript });
-  void runWithGatewayDetachedWorkContinuation(async () => {
-    await params.hookRunner.runSessionEnd(payload.event, payload.context);
-  }, "hooks:session-end").catch(() => {});
+  void runWithSessionControllerCleanup(() =>
+    runWithGatewayDetachedWorkContinuation(async () => {
+      await params.hookRunner.runSessionEnd(payload.event, payload.context);
+    }, "hooks:session-end"),
+  ).catch(() => {});
 }

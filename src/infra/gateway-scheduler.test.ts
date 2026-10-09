@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
+import type { ReplyOperation } from "../sessions/session-controller.contracts.js";
+import { sessionControllers } from "../sessions/session-controller.state.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -7,7 +10,15 @@ import {
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 
-const schedulerLog = vi.hoisted(() => ({ debug: vi.fn(), trace: vi.fn(), error: vi.fn() }));
+const schedulerLog = vi.hoisted(() => ({
+  debug: vi.fn(),
+  trace: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  // Session-controller diagnostics share this mocked subsystem logger.
+  isEnabled: () => false,
+}));
 vi.mock("../logging/subsystem.js", () => ({
   createSubsystemLogger: () => schedulerLog,
 }));
@@ -17,6 +28,10 @@ function fixture() {
   const scheduler = createTestGatewayScheduler(time.clock);
   return { time, scheduler };
 }
+
+afterEach(() => {
+  sessionControllers.clear();
+});
 
 describe("Gateway timed work", () => {
   it("preserves equal-deadline dispatch order when replacing a waiting registration", async () => {
@@ -308,6 +323,38 @@ describe("Gateway timed work", () => {
     await initial;
     expect(scheduler.nextWakeAtMs).toBeNull();
     await scheduler.stop();
+  });
+
+  it("runs a job registered inside a session turn under its own admission after that turn", async () => {
+    // A job outlives the turn that registered it; resuming that retired owner would
+    // reject its admission with "Session turn no longer owns controller admission".
+    schedulerLog.error.mockClear();
+    const { time, scheduler } = fixture();
+    const turn = {
+      storePath: "/synthetic/scheduled-after-turn/sessions.json",
+      sessionKey: "agent:main:scheduled-after-turn",
+      sessionId: "scheduled-after-turn-session",
+    };
+    let registrant: ReplyOperation | undefined;
+    const admitted: Array<ReplyOperation | undefined> = [];
+    await withSessionTurn(turn, async (operation) => {
+      registrant = operation;
+      scheduler.schedule({
+        id: "after-turn",
+        delayMs: 100,
+        run: () =>
+          withSessionTurn(turn, async (scheduled) => {
+            admitted.push(scheduled);
+          }),
+      });
+    });
+    expect(registrant?.result?.kind).toBe("completed");
+    await time.advanceBy(100);
+    await scheduler.stop();
+    expect(schedulerLog.error).not.toHaveBeenCalled();
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]).toBeDefined();
+    expect(admitted[0]).not.toBe(registrant);
   });
 
   it("logs one-shot runs at debug and repeating cadence runs only at trace", async () => {

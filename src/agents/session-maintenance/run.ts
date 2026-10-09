@@ -17,13 +17,13 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
-import { runWithSessionControllerCleanup } from "../../sessions/session-controller.context.js";
 import {
   beginSessionEffect,
   bindSessionControllerTarget,
   captureSessionTarget,
   withSessionControllerOwner,
 } from "../../sessions/session-controller.lifecycle.js";
+import { runWithSessionControllerCleanup } from "../../sessions/session-controller.owner-context.js";
 import { createCommandBudget } from "../command/maintenance-budget.js";
 import {
   loadAgentRunnerMemoryRuntime,

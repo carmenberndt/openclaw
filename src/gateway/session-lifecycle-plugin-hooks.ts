@@ -13,6 +13,7 @@ import {
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { SessionEndTranscriptSource } from "../plugins/session-end-transcript.js";
 import { runWithGatewayDetachedWorkContinuation } from "../process/gateway-work-admission.js";
+import { runWithSessionControllerCleanup } from "../sessions/session-controller.owner-context.js";
 import {
   forgetActiveSessionForShutdown,
   noteActiveSessionForShutdown,
@@ -120,9 +121,12 @@ export function emitGatewaySessionEndPluginHook(params: {
     nextSessionKey: params.nextSessionKey,
     endedTranscript,
   });
-  void runWithGatewayDetachedWorkContinuation(async () => {
-    await hookRunner.runSessionEnd(payload.event, payload.context);
-  }, "hooks:session-end").catch((err: unknown) => {
+  // Unawaited hooks outlive the emitting turn or mutation; they must not inherit its ownership.
+  void runWithSessionControllerCleanup(() =>
+    runWithGatewayDetachedWorkContinuation(async () => {
+      await hookRunner.runSessionEnd(payload.event, payload.context);
+    }, "hooks:session-end"),
+  ).catch((err: unknown) => {
     logVerbose(`session_end hook failed: ${String(err)}`);
   });
 }
@@ -159,9 +163,11 @@ export function emitGatewaySessionStartPluginHook(params: {
     agentId: params.agentId,
     resumedFrom: params.resumedFrom,
   });
-  void runWithGatewayDetachedWorkContinuation(async () => {
-    await hookRunner.runSessionStart(payload.event, payload.context);
-  }, "hooks:session-start").catch((err: unknown) => {
+  void runWithSessionControllerCleanup(() =>
+    runWithGatewayDetachedWorkContinuation(async () => {
+      await hookRunner.runSessionStart(payload.event, payload.context);
+    }, "hooks:session-start"),
+  ).catch((err: unknown) => {
     logVerbose(`session_start hook failed: ${String(err)}`);
   });
 }

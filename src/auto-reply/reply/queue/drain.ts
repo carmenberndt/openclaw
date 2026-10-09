@@ -10,7 +10,6 @@ import {
   runWithGatewayDetachedWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
-import { runWithSessionControllerCleanup } from "../../../sessions/session-controller.context.js";
 import { deferSessionControllerClaimBeforeExecution } from "../../../sessions/session-controller.mailbox-claim.js";
 import {
   detachSessionControllerSources,
@@ -21,6 +20,7 @@ import {
   type SessionControllerMailbox,
   type SessionControllerMailboxClaim,
 } from "../../../sessions/session-controller.mailbox.js";
+import { runWithSessionControllerCleanup } from "../../../sessions/session-controller.owner-context.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { buildCollectPrompt, previewQueueSummaryPrompt } from "../../../utils/queue-helpers.js";
 import { resolveCollectedRun } from "./collected-run.js";

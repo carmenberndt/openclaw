@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { withinTest } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
@@ -23,6 +23,7 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { emitResetCommandHooks } from "./commands-reset-hooks.js";
@@ -366,6 +367,40 @@ describe("session hook context wiring", () => {
     const [event, context] = requireHookCall(hookRunnerMocks.runSessionStart, "session_start");
     expectFields(event, { sessionKey });
     expectFields(context, { sessionKey, agentId: "main", sessionId: event?.sessionId });
+  });
+
+  it("runs an unawaited session_start hook outside the reply turn that emitted it", async () => {
+    // The hook outlives the turn; resuming that retired admission would reject its own turn.
+    const sessionKey = "agent:main:hook-after-turn";
+    const storePath = await createStorePath("openclaw-session-hook-after-turn");
+    await writeStore(storePath, {});
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    const turnSettled = createDeferred();
+    const hookAdmission = createDeferred<unknown>();
+    hookRunnerMocks.runSessionStart.mockImplementation(async (event) => {
+      await turnSettled.promise;
+      try {
+        hookAdmission.resolve(
+          await withSessionTurn(
+            { storePath, sessionKey, sessionId: event.sessionId },
+            async (operation) => operation?.key,
+          ),
+        );
+      } catch (error) {
+        hookAdmission.resolve(error);
+      }
+    });
+
+    await withSessionTurn({ storePath, sessionKey }, () =>
+      initSessionState({
+        ctx: { Body: "hello", SessionKey: sessionKey },
+        cfg,
+        commandAuthorized: true,
+      }),
+    );
+    turnSettled.resolve();
+
+    await expect(hookAdmission.promise).resolves.toBe(sessionKey);
   });
 
   it("starts the first reply lifecycle for a session created by admission without resetting it", async () => {

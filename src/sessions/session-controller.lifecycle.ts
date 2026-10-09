@@ -13,7 +13,7 @@ import {
   isGatewaySubordinateWorkAdmissionClosed,
 } from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { ownerContext, sourceSettlements } from "./session-controller.context.js";
+import { sourceSettlements } from "./session-controller.context.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
 import { createSessionControllerPhaseLogger } from "./session-controller.diagnostics.js";
 import {
@@ -43,6 +43,7 @@ import {
   runPreemptedSessionMutation,
   type SessionMutationPolicy,
 } from "./session-controller.mutation-preemption.js";
+import { ownerContext } from "./session-controller.owner-context.js";
 import {
   assertSessionControllerOperation,
   getSessionControllerEntry,

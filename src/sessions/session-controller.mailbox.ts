@@ -12,7 +12,6 @@ import {
 } from "../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { evaluateTurnAdmission, isMutationOwnedTurn } from "./session-controller.admission-rule.js";
-import { ownerContext } from "./session-controller.context.js";
 import { logSessionControllerSourceClaim } from "./session-controller.diagnostics.js";
 import { captureSessionTarget, type SessionTarget } from "./session-controller.lifecycle.js";
 import { captureSessionControllerMailboxSummarySources as summaryCandidates } from "./session-controller.mailbox-cleanup.js";
@@ -32,6 +31,7 @@ import type {
   SessionControllerMailbox,
   SessionControllerSourceAdapter,
 } from "./session-controller.mailbox.types.js";
+import { ownerContext } from "./session-controller.owner-context.js";
 import {
   getSessionControllerEntry,
   findSessionControllerEntries,

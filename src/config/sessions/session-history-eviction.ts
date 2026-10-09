@@ -4,6 +4,7 @@ import {
   collectSessionControllerTargets,
   runSessionMutation,
 } from "../../sessions/session-controller.lifecycle.js";
+import { runWithSessionControllerCleanup } from "../../sessions/session-controller.owner-context.js";
 import { runQueuedStoreWrite, type StoreWriterQueue } from "../../shared/store-writer-queue.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
@@ -283,13 +284,17 @@ export function kickSessionHistoryDiskBudgetMaintenance(input: SessionHistoryBud
   }
   state.running = true;
   budgetKickStateByStore.set(params.storePath, state);
-  void enforceSqliteSessionHistoryDiskBudget({
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    env: params.env,
-    storePath: params.storePath,
-    mode: maintenance.mode,
-    maintenance,
-  })
+  // Entry writes kick this from inside turns; the store-wide sweep must not inherit a
+  // turn's cancellation or treat that turn's claim and effects as its own.
+  void runWithSessionControllerCleanup(() =>
+    enforceSqliteSessionHistoryDiskBudget({
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+      env: params.env,
+      storePath: params.storePath,
+      mode: maintenance.mode,
+      maintenance,
+    }),
+  )
     .catch((error: unknown) => {
       // Best-effort: budget pressure is retried on the next throttled kick,
       // but a persistently failing sweep must stay operator-visible — silent

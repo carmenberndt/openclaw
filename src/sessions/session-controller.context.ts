@@ -1,5 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
 import {
   matchingEntries,
@@ -8,25 +6,13 @@ import {
   selectedEffects,
   selectedOperations,
 } from "./session-controller.lifecycle-projections.js";
-import type { OwnerContext } from "./session-controller.lifecycle.types.js";
 import type {
   SessionControllerInput,
   SessionControllerMailboxClaim,
 } from "./session-controller.mailbox.js";
+import { ownerContext } from "./session-controller.owner-context.js";
 import { assertSessionControllerOperation } from "./session-controller.state.js";
 import { targetFrom, type SessionTarget } from "./session-controller.target.js";
-
-// Context carries exact controller objects; it grants no independent admission or authority.
-export const ownerContext = resolveGlobalSingleton(
-  Symbol.for("openclaw.sessionControllerOwnerContext"),
-  () => new AsyncLocalStorage<OwnerContext>(),
-);
-
-/** Work that outlives the current turn (required cleanup, scheduled maintenance) leaves its
- * controller context, so it acquires its own owner instead of inheriting the retired turn. */
-export function runWithSessionControllerCleanup<T>(run: () => T): T {
-  return ownerContext.exit(run);
-}
 
 export function withSessionControllerOwner<T>(operation: ReplyOperation, run: () => T): T {
   assertSessionControllerOperation(operation);
