@@ -43,7 +43,10 @@ type CapturedEventSource = {
   selectedStore: { path: string; physicalPath: string };
 };
 
-function assertCapturedEventSource(source: CapturedEventSource) {
+function assertCapturedEventSource(source: CapturedEventSource | undefined) {
+  if (!source) {
+    return;
+  }
   const identity = readDatabasePathIdentitySync(source.database.path);
   if (
     identity.key !== source.identity.key ||
@@ -167,9 +170,7 @@ export async function captureSessionEventTargetForHost(
         };
       },
     );
-    if (source) {
-      assertCapturedEventSource(source);
-    }
+    assertCapturedEventSource(source);
     let toolsAllow: string[] | undefined;
     if (caller && callerAgentMatches) {
       assertCaptureCurrent();
@@ -256,13 +257,8 @@ export async function prepareSessionEventTargetForHost(
     options.assertAcceptanceCurrent?.();
     assertSessionEventTargetCurrent(target);
   };
-  const assertSource = () => {
-    if (source) {
-      assertCapturedEventSource(source);
-    }
-  };
   assertAcceptance();
-  assertSource();
+  assertCapturedEventSource(source);
   let preparation:
     | ReturnType<
         typeof import("../../config/sessions/session-accessor.entry-mutation.js").prepareSessionEntryMutationDatabases
@@ -299,7 +295,7 @@ export async function prepareSessionEventTargetForHost(
       assertAcceptance();
       prepared?.assertCurrent();
       if (!prepared) {
-        assertSource();
+        assertCapturedEventSource(source);
       } else if (source?.identity.key.startsWith("path:")) {
         const accepted = prepared.execution?.fileIdentity;
         if (!accepted || typeof accepted.birthtime !== "string") {
@@ -324,16 +320,12 @@ export async function prepareSessionEventTargetForHost(
       });
       prepared?.assertCurrent();
       assertAcceptance();
-      if (preparedSource) {
-        assertCapturedEventSource(preparedSource);
-      }
+      assertCapturedEventSource(preparedSource);
     } finally {
       await preparation?.[Symbol.asyncDispose]();
     }
     assertAcceptance();
-    if (preparedSource) {
-      assertCapturedEventSource(preparedSource);
-    }
+    assertCapturedEventSource(preparedSource);
     lease.assertCurrent();
     // Only canonical native preparation can advance captured physical absence.
     if (preparedSource !== source) {
@@ -343,22 +335,15 @@ export async function prepareSessionEventTargetForHost(
       }
       targetScopes.set(target, { ...captured, source: preparedSource });
     }
-  } catch (error) {
-    lease?.release();
-    throw error;
-  }
-  const retained = lease;
-  const assertTargetCurrent = () => {
-    assertSessionEventTargetCurrent(target);
-    if (preparedSource) {
+    const retained = lease;
+    const assertTargetCurrent = () => {
+      assertSessionEventTargetCurrent(target);
       assertCapturedEventSource(preparedSource);
-    }
-  };
-  const assertCurrent = () => {
-    assertTargetCurrent();
-    retained.assertCurrent();
-  };
-  try {
+    };
+    const assertCurrent = () => {
+      assertTargetCurrent();
+      retained.assertCurrent();
+    };
     assertCurrent();
     return {
       ...retained,
@@ -377,7 +362,7 @@ export async function prepareSessionEventTargetForHost(
       },
     };
   } catch (error) {
-    retained.release();
+    lease?.release();
     throw error;
   }
 }
@@ -415,10 +400,7 @@ export function combineSessionEventTargetsForHost(
   const assertCurrent = () => {
     for (const target of retained) {
       assertSessionEventTargetCurrent(target);
-      const source = targetScopes.get(target)?.source;
-      if (source) {
-        assertCapturedEventSource(source);
-      }
+      assertCapturedEventSource(targetScopes.get(target)?.source);
     }
   };
   assertCurrent();

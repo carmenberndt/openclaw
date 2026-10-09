@@ -152,30 +152,24 @@ export function isVerboseFailureDetailEnabled(level: VerboseLevel | undefined): 
   return level === "on" || level === "full";
 }
 
-const CODEX_APP_SERVER_CLIENT_CLOSED_BEFORE_REPLY_RE =
-  /\bcodex app-server client closed before turn completed\b/iu;
-const CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE =
-  /\bcodex app-server turn idle timed out waiting for turn\/completed\b/iu;
-const CODEX_SESSION_GENERATION_NOT_CURRENT_RE =
-  /\bcodex session generation is no longer current\b/iu;
-const CODEX_EXECUTION_NODE_DISCONNECTED_RE =
-  /^Codex execution node disconnected; start a fresh attempt\. \((?:execution node (?:failed|disconnected)|execution socket (?:closed|failed))(?:: [^\r\n]{1,240})?\)(?:\r?\n|$)/u;
-
-function buildCodexAppServerFailureText(normalizedMessage: string): string | null {
-  if (CODEX_SESSION_GENERATION_NOT_CURRENT_RE.test(normalizedMessage)) {
-    return "⚠️ This Codex session changed before your message could run. Please send it again.";
-  }
-  if (CODEX_EXECUTION_NODE_DISCONNECTED_RE.test(normalizedMessage)) {
-    return "⚠️ Codex execution node disconnected. Start a fresh attempt.";
-  }
-  if (CODEX_APP_SERVER_CLIENT_CLOSED_BEFORE_REPLY_RE.test(normalizedMessage)) {
-    return "⚠️ Lost the connection to Codex before it confirmed the task was finished. It may still be running. Check the conversation in the Control UI before trying again.";
-  }
-  if (CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE.test(normalizedMessage)) {
-    return "⚠️ Codex hasn't confirmed whether the task finished. It may still be running. Check the conversation in the Control UI before trying again.";
-  }
-  return null;
-}
+const CODEX_APP_SERVER_FAILURES: ReadonlyArray<readonly [RegExp, string]> = [
+  [
+    /\bcodex session generation is no longer current\b/iu,
+    "⚠️ This Codex session changed before your message could run. Please send it again.",
+  ],
+  [
+    /^Codex execution node disconnected; start a fresh attempt\. \((?:execution node (?:failed|disconnected)|execution socket (?:closed|failed))(?:: [^\r\n]{1,240})?\)(?:\r?\n|$)/u,
+    "⚠️ Codex execution node disconnected. Start a fresh attempt.",
+  ],
+  [
+    /\bcodex app-server client closed before turn completed\b/iu,
+    "⚠️ Lost the connection to Codex before it confirmed the task was finished. It may still be running. Check the conversation in the Control UI before trying again.",
+  ],
+  [
+    /\bcodex app-server turn idle timed out waiting for turn\/completed\b/iu,
+    "⚠️ Codex hasn't confirmed whether the task finished. It may still be running. Check the conversation in the Control UI before trying again.",
+  ],
+];
 
 export function buildPreflightCompactionFailureText(
   message: string,
@@ -395,7 +389,9 @@ export function buildExternalRunFailureReply(
     // Heartbeat-backed event turns remain visible even with generic wording.
     return buildUnclassifiedReply(options.includeDetails === true);
   }
-  const codexAppServerFailure = buildCodexAppServerFailureText(normalizedMessage);
+  const codexAppServerFailure = CODEX_APP_SERVER_FAILURES.find(([pattern]) =>
+    pattern.test(normalizedMessage),
+  )?.[1];
   if (codexAppServerFailure) {
     return { text: codexAppServerFailure, isGenericRunnerFailure: false };
   }

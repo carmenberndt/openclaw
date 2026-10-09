@@ -54,7 +54,11 @@ import {
 import { createReplyOperationToolAuthority } from "./reply-run-registry.tool-authority.js";
 
 type ReplyOperationResult = NonNullable<ReplyOperation["result"]>;
-type ReplyOperationAbortCode = Extract<ReplyOperationResult, { kind: "aborted" }>["code"];
+const REPLY_OPERATION_ABORT_CODES = {
+  user_abort: "aborted_by_user",
+  restart: "aborted_for_restart",
+  superseded: "aborted_for_supersession",
+} as const;
 
 export function createReplyOperation(params: {
   sessionKey: string;
@@ -215,11 +219,7 @@ export function createReplyOperation(params: {
     // otherwise that successor can snapshot durable state the handoff then mutates.
     startReplyOperationSuccessorBarriers(operation);
     markProgress("reply_operation:ended");
-    clearReplyRunState({
-      sessionKey: currentSessionKey,
-      sessionId: currentSessionId,
-      operation,
-    });
+    clearReplyRunState(operation);
     if (!registeredBarrier) {
       flushReplyOperationAfterClear(operation, currentSessionId);
       return;
@@ -260,14 +260,10 @@ export function createReplyOperation(params: {
     settleOwner();
   };
 
-  const abortOperation = (
-    reason: ReplyBackendCancelReason,
-    abortReason: unknown,
-    abortedCode: ReplyOperationAbortCode,
-  ) => {
+  const abortOperation = (reason: ReplyBackendCancelReason, abortReason: unknown) => {
     const phaseBeforeAbort = phase;
     if (!result) {
-      setResult({ kind: "aborted", code: abortedCode });
+      setResult({ kind: "aborted", code: REPLY_OPERATION_ABORT_CODES[reason] });
       detachUpstreamAbort();
     }
     phase = "aborted";
@@ -286,6 +282,17 @@ export function createReplyOperation(params: {
         scheduleTerminalSettle();
       }
     }
+  };
+
+  const abortIfAllowed = (reason: "user_abort" | "restart") => {
+    if (!isReplyOperationAbortable(operation)) {
+      return false;
+    }
+    abortOperation(
+      reason,
+      reason === "restart" ? createAgentRunRestartAbortError() : createAgentRunDirectAbortError(),
+    );
+    return true;
   };
 
   const operation: ReplyOperation = {
@@ -529,20 +536,8 @@ export function createReplyOperation(params: {
         scheduleTerminalSettle();
       }
     },
-    abortByUser() {
-      if (!isReplyOperationAbortable(operation)) {
-        return false;
-      }
-      abortOperation("user_abort", createAgentRunDirectAbortError(), "aborted_by_user");
-      return true;
-    },
-    abortForRestart() {
-      if (!isReplyOperationAbortable(operation)) {
-        return false;
-      }
-      abortOperation("restart", createAgentRunRestartAbortError(), "aborted_for_restart");
-      return true;
-    },
+    abortByUser: () => abortIfAllowed("user_abort"),
+    abortForRestart: () => abortIfAllowed("restart"),
     supersede(beforeSupersede) {
       const abortFrozen = abortFrozenOperations.has(operation);
       if (result || stateCleared || (!abortFrozen && !isReplyOperationAbortable(operation))) {
@@ -554,7 +549,7 @@ export function createReplyOperation(params: {
         scheduleTerminalSettle();
         return true;
       }
-      abortOperation("superseded", createSupersededError(), "aborted_for_supersession");
+      abortOperation("superseded", createSupersededError());
       return true;
     },
   };
@@ -677,11 +672,6 @@ export function createReplyOperation(params: {
       abortOperation(
         restart ? "restart" : superseded ? "superseded" : "user_abort",
         upstreamAbortSignal.reason,
-        restart
-          ? "aborted_for_restart"
-          : superseded
-            ? "aborted_for_supersession"
-            : "aborted_by_user",
       );
     };
     if (upstreamAbortSignal.aborted) {
