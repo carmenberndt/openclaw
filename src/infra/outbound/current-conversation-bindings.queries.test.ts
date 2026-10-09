@@ -18,16 +18,17 @@ import {
   resolveCurrentConversationBindingRecord,
   updateCurrentConversationBindingRecord,
 } from "./current-conversation-bindings.js";
-import {
-  currentConversationBindingChanges,
-  type CurrentConversationBindingPublication,
-} from "./current-conversation-bindings.publication.js";
+import { currentConversationBindingPublication } from "./current-conversation-bindings.publication.js";
 import {
   inspectSessionBindingsByConversations,
   registerSessionBindingAdapter,
   unregisterSessionBindingAdapter,
 } from "./session-binding-service.js";
 import type { SessionBindingRecord } from "./session-binding.types.js";
+
+type CurrentConversationBindingPublication = Parameters<
+  Parameters<typeof currentConversationBindingPublication.subscribe>[0]
+>[0];
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -434,7 +435,7 @@ it("installs every native binding fact before observers and discards nested roll
     const facts = new Map<string, string>();
     const observedFacts: string[][] = [];
     const publications: CurrentConversationBindingPublication[] = [];
-    const unsubscribeFacts = currentConversationBindingChanges.subscribeFacts((change) => {
+    const unsubscribeFacts = currentConversationBindingPublication.subscribeFacts((change) => {
       if (!("receipt" in change)) {
         return;
       }
@@ -447,7 +448,7 @@ it("installs every native binding fact before observers and discards nested roll
         }
       }
     });
-    const unsubscribe = currentConversationBindingChanges.subscribe((publication) => {
+    const unsubscribe = currentConversationBindingPublication.subscribe((publication) => {
       publications.push(publication);
       observedFacts.push([...facts.values()]);
     });
@@ -494,7 +495,7 @@ it("publishes rebind, legacy repair, expiry and scoped deletion reverse-index in
     writeBinding(original);
     writeBinding(sibling);
     const publications: CurrentConversationBindingPublication[] = [];
-    const unsubscribe = currentConversationBindingChanges.subscribe((publication) =>
+    const unsubscribe = currentConversationBindingPublication.subscribe((publication) =>
       publications.push(publication),
     );
     try {
@@ -543,7 +544,7 @@ it("retires failed binding fact installation without hiding the durable commit",
   await withOpenClawTestState({ label: "binding-failed-receipt" }, async () => {
     const record = binding("receipt-failure");
     const publications: CurrentConversationBindingPublication[] = [];
-    const unsubscribeFacts = currentConversationBindingChanges.subscribeFacts((change) => {
+    const unsubscribeFacts = currentConversationBindingPublication.subscribeFacts((change) => {
       if (!("receipt" in change)) {
         return;
       }
@@ -552,7 +553,7 @@ it("retires failed binding fact installation without hiding the durable commit",
         throw new Error("synthetic binding projection failure");
       }
     });
-    const unsubscribe = currentConversationBindingChanges.subscribe((publication) =>
+    const unsubscribe = currentConversationBindingPublication.subscribe((publication) =>
       publications.push(publication),
     );
     try {
@@ -572,7 +573,7 @@ it("publishes SQLite's actual binding and reverse-index keys for non-scalar text
     const record = binding("receipt-\ud800");
     record.targetSessionKey = "agent:main:receipt-\ud800";
     const publications: CurrentConversationBindingPublication[] = [];
-    const unsubscribe = currentConversationBindingChanges.subscribe((publication) =>
+    const unsubscribe = currentConversationBindingPublication.subscribe((publication) =>
       publications.push(publication),
     );
     try {

@@ -16,7 +16,7 @@ import {
   type ConversationRouteContext,
 } from "./conversation-route-context.js";
 import {
-  stageConversationRows,
+  conversationPublication,
   type ConversationAssociationRow,
   type ConversationPublication,
 } from "./session-accessor.sqlite-conversation-publication.js";
@@ -229,7 +229,7 @@ export function upsertConversationIdentities(
       )
       .returningAll(),
   ).rows;
-  return stageConversationRows(database, { catalogues: rows });
+  return conversationPublication.stageRows(database, { catalogues: rows });
 }
 
 /** Links one external address to its local context without conflating the two identities. */
@@ -354,5 +354,5 @@ export function linkSessionConversation(params: {
       .returningAll(),
   ).rows;
   associations.push(...linked);
-  stageConversationRows(database, { associations, removedAssociations });
+  conversationPublication.stageRows(database, { associations, removedAssociations });
 }

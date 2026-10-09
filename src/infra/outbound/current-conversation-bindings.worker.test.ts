@@ -33,10 +33,7 @@ import {
   updateCurrentConversationBindingRecord,
 } from "./current-conversation-bindings.js";
 import { updateCurrentConversationBindingRecordInDatabase } from "./current-conversation-bindings.kernel.js";
-import {
-  currentConversationBindingChanges,
-  type CurrentConversationBindingPublication,
-} from "./current-conversation-bindings.publication.js";
+import { currentConversationBindingPublication } from "./current-conversation-bindings.publication.js";
 import { conversationBindingOperations } from "./current-conversation-bindings.worker.js";
 import { expectedCurrentSessionBinding } from "./session-binding-native-selection.js";
 import {
@@ -47,6 +44,10 @@ import {
   type SessionBindingAdapter,
 } from "./session-binding-service.js";
 import type { SessionBindingRecord } from "./session-binding.types.js";
+
+type CurrentConversationBindingPublication = Parameters<
+  Parameters<typeof currentConversationBindingPublication.subscribe>[0]
+>[0];
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -676,7 +677,7 @@ it("delivers committed worker bind, touch and batch-expiry facts before their re
   await withOpenClawTestState({ label: "binding-worker-receipts" }, async () => {
     const original = record("receipt-worker");
     const publications: CurrentConversationBindingPublication[] = [];
-    const unsubscribe = currentConversationBindingChanges.subscribe((publication) =>
+    const unsubscribe = currentConversationBindingPublication.subscribe((publication) =>
       publications.push(publication),
     );
     try {
@@ -738,7 +739,7 @@ it("cannot restore a newer native deletion when a committed worker receipt arriv
       },
     );
     const publications: CurrentConversationBindingPublication[] = [];
-    const unsubscribe = currentConversationBindingChanges.subscribe((publication) =>
+    const unsubscribe = currentConversationBindingPublication.subscribe((publication) =>
       publications.push(publication),
     );
     try {
@@ -777,7 +778,7 @@ it("retires binding coverage after unknown native settlement", async () => {
       };
       return owner;
     });
-    const unsubscribe = currentConversationBindingChanges.subscribeFacts((change) => {
+    const unsubscribe = currentConversationBindingPublication.subscribeFacts((change) => {
       if ("kind" in change && change.kind === "settled") {
         outcomes.push(change.outcome ?? "missing");
       }
@@ -810,7 +811,7 @@ it("commits oversized expiry batches and retires binding coverage before replyin
       { count: 17 },
     );
     const events: string[] = [];
-    const unsubscribe = currentConversationBindingChanges.subscribeFacts((change) => {
+    const unsubscribe = currentConversationBindingPublication.subscribeFacts((change) => {
       if ("kind" in change) {
         events.push(change.kind);
       }

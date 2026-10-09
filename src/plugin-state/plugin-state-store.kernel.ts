@@ -11,10 +11,7 @@ import {
 } from "../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber, normalizeSqliteNumber } from "../infra/sqlite-number.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
-import {
-  stagePluginStateDeletions,
-  stagePluginStatePostimage,
-} from "./plugin-state-publication.js";
+import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
   PluginStateStoreError,
   type PluginStateEntry,
@@ -166,7 +163,7 @@ const pluginStateUpsertQuery = createSqliteQueryCache((db) =>
 export function upsertPluginStateEntry(db: DatabaseSync, row: PluginStateRow): void {
   const result = pluginStateUpsertQuery(db)(row);
   for (const current of result.rows) {
-    stagePluginStatePostimage(db, current);
+    pluginStatePublication.stagePostimage(db, current);
   }
 }
 
@@ -190,7 +187,7 @@ const pluginStateInsertIfAbsentQuery = createSqliteQueryCache((db) =>
 export function insertPluginStateEntryIfAbsent(db: DatabaseSync, row: PluginStateRow): boolean {
   const result = pluginStateInsertIfAbsentQuery(db)(row);
   for (const current of result.rows) {
-    stagePluginStatePostimage(db, current);
+    pluginStatePublication.stagePostimage(db, current);
   }
   return result.rows.length > 0;
 }
@@ -297,7 +294,7 @@ export function deletePluginStateEntry(
       .where("entry_key", "=", params.key)
       .returning(["plugin_id", "namespace", "entry_key"]),
   );
-  stagePluginStateDeletions(db, result.rows);
+  pluginStatePublication.stageDeletions(db, result.rows);
   return result.rows.length;
 }
 
@@ -359,7 +356,7 @@ export function deleteExpiredPluginStateEntries(
       )
       .returning(["plugin_id", "namespace", "entry_key"]),
   );
-  stagePluginStateDeletions(db, result.rows);
+  pluginStatePublication.stageDeletions(db, result.rows);
   return result.rows.length;
 }
 

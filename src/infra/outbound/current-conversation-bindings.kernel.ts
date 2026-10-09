@@ -19,7 +19,7 @@ import {
   type SqliteReadOperationRevision,
 } from "../sqlite-schema-facts.js";
 import { runSqliteDeferredTransactionSync } from "../sqlite-transaction.js";
-import { stageCurrentConversationBindingChanges } from "./current-conversation-bindings.publication.js";
+import { currentConversationBindingPublication } from "./current-conversation-bindings.publication.js";
 import type {
   CurrentConversationBindingBind,
   CurrentConversationBindingRemove,
@@ -350,7 +350,7 @@ export function updateCurrentConversationBindingRecordInDatabase(
   if (!current) {
     if (existingRow) {
       getCurrentConversationBindingQueries(db).remove(existingRow.binding_key);
-      stageCurrentConversationBindingChanges(db, [
+      currentConversationBindingPublication.stage(db, [
         {
           key: existingRow.binding_key,
           current: null,
@@ -369,7 +369,7 @@ export function updateCurrentConversationBindingRecordInDatabase(
   }
   const row = currentConversationBindingRow(current, conversation, bindingKey);
   const persisted = getCurrentConversationBindingQueries(db).upsert(row).rows[0]!;
-  stageCurrentConversationBindingChanges(db, [
+  currentConversationBindingPublication.stage(db, [
     ...(existingRow && existingRow.binding_key !== bindingKey
       ? [
           {
@@ -479,7 +479,7 @@ export function pruneCurrentConversationBindingListInTransaction(
     const record = bindingRowToRecord(row);
     if (!record || isBindingExpired(record)) {
       getCurrentConversationBindingQueries(db).remove(row.binding_key);
-      stageCurrentConversationBindingChanges(db, [
+      currentConversationBindingPublication.stage(db, [
         { key: row.binding_key, current: null, previousTargetSessionKey: row.target_session_key },
       ]);
     } else {
@@ -571,7 +571,7 @@ export function removeCurrentConversationBindingsInDatabase(
       continue;
     }
     getCurrentConversationBindingQueries(db).remove(row.binding_key);
-    stageCurrentConversationBindingChanges(db, [
+    currentConversationBindingPublication.stage(db, [
       { key: row.binding_key, current: null, previousTargetSessionKey: row.target_session_key },
     ]);
     if (record && !isBindingExpired(record)) {

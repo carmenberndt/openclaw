@@ -31,7 +31,7 @@ import {
   upsertSessionEntryCore as upsertCanonicalSessionEntry,
 } from "./session-accessor.js";
 import {
-  conversationChanges,
+  conversationPublication,
   type ConversationPublication,
 } from "./session-accessor.sqlite-conversation-publication.js";
 import {
@@ -129,7 +129,7 @@ describe("conversation registry", () => {
     });
     expect(identity).toBeDefined();
     const receipts: ConversationPublication[] = [];
-    const unsubscribe = conversationChanges.subscribe((receipt) => receipts.push(receipt));
+    const unsubscribe = conversationPublication.subscribe((receipt) => receipts.push(receipt));
     try {
       await registerConversationAddresses({ agentId: "main", storePath }, [identity!], 100);
     } finally {
@@ -758,7 +758,7 @@ describe("conversation registry", () => {
     const installed = new Map<string, unknown>();
     const snapshots: string[][] = [];
     const receipts: ConversationPublication[] = [];
-    const unsubscribeFacts = conversationChanges.subscribeFacts((receipt) => {
+    const unsubscribeFacts = conversationPublication.subscribeFacts((receipt) => {
       if (!("facts" in receipt)) {
         return;
       }
@@ -766,7 +766,7 @@ describe("conversation registry", () => {
         installed.set(key, fact);
       }
     });
-    const unsubscribe = conversationChanges.subscribe((receipt) => {
+    const unsubscribe = conversationPublication.subscribe((receipt) => {
       receipts.push(receipt);
       snapshots.push([...installed.keys()].toSorted());
     });
@@ -851,7 +851,7 @@ describe("conversation registry", () => {
       };
       return owner;
     });
-    const unsubscribe = conversationChanges.subscribeFacts((change) => {
+    const unsubscribe = conversationPublication.subscribeFacts((change) => {
       if ("kind" in change && change.kind === "settled") {
         outcomes.push(change.outcome ?? "missing");
       }
@@ -882,7 +882,7 @@ describe("conversation registry", () => {
       payload: "\0".repeat(Math.floor(SQLITE_WORKER_MAX_MESSAGE_BYTES / 6) + 1),
     };
     const events: string[] = [];
-    const unsubscribe = conversationChanges.subscribeFacts((change) => {
+    const unsubscribe = conversationPublication.subscribeFacts((change) => {
       if ("kind" in change) {
         events.push(change.kind);
       }

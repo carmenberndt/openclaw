@@ -7,7 +7,7 @@ import type {
   PluginStateNativeBindingDeletion,
   PluginStateNativeBindingPlan,
 } from "./plugin-state-native-binding.types.js";
-import { stagePluginStateDeletions } from "./plugin-state-publication.js";
+import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
   bindPluginStateEntry,
   createPluginStateError,
@@ -90,7 +90,7 @@ export function clearPluginStateNamespace(
       .where("namespace", "=", params.namespace)
       .returning(["plugin_id", "namespace", "entry_key"]),
   );
-  stagePluginStateDeletions(db, result.rows);
+  pluginStatePublication.stageDeletions(db, result.rows);
 }
 
 /** The caller owns the transaction containing admission, expiry cleanup, and insertion. */

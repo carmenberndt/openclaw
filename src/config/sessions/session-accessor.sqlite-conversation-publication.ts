@@ -24,13 +24,13 @@ import { notifyListeners, registerListener } from "../../shared/listeners.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 
-export type ConversationCatalogRow = Selectable<DB["conversations"]>;
+type ConversationCatalogRow = Selectable<DB["conversations"]>;
 export type ConversationAssociationRow = Selectable<DB["session_conversations"]>;
 type ConversationFact =
   | { kind: "catalogue"; row: ConversationCatalogRow }
   | { kind: "association"; row: ConversationAssociationRow };
 export type ConversationPublication = SqliteCommitReceipt<ConversationFact>;
-export type ConversationFactChange =
+type ConversationFactChange =
   | ConversationPublication
   | { kind: "unknown"; source: SqliteCommitSource }
   | {
@@ -74,7 +74,8 @@ function publicationState(receipt: ConversationPublication) {
 }
 
 /** Native/catalogue operation facts; session-worker link sets and raw writers remain incomplete. */
-export const conversationChanges = {
+export const conversationPublication = {
+  stageRows: stageConversationRows,
   /** Install/invalidate prepared facts only; storage mutations belong in postcommit observers. */
   subscribeFacts(listener: (receipt: ConversationFactChange) => void) {
     return registerListener(listeners.facts, listener);
@@ -84,7 +85,7 @@ export const conversationChanges = {
   },
 };
 
-export function stageConversationRows(
+function stageConversationRows(
   database: { db: DatabaseSync },
   rows: {
     catalogues?: readonly ConversationCatalogRow[];
@@ -193,7 +194,7 @@ export function withConversationPublication(
       notifyListeners(listeners.facts, { kind: "settled", operation, outcome: "unknown" });
       throw error;
     }
-    const unsubscribe = conversationChanges.subscribeFacts((change) => {
+    const unsubscribe = conversationPublication.subscribeFacts((change) => {
       if (installing) {
         return;
       }

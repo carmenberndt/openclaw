@@ -25,13 +25,13 @@ import {
 } from "../sqlite-worker-operation-admission.js";
 import type { SessionBindingRecord } from "./session-binding.types.js";
 
-export type CurrentConversationBindingPublication = {
+type CurrentConversationBindingPublication = {
   receipt: SqliteCommitReceipt<SessionBindingRecord>;
   /** Exact reverse-index scopes touched; these are invalidations, not complete set postimages. */
   sessionKeys: readonly string[];
 };
 
-export type CurrentConversationBindingFactChange =
+type CurrentConversationBindingFactChange =
   | CurrentConversationBindingPublication
   | { kind: "unknown"; identity: string | symbol }
   | {
@@ -135,8 +135,9 @@ function publicationState(publication: CurrentConversationBindingPublication) {
   };
 }
 
-/** Private publication only: callers must retain live native/foreign authority guards. */
-export const currentConversationBindingChanges = {
+/** Owns binding-fact staging and observation; callers retain native/foreign authority guards. */
+export const currentConversationBindingPublication = {
+  stage: stageCurrentConversationBindingChanges,
   /** Install/invalidate prepared facts only; storage mutations belong in postcommit observers. */
   subscribeFacts(listener: (publication: CurrentConversationBindingFactChange) => void) {
     return registerListener(state.facts, listener);
@@ -147,7 +148,7 @@ export const currentConversationBindingChanges = {
 };
 
 /** Called inside the owning write transaction using rows already read by its kernel. */
-export function stageCurrentConversationBindingChanges(
+function stageCurrentConversationBindingChanges(
   database: DatabaseSync,
   changes: readonly BindingChange[],
 ): void {
@@ -262,7 +263,7 @@ export function withCurrentConversationBindingPublication(
     let installing = false;
     let published = false;
     let unknown = false;
-    const unsubscribe = currentConversationBindingChanges.subscribeFacts((change) => {
+    const unsubscribe = currentConversationBindingPublication.subscribeFacts((change) => {
       if (installing) {
         return;
       }

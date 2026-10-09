@@ -4,7 +4,7 @@ import * as admission from "../infra/sqlite-worker-operation-admission.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { pluginStateChanges, type PluginStateChange } from "./plugin-state-publication.js";
+import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
   createPluginStateKeyedStore,
   createPluginStateSyncKeyedStore,
@@ -15,6 +15,8 @@ import type { PluginStateRow } from "./plugin-state-store.kernel.js";
 import { seedPluginStateEntriesForTests } from "./plugin-state-store.test-helpers.js";
 import { sweepExpiredPluginStateEntriesInWorker } from "./plugin-state-worker-client.js";
 
+type PluginStateChange = Parameters<Parameters<typeof pluginStatePublication.subscribe>[0]>[0];
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await closeOpenClawStateDatabaseAsync();
@@ -24,7 +26,7 @@ afterEach(async () => {
 function observe() {
   const changes: PluginStateChange[] = [];
   const current = new Map<string, SqliteCommittedFact<PluginStateRow>>();
-  const unsubscribe = pluginStateChanges.subscribeFacts((change) => {
+  const unsubscribe = pluginStatePublication.subscribeFacts((change) => {
     changes.push(change);
     if (change.kind === "committed") {
       for (const [key, fact] of change.receipt.facts) current.set(key, fact);
@@ -45,7 +47,7 @@ describe("plugin state committed facts", () => {
       });
       const seen = observe();
       const snapshots: unknown[] = [];
-      const unsubscribe = pluginStateChanges.subscribe(() =>
+      const unsubscribe = pluginStatePublication.subscribe(() =>
         snapshots.push([seen.fact("a"), seen.fact("b")]),
       );
       try {
@@ -93,7 +95,7 @@ describe("plugin state committed facts", () => {
         expect(store.lookup("a")).toBe("first");
 
         let mutationFailure: unknown;
-        const stopMutation = pluginStateChanges.subscribeFacts((change) => {
+        const stopMutation = pluginStatePublication.subscribeFacts((change) => {
           if (change.kind !== "committed") return;
           const fact = change.receipt.facts.get(
             JSON.stringify(["receipt-test", "receipts", "reentrant"]),
@@ -194,8 +196,10 @@ describe("plugin state committed facts", () => {
         expect(seen.fact("first")).toMatchObject({ kind: "postimage" });
         expect(seen.fact("bad")).toBeUndefined();
         const notifications: PluginStateChange[] = [];
-        const stopObserver = pluginStateChanges.subscribe((change) => notifications.push(change));
-        const stopFault = pluginStateChanges.subscribeFacts((change) => {
+        const stopObserver = pluginStatePublication.subscribe((change) =>
+          notifications.push(change),
+        );
+        const stopFault = pluginStatePublication.subscribeFacts((change) => {
           if (change.kind === "committed") throw new Error("fact sink unavailable");
         });
         try {
@@ -285,7 +289,7 @@ describe("plugin state committed facts", () => {
         expect([...committed[0]!.receipt.facts.values()]).toEqual([{ kind: "absent" }]);
         intercept.mockRestore();
         let deletedDuringNotification = false;
-        const stopNotification = pluginStateChanges.subscribe((change) => {
+        const stopNotification = pluginStatePublication.subscribe((change) => {
           if (change.kind !== "committed") return;
           const current = change.receipt.facts.get(
             JSON.stringify(["receipt-test", "receipts", "key"]),

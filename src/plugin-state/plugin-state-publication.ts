@@ -29,7 +29,7 @@ import type { PluginStateRow } from "./plugin-state-store.kernel.js";
 
 type EntryKey = Pick<PluginStateRow, "plugin_id" | "namespace" | "entry_key">;
 type Receipt = SqliteCommitReceipt<PluginStateRow>;
-export type PluginStateChange =
+type PluginStateChange =
   | { kind: "committed"; receipt: Receipt }
   | { kind: "unknown"; identity: string | symbol }
   | { kind: "pending" | "settled"; identity: string | symbol; operationId: string };
@@ -95,8 +95,10 @@ function publication(receipt: Receipt) {
   };
 }
 
-/** Private facts only; raw writers, foreign freshness and effect authority remain separate. */
-export const pluginStateChanges = {
+/** Owns committed-fact staging and observation; raw/foreign authority remains separate. */
+export const pluginStatePublication = {
+  stagePostimage: stagePluginStatePostimage,
+  stageDeletions: stagePluginStateDeletions,
   /** Install/invalidate prepared facts only; storage mutations belong in postcommit observers. */
   subscribeFacts: (listener: (change: PluginStateChange) => void) =>
     registerListener(state.facts, listener),
@@ -133,12 +135,12 @@ function stage(db: DatabaseSync, facts: Map<string, SqliteCommittedFact<PluginSt
   }
 }
 
-export function stagePluginStatePostimage(db: DatabaseSync, row: PluginStateRow): void {
+function stagePluginStatePostimage(db: DatabaseSync, row: PluginStateRow): void {
   stage(db, new Map([[keyFor(row), { kind: "postimage", value: { ...row } }]]));
 }
 
 /** DELETE RETURNING captures exact tombstones, including eviction and whole-namespace clear. */
-export function stagePluginStateDeletions(db: DatabaseSync, rows: readonly EntryKey[]): void {
+function stagePluginStateDeletions(db: DatabaseSync, rows: readonly EntryKey[]): void {
   stage(db, new Map(rows.map((row) => [keyFor(row), { kind: "absent" }])));
 }
 
@@ -214,7 +216,7 @@ export function withPluginStatePublication(
     let unknown = false;
     let received = false;
     let finished = false;
-    const unsubscribe = pluginStateChanges.subscribeFacts((change) => {
+    const unsubscribe = pluginStatePublication.subscribeFacts((change) => {
       if (installing) return;
       if (change.kind === "committed" && change.receipt.source.identity === identity()) {
         for (const key of change.receipt.facts.keys()) superseded.add(key);
