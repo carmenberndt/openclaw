@@ -417,7 +417,7 @@ async function prepareHistoryRead(
       const [{ withOpenClawAgentDatabaseReadOnly }, { hasSessionTranscriptMessageInDatabase }] =
         await Promise.all([
           import("../../state/openclaw-agent-db-readonly.js"),
-          import("./session-accessor.sqlite-read.js"),
+          import("./session-accessor.sqlite-transcript-metadata-read.js"),
         ]);
       return () => {
         const read = withOpenClawAgentDatabaseReadOnly(
