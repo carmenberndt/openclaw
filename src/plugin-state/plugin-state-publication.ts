@@ -118,13 +118,18 @@ function stage(db: DatabaseSync, facts: Map<string, SqliteCommittedFact<PluginSt
     const previous = new Map([...facts.keys()].map((key) => [key, capture.get(key)]));
     stageSqliteTransactionState(db, {
       stage: () => {
-        for (const [key, fact] of facts) capture.set(key, fact);
+        for (const [key, fact] of facts) {
+          capture.set(key, fact);
+        }
       },
       commit() {},
       rollback: () => {
         for (const [key, fact] of previous) {
-          if (fact) capture.set(key, fact);
-          else capture.delete(key);
+          if (fact) {
+            capture.set(key, fact);
+          } else {
+            capture.delete(key);
+          }
         }
       },
     });
@@ -217,9 +222,13 @@ export function withPluginStatePublication(
     let received = false;
     let finished = false;
     const unsubscribe = pluginStatePublication.subscribeFacts((change) => {
-      if (installing) return;
+      if (installing) {
+        return;
+      }
       if (change.kind === "committed" && change.receipt.source.identity === identity()) {
-        for (const key of change.receipt.facts.keys()) superseded.add(key);
+        for (const key of change.receipt.facts.keys()) {
+          superseded.add(key);
+        }
       } else if (change.kind === "unknown" && change.identity === identity()) {
         unknown = true;
       }
@@ -255,8 +264,9 @@ export function withPluginStatePublication(
         }
         const receipt = readReceipt(facts);
         (context.assertPublicationCurrent ?? context.admission.assertCurrent)();
-        if (receipt.source.identity !== identity())
+        if (receipt.source.identity !== identity()) {
           throw new Error("Plugin state receipt changed owner");
+        }
         const current: Receipt = {
           ...receipt,
           facts: new Map(

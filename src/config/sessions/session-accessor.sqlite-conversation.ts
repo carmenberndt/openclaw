@@ -166,7 +166,7 @@ export function upsertConversationIdentities(
   updatedAt: number,
 ): ConversationPublication | undefined {
   if (encoded === undefined) {
-    return;
+    return undefined;
   }
   const db = getSessionKysely(database.db);
   const columns = [

@@ -29,7 +29,9 @@ function observe() {
   const unsubscribe = pluginStatePublication.subscribeFacts((change) => {
     changes.push(change);
     if (change.kind === "committed") {
-      for (const [key, fact] of change.receipt.facts) current.set(key, fact);
+      for (const [key, fact] of change.receipt.facts) {
+        current.set(key, fact);
+      }
     }
   });
   const fact = (key: string, namespace = "receipts") =>
@@ -96,7 +98,9 @@ describe("plugin state committed facts", () => {
 
         let mutationFailure: unknown;
         const stopMutation = pluginStatePublication.subscribeFacts((change) => {
-          if (change.kind !== "committed") return;
+          if (change.kind !== "committed") {
+            return;
+          }
           const fact = change.receipt.facts.get(
             JSON.stringify(["receipt-test", "receipts", "reentrant"]),
           );
@@ -200,7 +204,9 @@ describe("plugin state committed facts", () => {
           notifications.push(change),
         );
         const stopFault = pluginStatePublication.subscribeFacts((change) => {
-          if (change.kind === "committed") throw new Error("fact sink unavailable");
+          if (change.kind === "committed") {
+            throw new Error("fact sink unavailable");
+          }
         });
         try {
           const store = createPluginStateSyncKeyedStore("receipt-test", options);
@@ -252,7 +258,7 @@ describe("plugin state committed facts", () => {
         await store.register("a", true);
         await store.register("b", true);
         await store.clear();
-        const clear = seen.changes.filter((change) => change.kind === "committed").at(-1);
+        const clear = seen.changes.findLast((change) => change.kind === "committed");
         expect(clear?.receipt.facts.size).toBe(2);
         expect([...clear!.receipt.facts.values()]).toEqual([
           { kind: "absent" },
@@ -290,7 +296,9 @@ describe("plugin state committed facts", () => {
         intercept.mockRestore();
         let deletedDuringNotification = false;
         const stopNotification = pluginStatePublication.subscribe((change) => {
-          if (change.kind !== "committed") return;
+          if (change.kind !== "committed") {
+            return;
+          }
           const current = change.receipt.facts.get(
             JSON.stringify(["receipt-test", "receipts", "key"]),
           );
