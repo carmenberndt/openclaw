@@ -22,7 +22,8 @@ export const ownerContext = resolveGlobalSingleton(
   () => new AsyncLocalStorage<OwnerContext>(),
 );
 
-/** Required cleanup acquires its target's mutation owner without inheriting the retired turn. */
+/** Work that outlives the current turn (required cleanup, scheduled maintenance) leaves its
+ * controller context, so it acquires its own owner instead of inheriting the retired turn. */
 export function runWithSessionControllerCleanup<T>(run: () => T): T {
   return ownerContext.exit(run);
 }
