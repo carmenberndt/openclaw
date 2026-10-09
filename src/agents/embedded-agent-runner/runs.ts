@@ -39,6 +39,7 @@ import {
   stopSession,
 } from "../../sessions/session-controller.stop.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createAgentRunDirectAbortError } from "../run-termination.js";
 import { resolveSessionPlacementForcedTerminalSettlement } from "../session-placement-forced-terminal-settlement.js";
 import { getGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 import {
@@ -356,6 +357,8 @@ function interruptSessionTurn(operation: ReplyOperation): boolean {
   return stopSession({
     source: "interrupt",
     capture: captureSessionControllerStop({ operations: [operation] }),
+    // A direct run abort keeps its typed reason, so callers record it as a direct abort.
+    reason: createAgentRunDirectAbortError(),
     // The controller result distinguishes a committed abort from an observer failure.
     onError: () => "continue",
   }).aborted;
