@@ -345,7 +345,7 @@ describe("Gateway Active Memory", () => {
             { timeoutMs: 35_000, signal },
           );
           signal.throwIfAborted();
-          expect(completed.status).toBe("ok");
+          expect(completed).toMatchObject({ status: "ok" });
           phase = "checking recall and main reply";
           const entry = loadSessionEntryReadOnly({
             agentId: "main",
