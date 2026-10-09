@@ -6,6 +6,7 @@ import Testing
 
 @MainActor
 struct ManagedNodeGatewayMigrationTests {
+    @MainActor
     private final class Fixture {
         var calls: [String] = []
         var version = "2026.9.6"

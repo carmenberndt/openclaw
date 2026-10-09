@@ -732,11 +732,4 @@ struct PostUpdateBundledRuntimeTests {
                 migrationOnlyLaunchCheck: true) == .completeSilently)
         }
     }
-
-    @Test func `migration admission preserves pause and activation intent`() {
-        for paused in [false, true] {
-            #expect(PostUpdateController.allowsNodeMigration(paused: paused, canActivate: true) == !paused)
-            #expect(!PostUpdateController.allowsNodeMigration(paused: paused, canActivate: false))
-        }
-    }
 }

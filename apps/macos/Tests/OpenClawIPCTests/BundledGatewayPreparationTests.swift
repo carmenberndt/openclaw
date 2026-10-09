@@ -105,7 +105,8 @@ struct BundledGatewayPreparationTests {
         switch operation {
         case "setup":
             updated = PostAppUpdateReceiptStore.recordSetupRecovery(
-                fromVersion: expected.fromVersion, toVersion: expected.toVersion, defaults: defaults, now: expected.recordedAt)
+                fromVersion: expected.fromVersion, toVersion: expected.toVersion, setupRecovery: true,
+                defaults: defaults, now: expected.recordedAt)
         case "dispatch":
             updated = PostAppUpdateReceiptStore.recordCoreUpdateDispatch(
                 receipt: expected, owner: .node, setupRecovery: true, defaults: defaults)

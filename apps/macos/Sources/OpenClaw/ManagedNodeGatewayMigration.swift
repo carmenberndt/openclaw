@@ -459,7 +459,7 @@ enum ManagedNodeGatewayMigration {
                     onDispatch: {
                         if candidate.snapshot == nil {
                             dispatchedReceipt = PostAppUpdateReceiptStore.recordSetupRecovery(
-                                fromVersion: candidate.version, toVersion: version)
+                                fromVersion: candidate.version, toVersion: version, setupRecovery: setupRecovery)
                         } else {
                             let receipt = PostAppUpdateReceiptStore.pending(currentVersion: version) ??
                                 PostAppUpdateReceipt(

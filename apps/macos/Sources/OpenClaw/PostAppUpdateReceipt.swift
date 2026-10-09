@@ -192,6 +192,7 @@ enum PostAppUpdateReceiptStore {
         fromVersion: String,
         toVersion: String,
         runtimeBuildID: String? = nil,
+        setupRecovery: Bool = false,
         defaults: UserDefaults = AppDefaults.standard,
         now: Date = Date()) -> PostAppUpdateReceipt
     {
@@ -203,7 +204,7 @@ enum PostAppUpdateReceiptStore {
             receipt: receipt ?? PostAppUpdateReceipt(
                 fromVersion: fromVersion, toVersion: toVersion, recordedAt: now,
                 runtimeBuildID: runtimeBuildID, setupRecovery: true),
-            owner: .gateway, setupRecovery: true, defaults: defaults)
+            owner: .gateway, setupRecovery: setupRecovery, defaults: defaults)
     }
 
     static func completeSetupRecovery(
