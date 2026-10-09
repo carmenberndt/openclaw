@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import Module, { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -8,6 +9,7 @@ import { createPluginCache, withPluginCache } from "./plugin-cache.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
 import { PluginInstance } from "./plugin-instance.js";
+import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
 const nativeRequire = createRequire(import.meta.url);
@@ -319,19 +321,36 @@ describe("plugin module generations", () => {
     const root = temp.make("plugin-computed-url-");
     fs.writeFileSync(
       path.join(root, `index.${extension}`),
-      "export const read = name => import(name);",
+      "export const url = import.meta.url; export const read = name => import(name);",
     );
     fs.writeFileSync(
       path.join(root, `helper.${extension}`),
       "export const token = Symbol('module');",
     );
     const plugin = load(root, `index.${extension}`, true).value as {
+      url: string;
       read(name: string): Promise<{ token: symbol }>;
     };
     const target = extension === "ts" ? "./helper.js" : "./helper.mjs";
     const query = await plugin.read(`${target}?one`);
     const fragment = await plugin.read(`${target}#two`);
     const plain = await plugin.read(target);
+    const absolute = new URL(`./helper.${extension}`, plugin.url).href;
+    expect(absolute).toContain(PLUGIN_SOURCE_CAPTURE_PREFIX);
+    expect((await plugin.read(absolute)).token).toBe(plain.token);
+    expect(
+      (
+        await plugin.read(
+          absolute.replace(
+            PLUGIN_SOURCE_CAPTURE_PREFIX,
+            `%${PLUGIN_SOURCE_CAPTURE_PREFIX.charCodeAt(0).toString(16)}${PLUGIN_SOURCE_CAPTURE_PREFIX.slice(1)}`,
+          ),
+        )
+      ).token,
+    ).toBe(plain.token);
+    expect((await plugin.read(absolute.replace("file:///", "file://localhost/"))).token).toBe(
+      plain.token,
+    );
     expect((await plugin.read(`${target}?one`)).token).toBe(query.token);
     expect((await plugin.read(`${target}#two`)).token).toBe(fragment.token);
     expect(query.token).not.toBe(plain.token);
@@ -510,16 +529,25 @@ describe("plugin module generations", () => {
 
   it.each(["ts", "mtsx", "ctsx"])(
     "compiles native filesystem path spelling for %s sources",
-    (extension) => {
+    async (extension) => {
       const root = temp.make("plugin-native-path-");
       if (process.platform !== "win32") {
-        const artifactTemp = path.join(temp.make("compiler-temporary-"), "artifact\\root");
+        const artifactTemp = path.join(temp.make("compiler-temporary-"), "artifact\\root # 100%");
         fs.mkdirSync(artifactTemp);
         vi.stubEnv("TMPDIR", artifactTemp);
       }
       const entry = `index.${extension}`;
-      fs.writeFileSync(path.join(root, entry), "export const value: number = 42;");
-      expect(load(root, entry).value).toMatchObject({ value: 42 });
+      fs.writeFileSync(
+        path.join(root, entry),
+        `export const value: number = 42; export const read = () => import('./helper.${extension}');`,
+      );
+      fs.writeFileSync(path.join(root, `helper.${extension}`), "export const value: number = 43;");
+      const plugin = load(root, entry).value as {
+        value: number;
+        read(): Promise<{ value: number }>;
+      };
+      expect(plugin.value).toBe(42);
+      await expect(plugin.read()).resolves.toMatchObject({ value: 43 });
     },
   );
 
@@ -964,6 +992,40 @@ describe("plugin module generations", () => {
       await instance.dispose();
     }
     expect(() => plugin.read()).toThrow("reloaded or disabled");
+  });
+
+  it.each([
+    ["encoded", `%${PLUGIN_SOURCE_CAPTURE_PREFIX.charCodeAt(0).toString(16)}`],
+    ["tab", `${PLUGIN_SOURCE_CAPTURE_PREFIX[0]}\t`],
+    ["CR", `${PLUGIN_SOURCE_CAPTURE_PREFIX[0]}\r`],
+    ["LF", `${PLUGIN_SOURCE_CAPTURE_PREFIX[0]}\n`],
+  ])("compiles a %s captured URL returned by a custom host resolver", (_name, firstCharacter) => {
+    const root = temp.make("plugin-encoded-host-resolution-");
+    fs.writeFileSync(path.join(root, "index.cjs"), "exports.directory = __dirname;");
+    fs.writeFileSync(
+      path.join(root, "helper.ts"),
+      "enum Answer { Value = 42 }; export const value = Answer.Value;",
+    );
+    let capturedUrl: string | undefined;
+    const hooks = Module.registerHooks({
+      resolve(specifier, context, nextResolve) {
+        return specifier === "fixture:encoded-capture" && capturedUrl
+          ? { shortCircuit: true, url: capturedUrl, format: "module" }
+          : nextResolve(specifier, context);
+      },
+    });
+    try {
+      const plugin = load(root, "index.cjs").value as { directory: string };
+      const url = pathToFileURL(path.join(plugin.directory, "helper.ts")).href;
+      expect(url).toContain(PLUGIN_SOURCE_CAPTURE_PREFIX);
+      capturedUrl = url.replace(
+        PLUGIN_SOURCE_CAPTURE_PREFIX,
+        `${firstCharacter}${PLUGIN_SOURCE_CAPTURE_PREFIX.slice(1)}`,
+      );
+      expect(nativeRequire("fixture:encoded-capture")).toMatchObject({ value: 42 });
+    } finally {
+      hooks.deregister();
+    }
   });
 
   it.each(["cjs", "ts"])("does not reevaluate a failing module through a %s entry", (extension) => {

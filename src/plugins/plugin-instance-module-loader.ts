@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { JitiOptions, JitiResolveOptions } from "jiti";
 import { isPathInside } from "../infra/path-guards.js";
+import { escapeRegExp } from "../shared/regexp.js";
 import { createJiti } from "./jiti-factory.js";
 import {
   resolvePluginLoaderTryNative,
@@ -28,8 +29,15 @@ import {
   type PluginSourceFile,
   type PluginSourceLoadMode,
 } from "./plugin-source-build.js";
+import { PLUGIN_SOURCE_CAPTURE_PREFIX } from "./plugin-source-capture-path.js";
 import { inspectPluginTypeScriptExecutionFacts } from "./plugin-source-references.js";
 import { preparePluginLoaderAliases, isPluginSdkAliasSpecifier } from "./sdk-alias.js";
+
+// Encoded and URL-normalized spellings still need decoding before capture ownership is known.
+const captureUrlPattern = new RegExp(
+  `${escapeRegExp(PLUGIN_SOURCE_CAPTURE_PREFIX)}|[%\\t\\r\\n]`,
+  "i",
+);
 
 /** Runtime and setup share code identity policy while keeping separate instance authority. */
 export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoaderParams): void {
@@ -218,9 +226,10 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
       // Lazy native imports outlive the binding call. Only this graph's importers
       // borrow its SDK alias cache; callbacks may otherwise use a newer registry.
       const parent = context.parentURL;
-      const parentEntry = parent?.startsWith("file:")
-        ? sourceForOutput(fileURLToPath(parent))
-        : undefined;
+      const parentEntry =
+        parent?.startsWith("file:") && captureUrlPattern.test(parent)
+          ? sourceForOutput(fileURLToPath(parent))
+          : undefined;
       const parentSource = parentEntry?.source;
       const parentRoot = parentSource && artifact.moduleRoot(parentSource);
       const resolverSource =
@@ -399,7 +408,10 @@ export function bindPluginInstanceModuleLoader(params: PluginInstanceModuleLoade
               }),
             )
           : nextResolve(specifier, nativeContext);
-      if (resolved.url.startsWith("file:")) {
+      if (
+        resolved.url.startsWith("file:") &&
+        (parentRoot || captureUrlPattern.test(resolved.url))
+      ) {
         const resolvedFilename = fileURLToPath(resolved.url);
         const entry = sourceForOutput(resolvedFilename);
         const filename = entry.generated ? resolvedFilename : entry.source;
