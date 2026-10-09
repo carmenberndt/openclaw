@@ -13,13 +13,13 @@ import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../paths.js";
-import type {
-  SessionEntryPatchContext,
-  SessionEntryPatchOptions,
-} from "./session-accessor.sqlite-contract.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
 import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-exact-read.js";
 import { toDatabaseOptions, type ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
+import type {
+  SessionEntryPatchContext,
+  SessionEntryPatchOptions,
+} from "./session-accessor.types.js";
 import type { SessionEntryPatchOperation } from "./session-entry-patch-operation.js";
 import type {
   SessionEntryPatchCommitObserver,

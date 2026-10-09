@@ -20,7 +20,6 @@ import { withClientVoiceSessionResources } from "./client-voice-session-lifecycl
 import type { ClientVoiceSessionSource } from "./client-voice-session-source.js";
 import {
   type ClientVoiceSessionRecord,
-  type ClientVoiceToolEffect,
   type ClientVoiceRunBinding,
   operationKey,
 } from "./client-voice-session-store.js";
@@ -40,7 +39,7 @@ export const CLIENT_VOICE_MUTATION_DIGEST_POLICY = {
   failureRetentionMs: 5 * 60_000,
 } as const;
 
-function formatMutationDigest(effects: ClientVoiceToolEffect[]): string | undefined {
+function formatMutationDigest(effects: ClientVoiceSessionRecord["effects"]): string | undefined {
   if (effects.length === 0) {
     return undefined;
   }

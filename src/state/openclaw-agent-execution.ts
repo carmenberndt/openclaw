@@ -497,11 +497,11 @@ function createAgentDatabaseExecution(
             assertReferenceCurrent(native.fileIdentity);
             acceptFileIdentity(native.fileIdentity);
           })();
-          pending.add(adoption);
+          acceptedWork.pending.set(adoption, { borrower });
           try {
             await adoption;
           } finally {
-            pending.delete(adoption);
+            acceptedWork.pending.delete(adoption);
           }
         },
         assertCurrent: assertBorrowed,
