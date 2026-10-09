@@ -190,7 +190,7 @@ function createDegradedOwner(
 }
 
 function associateAssignmentFailureOwners(
-  assignments: SecretAssignment[],
+  allAssignments: SecretAssignment[],
   error: unknown,
   params: { options: SecretResolutionOptions; forceColdRefKeys?: ReadonlySet<string> },
 ): void {
@@ -198,7 +198,7 @@ function associateAssignmentFailureOwners(
   const validationFailureRefKeys = new Set(validationFailures.map((failure) => failure.refKey));
   const validationFailureOwnerKeys = new Set(
     validationFailures.flatMap((failure) =>
-      assignments
+      allAssignments
         .filter(
           (assignment) =>
             assignment.ownerKind === failure.ownerKind &&
@@ -218,7 +218,7 @@ function associateAssignmentFailureOwners(
   if (!sharedReason && !authStoreProviderUnconfigured) {
     return;
   }
-  const owners = groupAssignmentsByOwner(assignments).flatMap((assignments) => {
+  const owners = groupAssignmentsByOwner(allAssignments).flatMap((assignments) => {
     if (assignments[0]?.ownerKind === "unknown") {
       return [];
     }
@@ -256,7 +256,7 @@ function associateAssignmentFailureOwners(
     ];
   });
   const failureRefs = new Map(
-    assignments
+    allAssignments
       .filter((assignment) =>
         validationFailures.length > 0
           ? validationFailureRefKeys.has(secretRefKey(assignment.ref))
@@ -272,7 +272,7 @@ function associateAssignmentFailureOwners(
   const ownerKeys = new Set(
     owners.map((owner) => `${owner.source}\0${owner.ownerKind}\0${owner.ownerId}`),
   );
-  const collectedOwnerKeys = new Set(assignments.map(assignmentOwnerKey));
+  const collectedOwnerKeys = new Set(allAssignments.map(assignmentOwnerKey));
   const activeSnapshot = getActiveSecretsRuntimeSnapshotState();
   const activeAuthOwnerIds = listAuthProfileSecretOwnerIds(activeSnapshot?.authStores ?? []);
   const activeCoOwners = (activeSnapshot?.secretOwners ?? []).flatMap((owner) => {
