@@ -19,6 +19,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { writeExecApprovalsConfigRow } from "../../infra/exec-approvals-sqlite.js";
 import * as approvalStore from "../../infra/exec-approvals-store.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
+import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/session-snapshot.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
@@ -102,22 +103,18 @@ it.each([false, true])(
       const refusal = new Error("skill caller retired before commit");
       let commitReached = false;
       if (revokeAtCommit) {
-        const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
-        vi.spyOn(workerAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
-          (callback, attachment) =>
-            createAdmission((request, grant) => {
-              if (
-                request.stage === "commit" &&
-                isRecord(request.facts) &&
-                isRecord(request.facts.publication) &&
-                request.facts.publication.kind === "session-entry-patch-committed"
-              ) {
-                commitReached = true;
-                controller.abort(refusal);
-              }
-              callback(request, grant);
-            }, attachment),
-        );
+        probe.admission(workerAdmission, (request, grant, callback) => {
+          if (
+            request.stage === "commit" &&
+            isRecord(request.facts) &&
+            isRecord(request.facts.publication) &&
+            request.facts.publication.kind === "session-entry-patch-committed"
+          ) {
+            commitReached = true;
+            controller.abort(refusal);
+          }
+          callback(request, grant);
+        });
       }
       const sql = observeHostDataSql();
       const pending = ensureSkillSnapshot({

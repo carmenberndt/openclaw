@@ -14,6 +14,7 @@ import { replaceSessionEntrySync } from "../config/sessions/session-accessor.ent
 import * as historyReaders from "../config/sessions/session-transcript-worker-readers.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
+import { sqliteWorkerOwnerProbe as probe } from "../infra/sqlite-worker-owner-probe.test-support.js";
 import { sessionChanges, type SessionRowChange } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -330,24 +331,19 @@ it("preserves committed Boards and admits followers after publication cleanup is
       changes.push(change);
     }
   });
-  const create = admission.createSqliteWorkerOperationAdmission;
   let refuseCleanup = false;
   let refusals = 0;
-  const interception = vi
-    .spyOn(admission, "createSqliteWorkerOperationAdmission")
-    .mockImplementation((admit, attachment) =>
-      create((request, grant) => {
-        if (refuseCleanup && request.stage === "prepare") {
-          refuseCleanup = false;
-          refusals++;
-          throw new Error("controlled Board publication cleanup admission refusal");
-        }
-        admit(request, grant);
-        if (request.stage === "commit" && refusals === 0) {
-          refuseCleanup = true;
-        }
-      }, attachment),
-    );
+  const interception = probe.admission(admission, (request, grant, admit) => {
+    if (refuseCleanup && request.stage === "prepare") {
+      refuseCleanup = false;
+      refusals++;
+      throw new Error("controlled Board publication cleanup admission refusal");
+    }
+    admit(request, grant);
+    if (request.stage === "commit" && refusals === 0) {
+      refuseCleanup = true;
+    }
+  });
   const put = (name: string) =>
     store.putWidget({ ...target, name, content: { kind: "html", html: `<p>${name}</p>` } });
   const first = put("first");
@@ -443,17 +439,12 @@ it.each(["transaction", "commit"] as const)(
       resolveSession: () => ({ ...options, sessionKey }),
       env: options.env,
     });
-    const create = admission.createSqliteWorkerOperationAdmission;
-    const interception = vi
-      .spyOn(admission, "createSqliteWorkerOperationAdmission")
-      .mockImplementation((admit, attachment) =>
-        create((request, grant) => {
-          if (request.stage === stage) {
-            sessionKey = "agent:main:replacement";
-          }
-          admit(request, grant);
-        }, attachment),
-      );
+    const interception = probe.admission(admission, (request, grant, admit) => {
+      if (request.stage === stage) {
+        sessionKey = "agent:main:replacement";
+      }
+      admit(request, grant);
+    });
     try {
       const pending = reader.putWidget({
         ...target,
