@@ -32,7 +32,7 @@ export function runGatewayHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   context: GatewayRequestContext | undefined,
-  handle: () => Promise<"failed" | void>,
+  handle: () => Promise<"failed" | undefined>,
 ): Promise<void> {
   const run = async () => {
     const work = new AsyncWorkScope();
