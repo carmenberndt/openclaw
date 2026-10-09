@@ -352,17 +352,13 @@ export function recoverContextEngineTurnOutbox(params: {
       .where("engine_id", "=", params.engineId)
       .where("owner_plugin_id", params.ownerPluginId ? "=" : "is", params.ownerPluginId ?? null)
       .where("session_id", "=", params.sessionId)
+      // Blocked rows are terminal; their outcome was logged once when the turn was blocked.
+      .where(outboxPayloadRequiresAdvancement())
       .orderBy(outboxEnqueueSequence(), "asc"),
   ).rows;
   for (const row of rows) {
     const payload = JSON.parse(row.payload_json) as ContextEngineTurnOutboxPayload;
-    if (payload.state === "ready") {
-      continue;
-    }
-    if (payload.state === "blocked") {
-      params.warn(
-        `[context-engine] durable turn advancement is blocked: ${row.advancement_key}: transcript range is ${payload.failure}`,
-      );
+    if (payload.state === "ready" || payload.state === "blocked") {
       continue;
     }
     if (payload.state === "admitted") {
