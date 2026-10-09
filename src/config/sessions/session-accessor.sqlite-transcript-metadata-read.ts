@@ -76,7 +76,7 @@ export function findTranscriptEventInRows(
 ): { event: TranscriptEvent } | undefined {
   for (const row of rows) {
     try {
-      const event = JSON.parse(row.event_json) as TranscriptEvent;
+      const event: unknown = JSON.parse(row.event_json);
       if (match(event)) {
         return { event };
       }
