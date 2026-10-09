@@ -159,12 +159,18 @@ function copyPinnedPluginSourceFile(
       sourceIdentity: pluginSourceStatIdentity(admitted),
     };
   } catch (error) {
+    let cleanupFailure: unknown;
     try {
       // Windows cannot unlink a file that is still open.
       fs.closeSync(output);
       fs.rmSync(target, { force: true });
     } catch (cleanup) {
-      throw new AggregateError([error, cleanup], "copy and cleanup failed", { cause: error });
+      cleanupFailure = cleanup;
+    }
+    if (cleanupFailure !== undefined) {
+      throw new AggregateError([error, cleanupFailure], "copy and cleanup failed", {
+        cause: error,
+      });
     }
     throw error;
   }
