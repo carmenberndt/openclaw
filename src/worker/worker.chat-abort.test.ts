@@ -8,7 +8,6 @@ import {
   withTestTimeout,
 } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { resolveActiveEmbeddedRunOwner } from "../agents/embedded-agent-runner/runs.js";
 import {
   clearRuntimeConfigSnapshot,
   getRuntimeConfigSnapshot,
@@ -151,7 +150,6 @@ describe("worker chat.abort settlement", () => {
         },
       };
       const owner = await createWorkerTurnRunOwner(ownerInput);
-      let replacement: Awaited<ReturnType<typeof createWorkerTurnRunOwner>> | undefined;
       const ackEntered = createDeferred();
       const ackRelease = createDeferred();
       const providerRelease = createDeferred<WorkerInferenceTerminalOutcome>();
@@ -333,13 +331,16 @@ describe("worker chat.abort settlement", () => {
             command,
             "worker command settled before durable ACK boundary",
           );
-          replacement = await createWorkerTurnRunOwner({
-            ...ownerInput,
-            turn: { ...ownerInput.turn, abortSignal: undefined },
-          });
-          // Reusing and cancelling the same claim cannot lend the first request
-          // a new owner's authority after its ACK await.
-          expect(resolveActiveEmbeddedRunOwner(SESSION_ID)?.abort()).toBe(true);
+          // The cancelled operation owns this turn's liveness, so reusing its claim
+          // cannot install an owner that lends the first request authority after its ACK await.
+          await expect(
+            createWorkerTurnRunOwner({
+              ...ownerInput,
+              turn: { ...ownerInput.turn, abortSignal: undefined },
+            }),
+          ).rejects.toThrow("Worker attempt retired");
+          // Retiring the captured owner is the remaining authority change in this window.
+          owner.dispose();
           ackRelease.resolve();
         }
         phase = "waiting-command-settlement";
@@ -421,7 +422,6 @@ describe("worker chat.abort settlement", () => {
         await Promise.allSettled([command]);
         owner.signal.removeEventListener("abort", cancelWorker);
         owner.dispose();
-        replacement?.dispose();
         registration.cleanup();
         releaseSource();
         await registration.entry.input.settlement.promise;
