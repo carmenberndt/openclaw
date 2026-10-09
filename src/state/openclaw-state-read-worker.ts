@@ -26,7 +26,7 @@ import {
 } from "../infra/worker-task-capacity.js";
 import { createOwnedWorkerTaskPool, WorkerTaskError } from "../infra/worker-task-pool.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { assertStoreWriterReleased } from "../shared/store-writer-queue.js";
+import { assertOpenClawAgentWriterReleased } from "./openclaw-agent-write-admission-state.js";
 import {
   registerOpenClawStateDatabaseAsyncResource,
   registerOpenClawStateDatabaseLifecycleListener,
@@ -167,11 +167,11 @@ function readPool(state: ReadRuntime, admitted: boolean): ReadPool {
       const closeResources = pool.closeResources;
       const rotate = pool.rotate;
       pool.closeResources = (key) => {
-        assertStoreWriterReleased("close shared-state reader resources");
+        assertOpenClawAgentWriterReleased("close shared-state reader resources");
         return closeResources(key);
       };
       pool.rotate = () => {
-        assertStoreWriterReleased("rotate shared-state readers");
+        assertOpenClawAgentWriterReleased("rotate shared-state readers");
         return rotate();
       };
     }

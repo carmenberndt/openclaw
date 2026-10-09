@@ -17,7 +17,6 @@ import { SESSION_TRANSCRIPT_FOREGROUND_WORKERS } from "../../infra/worker-pool-s
 import { WorkerTaskError, WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
-import { assertStoreWriterReleased } from "../../shared/store-writer-queue.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import {
   matchesAgentDatabaseReadCandidatePath,
@@ -25,6 +24,7 @@ import {
   registerOpenClawAgentDatabaseReadCandidateResource,
 } from "../../state/openclaw-agent-db-resources.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { assertOpenClawAgentWriterReleased } from "../../state/openclaw-agent-write-admission-state.js";
 import { runOutsideOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "../../state/openclaw-state-db-cache.js";
 import {
@@ -170,14 +170,14 @@ if (process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development") {
   for (const lane of [...independentHistoryLanes, costReadLane, costRefreshLane]) {
     const rotate = lane.pool.rotate.bind(lane.pool);
     lane.pool.rotate = () => {
-      assertStoreWriterReleased(`drain the ${lane.name} reader pool`);
+      assertOpenClawAgentWriterReleased(`drain the ${lane.name} reader pool`);
       return rotate();
     };
   }
   for (const lane of independentHistoryLanes) {
     const close = lane.pool.closeResources;
     lane.pool.closeResources = (key) => {
-      assertStoreWriterReleased(`close the ${lane.name} reader pool`);
+      assertOpenClawAgentWriterReleased(`close the ${lane.name} reader pool`);
       return close(key);
     };
   }

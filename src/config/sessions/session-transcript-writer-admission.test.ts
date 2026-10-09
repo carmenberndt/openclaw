@@ -7,6 +7,7 @@ import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import type { UsageCostWorkerInput } from "../../infra/session-cost-usage-worker.types.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { runQueuedStoreWrite } from "../../shared/store-writer-queue.js";
 import {
   runOpenClawAgentWorkerWrite,
   runOpenClawAgentWriteAdmission,
@@ -156,6 +157,21 @@ it("refuses writer-held reader cleanup before starting a pool drain", async () =
   });
   await historyLane.pool.closeResources(database.path);
   expect(observed.closeResources).toHaveBeenCalledTimes(2);
+});
+
+it("allows reader cleanup while only a logical session lock is held", async () => {
+  const { database } = input();
+  await runQueuedStoreWrite({
+    queues: new Map(),
+    storePath: database.path,
+    label: "logical session lock",
+    fn: async () => {
+      await projectionLane.pool.closeResources(database.path);
+      await projectionLane.pool.rotate();
+    },
+  });
+  expect(observed.closeResources).toHaveBeenCalledOnce();
+  expect(observed.rotate).toHaveBeenCalledOnce();
 });
 
 it("lets a cold search host write reenter its reserved discovery admission", async () => {

@@ -1,7 +1,7 @@
 import { joinOwnedWorkerTasks } from "@openclaw/worker-runtime";
 import type { RetainedOperation } from "@openclaw/worker-runtime/lifecycle";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { assertStoreWriterReleased } from "../shared/store-writer-queue.js";
+import { assertOpenClawAgentWriterReleased } from "../state/openclaw-agent-write-admission-state.js";
 
 type ResourceOwningPool = { startCloseResources(key?: string): RetainedOperation<void> };
 
@@ -43,7 +43,7 @@ async function closeResources(key: string): Promise<void> {
 export const closeWorkerTaskPoolResources =
   process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development"
     ? (key: string) => {
-        assertStoreWriterReleased("close process-wide reader resources");
+        assertOpenClawAgentWriterReleased("close process-wide reader resources");
         return closeResources(key);
       }
     : closeResources;

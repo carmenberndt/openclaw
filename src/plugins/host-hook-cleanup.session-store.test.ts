@@ -16,6 +16,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import { SQLITE_SESSION_WRITER_QUEUES } from "../state/openclaw-agent-write-admission-state.js";
 import * as agentWriteAdmission from "../state/openclaw-agent-write-admission.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { beginAgentDeletionJournal } from "../test-utils/agent-deletion-journal.js";
@@ -268,7 +269,7 @@ describe("plugin host cleanup session stores", () => {
           }),
         ]);
         expect(
-          [...agentWriteAdmission.SQLITE_SESSION_WRITER_QUEUES.values()].reduce(
+          [...SQLITE_SESSION_WRITER_QUEUES.values()].reduce(
             (count, queue) => count + queue.pending.length,
             0,
           ),

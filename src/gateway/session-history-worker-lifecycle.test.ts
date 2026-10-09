@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Worker } from "node:worker_threads";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { encodeSessionArchiveContent } from "../config/sessions/archive-compression.js";
 import {
   replaceSessionEntry,
@@ -10,8 +11,12 @@ import {
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
+import { prepareSqliteTranscriptReadScope } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { readSessionColdTranscript } from "../config/sessions/session-cold-storage-state.js";
-import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
+import {
+  restoreSessionColdTranscript,
+  runSessionColdStorageMaintenance,
+} from "../config/sessions/session-cold-storage.js";
 import {
   createSessionColdStorageFixture,
   maintenanceConfig,
@@ -31,7 +36,6 @@ import {
 } from "../config/sessions/session-transcript-worker-runtime.js";
 import { getSqliteRuntimeCapabilities } from "../infra/bun-sqlite-library.js";
 import { DEFAULT_WORKER_PENDING_BYTES } from "../infra/worker-task-capacity.js";
-import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db-lifecycle.js";
@@ -65,7 +69,7 @@ const observed = vi.hoisted(() => ({
   idleCloseKeepsWorker: new WeakMap<Worker, boolean>(),
   dispatch: undefined as ((message: unknown) => void) | undefined,
   restoration: undefined as
-    | { sessionId: string; entered: () => void; wait: Promise<void> }
+    | { sessionId: string; entered: () => void; wait: Promise<void>; metadata?: true }
     | undefined,
 }));
 vi.mock("node:worker_threads", async (importOriginal) => {
@@ -104,6 +108,23 @@ vi.mock("../config/sessions/session-cold-storage-read.js", async (importOriginal
     ) => {
       const held = observed.restoration;
       if (args[0].sessionId === held?.sessionId) {
+        const options = args[2];
+        if (held.metadata && options?.coldRead) {
+          const coldRead = options.coldRead;
+          return actual.readRestoredSessionTranscript(args[0], args[1], {
+            ...options,
+            coldRead: {
+              ...coldRead,
+              async readMetadata(phase) {
+                const value = await coldRead.readMetadata(phase);
+                if (phase === "initial") {
+                  held.entered();
+                }
+                return value;
+              },
+            },
+          });
+        }
         held.entered();
         await held.wait;
       }
@@ -650,6 +671,8 @@ it.each(["before restoration", "queued restoration"])(
       });
       const entered = createDeferredCore();
       const gate = createDeferredCore();
+      const predecessorController = new AbortController();
+      let predecessor: Promise<unknown> | undefined;
       if (phase === "before restoration") {
         observed.restoration = {
           sessionId: fixture.scope.sessionId,
@@ -657,32 +680,39 @@ it.each(["before restoration", "queued restoration"])(
           wait: gate.promise,
         };
       }
-      let pauseQueue = phase === "queued restoration";
-      // oxlint-disable-next-line typescript/unbound-method -- The observer preserves the queue receiver.
-      const enqueue = KeyedAsyncQueue.prototype.enqueue;
-      const queueObservation = vi
-        .spyOn(KeyedAsyncQueue.prototype, "enqueue")
-        .mockImplementation(function <T>(
-          this: KeyedAsyncQueue,
-          ...args: Parameters<typeof enqueue<T>>
-        ): Promise<T> {
-          const enqueueTask = enqueue<T>;
-          const [key, task, hooks] = args;
-          if (key !== databasePath || !pauseQueue) {
-            return enqueueTask.call(this, ...args);
-          }
-          pauseQueue = false;
-          return enqueueTask.call(
-            this,
-            key,
-            async () => {
-              entered.resolve();
-              await gate.promise;
-              return await task();
+      if (phase === "queued restoration") {
+        const predecessorEntered = createDeferredCore();
+        const target = await prepareSqliteTranscriptReadScope(fixture.scope);
+        const archive = before.found ? before.value.cold : undefined;
+        const restoring = restoreSessionColdTranscript(
+          fixture.scope,
+          undefined,
+          {
+            target,
+            async readMetadata(stage) {
+              if (stage === "queued") {
+                predecessorEntered.resolve();
+                await gate.promise;
+              }
+              return archive;
             },
-            hooks,
-          );
-        });
+          },
+          undefined,
+          predecessorController.signal,
+        );
+        predecessor = restoring.catch((error: unknown) => error);
+        await awaitGateBeforeSettlement(
+          predecessorEntered.promise,
+          restoring,
+          "Preceding restoration did not acquire its FIFO turn",
+        );
+        observed.restoration = {
+          sessionId: fixture.scope.sessionId,
+          entered: entered.resolve,
+          wait: gate.promise,
+          metadata: true,
+        };
+      }
       const read = () =>
         readChatHistoryPage({
           entry: undefined,
@@ -700,7 +730,11 @@ it.each(["before restoration", "queued restoration"])(
       const pending = read();
       const failure = expect(pending).rejects.toThrow("revoked");
       try {
-        await entered.promise;
+        await awaitGateBeforeSettlement(
+          entered.promise,
+          pending,
+          "History restoration was not reached",
+        );
         await closeOpenClawAgentDatabaseByPathAsync(databasePath, "main");
         if (unrelated) {
           expect((await unrelated.read()).messages.map(readChatHistoryMessageId)).toEqual([
@@ -712,10 +746,11 @@ it.each(["before restoration", "queued restoration"])(
         fs.renameSync(`${databasePath}.replacement`, databasePath);
         expect(readStoredTranscript()).toEqual(before);
       } finally {
-        queueObservation.mockRestore();
+        predecessorController.abort(new Error("fixture restoration revoked"));
         observed.restoration = undefined;
         gate.resolve();
         await failure;
+        await predecessor;
       }
       expect(readStoredTranscript()).toEqual(before);
       if (unrelated) {

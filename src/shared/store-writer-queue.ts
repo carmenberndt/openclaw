@@ -107,10 +107,10 @@ export function isActiveStoreWriter(
 }
 
 /** Development-only reader cleanup guards consume the existing writer context. */
-export function assertStoreWriterReleased(operation: string): void {
+export function assertStoreWriterReleased(queues: StoreWriterQueues, operation: string): void {
   let writer = activeStoreWriters.getStore();
   while (writer) {
-    if (writer.active) {
+    if (writer.active && writer.queues === queues) {
       throw new Error(`Cannot ${operation} while holding a store writer`);
     }
     writer = writer.parent;
