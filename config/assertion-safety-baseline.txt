@@ -2343,13 +2343,11 @@ src/node-host/invoke-agent-cli-claude.ts	1
 src/node-host/invoke-payload.ts	3
 src/node-host/invoke.ts	1
 src/node-host/mcp.ts	2
-src/node-host/node-worker-bundle-installer.ts	1
 src/node-host/node-worker-transfer-client.ts	1
 src/node-host/node-worker-transfer-http.ts	1
 src/node-host/node-worker-tree-control.ts	2
 src/node-host/node-worker-workspace.ts	1
 src/node-host/plugin-node-host.ts	1
-src/node-host/pty-command.ts	6
 src/node-host/skills.ts	1
 src/node-host/worker-support.ts	4
 src/plugin-sdk/acp-runtime.ts	1
@@ -2534,11 +2532,11 @@ src/routing/binding-scope.ts	1
 src/runtime.ts	4
 src/secrets/audit.ts	1
 src/secrets/channel-contract-api.ts	1
-src/secrets/egress-proxy/stream-substitution.ts	2
+src/secrets/egress-proxy/stream-substitution.ts	1
 src/secrets/plan.ts	2
 src/secrets/private-plan-file.ts	1
 src/secrets/resolve.ts	1
-src/secrets/runtime-command-secrets.ts	4
+src/secrets/runtime-command-secrets.ts	3
 src/secrets/runtime-config-collectors-core.ts	7
 src/secrets/runtime-config-collectors-memory.ts	1
 src/secrets/runtime-config-collectors-sandbox.ts	2

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope-config.js";
@@ -72,6 +71,13 @@ const ARCHIVE_DIR = ".archive";
 const MAX_DESCRIPTION_BYTES = 1024;
 const MAX_CHANGES_LIMIT = 500;
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+function emptyForMissingDirectory(error: unknown): never[] {
+  if (hasErrnoCode(error, "ENOENT")) {
+    return [];
+  }
+  throw error;
+}
 
 function resolveSkillPaths(config: OpenClawConfig, agentId: string, name: string): SkillPaths {
   if (!SKILL_NAME_PATTERN.test(name)) {
@@ -364,15 +370,9 @@ export async function listWorkshopSkills(
   agentId: string,
 ): Promise<WorkshopSkillSummary[]> {
   const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
-  let entries: Dirent[];
-  try {
-    entries = await fs.readdir(skillsRoot, { withFileTypes: true });
-  } catch (error) {
-    if (hasErrnoCode(error, "ENOENT")) {
-      return [];
-    }
-    throw error;
-  }
+  const entries = await fs
+    .readdir(skillsRoot, { withFileTypes: true })
+    .catch(emptyForMissingDirectory);
   const skills: WorkshopSkillSummary[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || !SKILL_NAME_PATTERN.test(entry.name)) {
@@ -399,15 +399,9 @@ export async function listWorkshopArchive(
   agentId: string,
 ): Promise<WorkshopArchivedSkill[]> {
   const skillsRoot = resolveWorkshopSkillsDir(config, agentId);
-  let names: string[];
-  try {
-    names = await fs.readdir(path.join(skillsRoot, ARCHIVE_DIR));
-  } catch (error) {
-    if (hasErrnoCode(error, "ENOENT")) {
-      return [];
-    }
-    throw error;
-  }
+  const names = await fs
+    .readdir(path.join(skillsRoot, ARCHIVE_DIR))
+    .catch(emptyForMissingDirectory);
   const archived: WorkshopArchivedSkill[] = [];
   for (const name of names.toSorted()) {
     if (!SKILL_NAME_PATTERN.test(name)) {
