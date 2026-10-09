@@ -494,7 +494,9 @@ async function withSqliteSessionMutations<T>(
       targets: targets.map((target) =>
         captureSessionTarget({
           storeScope: ownerStorePath,
-          sessionKey: target.sessionKey,
+          // A blank stored key is legacy state only Doctor removes; no controller can address
+          // it by key, so its incarnation is its only live identity (as in assertTargetIdle).
+          sessionKey: target.sessionKey.trim() ? target.sessionKey : target.sessionId,
           incarnation: target.sessionId,
           aliases: options.additionalIdentities,
         }),
