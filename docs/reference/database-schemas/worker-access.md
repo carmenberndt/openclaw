@@ -125,6 +125,8 @@ kernels. Each new unpinned use still observes foreign commits. Canonical admissi
 publishes only after commit; failed snapshots discard it. Transferred canonical
 continuations retain admission before their transaction, and manual compaction
 prepares foreign source readers before entering the target snapshot.
+Ordinary transcript snapshots retain their read caches without entering a
+publication scope; entry readers explicitly select that scope for staged admission.
 
 Worker read-only agent connections load existing file-bound canonical validation receipts
 at admission, before a read transaction begins. Reopening a reader then validates

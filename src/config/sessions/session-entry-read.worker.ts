@@ -12,7 +12,10 @@ import {
   isOpenClawAgentDatabasePathCurrent,
   readOpenClawAgentDatabaseIdentity,
 } from "../../state/openclaw-agent-db-identity.js";
-import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import {
+  withOpenClawAgentDatabaseReadOnly,
+  withOpenClawAgentDatabaseReadOnlyPostCommit,
+} from "../../state/openclaw-agent-db-readonly.js";
 import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import { SessionMetadataUnavailableError } from "../../state/session-metadata-unavailable-error.js";
@@ -649,7 +652,11 @@ export function readSessionRowDatabaseFacts(
   if (request.sessionKeys.length === 0) {
     return { kind: "session-row-facts", rows: [] };
   }
-  const result = withOpenClawAgentDatabaseReadOnly(
+  // Transferred canonical admission must be installed before its transaction begins.
+  const readDatabase = request.continuation
+    ? withOpenClawAgentDatabaseReadOnly
+    : withOpenClawAgentDatabaseReadOnlyPostCommit;
+  const result = readDatabase(
     (database) =>
       readWithCanonicalSessionReaderContinuation(database, request.continuation, () => {
         const read = () => {
@@ -689,8 +696,6 @@ export function readSessionRowDatabaseFacts(
         );
       }),
     { ...request.database, env: request.env },
-    // Transferred canonical admission must be installed before its transaction begins.
-    { snapshot: !request.continuation },
   );
   if (result.found) {
     return result.value;

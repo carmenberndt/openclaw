@@ -23,6 +23,7 @@ import {
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
   type OpenClawAgentReadOnlyDatabaseHandle,
+  type OpenClawAgentReadSnapshot,
 } from "./openclaw-agent-db-readonly-open.js";
 import { registerOpenClawAgentDatabaseSyncResource } from "./openclaw-agent-db-resources.js";
 import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-async-lifecycle.js";
@@ -31,6 +32,14 @@ export type OpenClawAgentDatabaseReadOnlyBehavior = {
   allowExtension?: boolean;
   /** Consume admission and read kernels in one synchronous deferred transaction. */
   snapshot?: boolean;
+};
+
+export type OpenClawAgentDatabaseReadOnlySnapshotBehavior = Omit<
+  OpenClawAgentDatabaseReadOnlyBehavior,
+  "snapshot"
+> & {
+  /** Share admission and reads; post-commit also settles staged facts before returning. */
+  snapshot?: false | OpenClawAgentReadSnapshot;
 };
 
 type ReadTarget = OpenClawAgentDatabaseOptions & { agentId: string; path: string };
@@ -152,7 +161,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   private acquire(
     options: OpenClawAgentDatabaseOptions,
     onAdmitted?: (database: OpenClawAgentReadOnlyDatabaseHandle) => void,
-    snapshot = false,
+    snapshot: OpenClawAgentDatabaseReadOnlySnapshotBehavior["snapshot"] = false,
   ) {
     const finish = (database: OpenClawAgentReadOnlyDatabaseHandle) => {
       const requestedAgentId = normalizeAgentId(options.agentId);
@@ -275,7 +284,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   read<T>(
     operation: (database: OpenClawAgentReadOnlyDatabase) => T,
     options: OpenClawAgentDatabaseOptions,
-    behavior: OpenClawAgentDatabaseReadOnlyBehavior = {},
+    behavior: OpenClawAgentDatabaseReadOnlySnapshotBehavior = {},
   ): OpenClawAgentDatabaseReadOnlyResult<T> {
     this.assertUsable();
     if (this.database?.db.isOpen && this.database.db.isTransaction) {
@@ -291,7 +300,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
         this.borrowers++;
         try {
           result = behavior.snapshot
-            ? readOpenClawAgentDatabaseSnapshot(database, operation)
+            ? readOpenClawAgentDatabaseSnapshot(database, operation, behavior.snapshot)
             : readOpenClawAgentDatabase(database, operation);
           if (!result.found) {
             this.discardConnection();
@@ -344,7 +353,7 @@ export function retainCachedOpenClawAgentDatabaseReadOnly(options: ReadTarget) {
 export function withScopedOpenClawAgentDatabaseReadOnly<T>(
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
   options: ReadTarget,
-  behavior: OpenClawAgentDatabaseReadOnlyBehavior = {},
+  behavior: OpenClawAgentDatabaseReadOnlySnapshotBehavior = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   if (behavior.allowExtension) {
     return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);

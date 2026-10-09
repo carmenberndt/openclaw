@@ -15,6 +15,7 @@ import {
 } from "../../state/openclaw-agent-db-identity.js";
 import {
   withOpenClawAgentDatabaseReadOnly,
+  withOpenClawAgentDatabaseReadOnlyPostCommit,
   type OpenClawAgentReadOnlyDatabase,
 } from "../../state/openclaw-agent-db-readonly.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
@@ -60,6 +61,9 @@ export function createSessionEntryReadScope(
   capturedDatabase: OpenClawAgentReadOnlyDatabase | undefined,
   admitSnapshot: boolean,
 ) {
+  const readDatabase = admitSnapshot
+    ? withOpenClawAgentDatabaseReadOnlyPostCommit
+    : withOpenClawAgentDatabaseReadOnly;
   return {
     assertCanonicalRead: (
       database: OpenClawAgentReadOnlyDatabase,
@@ -79,7 +83,7 @@ export function createSessionEntryReadScope(
     ) =>
       capturedDatabase
         ? { found: true as const, value: read(capturedDatabase) }
-        : withOpenClawAgentDatabaseReadOnly(read, options, { snapshot: admitSnapshot }),
+        : readDatabase(read, options),
     snapshot: <T>(database: OpenClawAgentReadOnlyDatabase, read: () => T) =>
       (admitSnapshot || capturedDatabase?.db === database.db) && database.db.isTransaction
         ? read()

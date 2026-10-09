@@ -21,6 +21,7 @@ import {
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
   type OpenClawAgentReadOnlyDatabaseHandle,
+  type OpenClawAgentReadSnapshot,
 } from "./openclaw-agent-db-readonly-open.js";
 
 type ReadOnlyCompanion = {
@@ -50,7 +51,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
   writer: OpenClawAgentDatabase,
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
   options: OpenClawAgentDatabaseOptions,
-  behavior: { snapshot?: boolean } = {},
+  behavior: { snapshot?: false | OpenClawAgentReadSnapshot } = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   let companion = companions.get(writer.db);
   // Nested operations keep their own statement/transaction window and cleanup.
@@ -89,7 +90,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
       // A pathname replacement during open keeps the old one-shot read contract.
       if (!matchesWriter(reader, writer)) {
         return behavior.snapshot
-          ? readOpenClawAgentDatabaseSnapshot(reader, operation)
+          ? readOpenClawAgentDatabaseSnapshot(reader, operation, behavior.snapshot)
           : readOpenClawAgentDatabase(reader, operation);
       }
       unregisterDispose = registerNodeSqliteDisposeCallback(writer.db, close);
@@ -125,7 +126,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
     owned.idleTimer.refresh();
     owned.active = true;
     const result = behavior.snapshot
-      ? readOpenClawAgentDatabaseSnapshot(owned.reader, operation)
+      ? readOpenClawAgentDatabaseSnapshot(owned.reader, operation, behavior.snapshot)
       : readOpenClawAgentDatabase(owned.reader, operation);
     if (!result.found) {
       owned.close();

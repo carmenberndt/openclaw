@@ -23,6 +23,7 @@ import {
   retainCachedOpenClawAgentDatabaseReadOnly,
   withScopedOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentDatabaseReadOnlyBehavior,
+  type OpenClawAgentDatabaseReadOnlySnapshotBehavior,
 } from "./openclaw-agent-db-readonly-scope.js";
 import {
   assertCanonicalAgentPersistenceVersion,
@@ -95,6 +96,22 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
   options: OpenClawAgentDatabaseOptions,
   behavior: OpenClawAgentDatabaseReadOnlyBehavior = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
+  return readAgentDatabase(operation, options, behavior);
+}
+
+/** Internal entry readers stage admission without widening the released SDK behavior type. */
+export function withOpenClawAgentDatabaseReadOnlyPostCommit<T>(
+  operation: (database: OpenClawAgentReadOnlyDatabase) => T,
+  options: OpenClawAgentDatabaseOptions,
+): OpenClawAgentDatabaseReadOnlyResult<T> {
+  return readAgentDatabase(operation, options, { snapshot: "post-commit" });
+}
+
+function readAgentDatabase<T>(
+  operation: (database: OpenClawAgentReadOnlyDatabase) => T,
+  options: OpenClawAgentDatabaseOptions,
+  behavior: OpenClawAgentDatabaseReadOnlySnapshotBehavior,
+): OpenClawAgentDatabaseReadOnlyResult<T> {
   const agentId = normalizeAgentId(options.agentId);
   const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
   if (isArtifactPreservingStateRead("agent", pathname)) {
@@ -132,7 +149,7 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
     );
   }
   if (behavior.snapshot) {
-    return readOpenClawAgentDatabaseSnapshot(processOpened, operation);
+    return readOpenClawAgentDatabaseSnapshot(processOpened, operation, behavior.snapshot);
   }
   // The handle's admission owner refreshes these facts after DDL or a foreign commit.
   return runSqliteReadOperationSync(

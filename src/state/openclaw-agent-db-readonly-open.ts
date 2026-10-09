@@ -48,6 +48,8 @@ export type OpenClawAgentReadOnlyDatabaseHandle = OpenClawAgentReadOnlyDatabase 
   close: () => void;
 };
 
+export type OpenClawAgentReadSnapshot = true | "post-commit";
+
 export type OpenClawAgentDatabaseReadOnlyOpenResult =
   | { found: true; database: OpenClawAgentReadOnlyDatabaseHandle }
   | { found: false; reason: "database-missing" | "schema-missing" };
@@ -123,9 +125,10 @@ export function hasOpenClawAgentReadOnlySchema(
 export function readOpenClawAgentDatabaseSnapshot<T>(
   database: OpenClawAgentReadOnlyDatabase,
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
+  snapshot: OpenClawAgentReadSnapshot = true,
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   let result: OpenClawAgentDatabaseReadOnlyResult<T> = { found: false, reason: "schema-missing" };
-  withSqlitePostCommitPublications(database.db, () =>
+  const read = () =>
     runSqliteDeferredTransactionSync(database.db, () => {
       if (hasAdmittedAgentReadOnlySchema(database)) {
         result = readOpenClawAgentDatabase(database, operation);
@@ -133,8 +136,12 @@ export function readOpenClawAgentDatabaseSnapshot<T>(
         return result.value;
       }
       return undefined;
-    }),
-  );
+    });
+  if (snapshot === "post-commit") {
+    withSqlitePostCommitPublications(database.db, read);
+  } else {
+    read();
+  }
   return result;
 }
 
@@ -142,7 +149,7 @@ export function readOpenClawAgentDatabaseSnapshot<T>(
 export function withFreshOpenClawAgentDatabaseReadOnly<T>(
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
   options: OpenClawAgentDatabaseOptions,
-  behavior: { allowExtension?: boolean; snapshot?: boolean } = {},
+  behavior: { allowExtension?: boolean; snapshot?: false | OpenClawAgentReadSnapshot } = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   const opened = openOpenClawAgentDatabaseReadOnly(options, behavior);
   if (!opened.found) {
@@ -150,7 +157,7 @@ export function withFreshOpenClawAgentDatabaseReadOnly<T>(
   }
   try {
     return behavior.snapshot
-      ? readOpenClawAgentDatabaseSnapshot(opened.database, operation)
+      ? readOpenClawAgentDatabaseSnapshot(opened.database, operation, behavior.snapshot)
       : readOpenClawAgentDatabase(opened.database, operation);
   } finally {
     opened.database.close();

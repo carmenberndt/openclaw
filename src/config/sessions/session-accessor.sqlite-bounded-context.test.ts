@@ -134,8 +134,8 @@ it("enforces context count and byte budgets and releases rejected reads for late
     await append("old", null);
     await append("large", "old", "🦞".repeat(1024));
     await append("new", "large");
-    const read = (maxBytes: number, maxEvents = 100) =>
-      readSessionTranscriptBoundedActiveContextCore(scope, { maxBytes, maxEvents });
+    const read = (maxBytes: number, maxEvents = 100, readOnly = false) =>
+      readSessionTranscriptBoundedActiveContextCore(scope, { maxBytes, maxEvents, readOnly });
     const ids = (context: ReturnType<typeof read>) =>
       context.events.map((event) => (event as { id: string }).id);
     const counted = read(16_384, 2);
@@ -151,9 +151,12 @@ it("enforces context count and byte budgets and releases rejected reads for late
     expect(read(16_384, 3).truncated).toBe(false);
     const headerBytes = Buffer.byteLength(JSON.stringify(counted.events[0])) + 1;
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
-    const counter = trackSqliteStatementExecutions(db, ["sizing"], (sql) =>
-      sql.includes("serialized_bytes") ? "sizing" : null,
-    );
+    const counter = trackSqliteStatementExecutions(db, ["sizing", "boundary"], (sql) => {
+      if (sql.includes('where "active"."session_id" = ? and "identity"."event_type" = ?')) {
+        return "boundary";
+      }
+      return sql.includes("serialized_bytes") ? "sizing" : null;
+    });
     const bounded = (maxBytes: number, maxRows: number) => {
       const before = counter.rowCounts.sizing;
       const context = read(maxBytes);
@@ -163,6 +166,8 @@ it("enforces context count and byte budgets and releases rejected reads for late
       return context;
     };
     try {
+      expect(ids(read(16_384, 3, true))).toEqual([scope.sessionId, "old", "large", "new"]);
+      expect(counter.counts.boundary).toBe(0);
       expect(ids(bounded(1024, 3))).toEqual([scope.sessionId, "new"]);
       const exact = bounded(headerBytes, 2);
       expect(ids(exact)).toEqual([scope.sessionId]);
@@ -170,6 +175,7 @@ it("enforces context count and byte budgets and releases rejected reads for late
       expect(exact.serializedBytes).toBe(headerBytes);
       await append("oversized", "new", "🦞".repeat(1024));
       expect(ids(bounded(1024, 2))).toEqual([scope.sessionId]);
+      expect(counter.counts.boundary).toBeGreaterThan(0);
       await append("next", "oversized");
       expect(ids(bounded(1024, 3))).toEqual([scope.sessionId, "next"]);
     } finally {
