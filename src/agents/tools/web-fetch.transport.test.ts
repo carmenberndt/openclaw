@@ -4,12 +4,15 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { PluginWebContentExtractorEntry } from "../../plugins/web-content-extractor-types.js";
+import * as privateTempFiles from "../sessions/tools/private-temp-file.js";
 import type { WebFetchTransport } from "./web-fetch-transport.js";
 import { createWebFetchTool } from "./web-fetch.js";
 
-const { directFetch, resolveProvider } = vi.hoisted(() => ({
+const { directFetch, resolveProvider, resolveExtractors } = vi.hoisted(() => ({
   directFetch: vi.fn(),
   resolveProvider: vi.fn(),
+  resolveExtractors: vi.fn<() => PluginWebContentExtractorEntry[]>(() => []),
 }));
 // mock-isolation: No real network or credentialed fallback may run in this transport fixture.
 vi.mock("./web-guarded-fetch.js", () => ({ fetchWithWebToolsNetworkGuard: directFetch }));
@@ -17,7 +20,7 @@ vi.mock("./web-guarded-fetch.js", () => ({ fetchWithWebToolsNetworkGuard: direct
 vi.mock("../../web-fetch/runtime.js", () => ({ resolveWebFetchDefinition: resolveProvider }));
 // mock-isolation: Exercise native basic HTML extraction without loading external plugins.
 vi.mock("../../plugins/web-content-extractors.runtime.js", () => ({
-  resolvePluginWebContentExtractors: () => [],
+  resolvePluginWebContentExtractors: resolveExtractors,
 }));
 
 const url = "https://example.com/host-content";
@@ -57,6 +60,7 @@ function detailsOf(result: { details?: unknown }) {
 beforeEach(() => {
   directFetch.mockReset();
   resolveProvider.mockReset();
+  resolveExtractors.mockReset().mockReturnValue([]);
 });
 afterEach(async () => {
   expect(resolveProvider).not.toHaveBeenCalled();
@@ -333,6 +337,71 @@ describe("native web_fetch host acquisition", () => {
     expect(transport.release).toHaveBeenCalledTimes(1);
     expect(directFetch).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { fallback: false, cancellation: false },
+    { fallback: true, cancellation: false },
+    { fallback: false, cancellation: true },
+    { fallback: true, cancellation: true },
+  ])(
+    "prevents spill creation after delayed HTML extraction (fallback=$fallback, cancellation=$cancellation)",
+    async ({ fallback, cancellation }) => {
+      const content = "Private acquired content. ".repeat(200);
+      const transport = createTransport(`<html><body><p>${content}</p></body></html>`, "text/html");
+      const started = createDeferred();
+      const pending = createDeferred();
+      let current = true;
+      transport.assertInvocationCurrent.mockImplementation(() => {
+        if (!current) {
+          throw new Error("invocation closed");
+        }
+      });
+      resolveExtractors.mockReturnValue([
+        {
+          id: "delayed",
+          pluginId: "test-extractor",
+          label: "Delayed extractor",
+          extract: async () => {
+            started.resolve();
+            await pending.promise;
+            return fallback ? null : { text: content };
+          },
+        },
+      ]);
+      const realWrite = privateTempFiles.writePrivateTempFile;
+      const write = vi
+        .spyOn(privateTempFiles, "writePrivateTempFile")
+        .mockImplementation(async (...args) => {
+          const path = await realWrite(...args);
+          spillPaths.add(path);
+          return path;
+        });
+      const controller = new AbortController();
+      const tool = createTool(transport);
+      const args = { url, maxChars: 1_000 };
+      const rejected = expect(
+        tool.execute("retired-extraction", args, controller.signal),
+      ).rejects.toThrow("invocation closed");
+      await started.promise;
+      if (cancellation) {
+        controller.abort(new Error("invocation closed"));
+      } else {
+        current = false;
+      }
+      pending.resolve();
+      await rejected;
+      expect(write).not.toHaveBeenCalled();
+      expect(transport.release).toHaveBeenCalledTimes(1);
+
+      current = true;
+      const fresh = detailsOf(await tool.execute("fresh-extraction", args));
+      expect(fresh.cached).toBeUndefined();
+      expect(fresh.spill).toMatchObject({ chars: expect.any(Number) });
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(transport.acquire).toHaveBeenCalledTimes(2);
+      expect(directFetch).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not expose an HTTP error body after authority is revoked during cleanup", async () => {
     const transport = createTransport();

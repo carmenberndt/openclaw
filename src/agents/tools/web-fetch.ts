@@ -321,6 +321,7 @@ async function spillWebFetchContent(
   wrapped: WebFetchWrappedContent,
   maxChars: number,
   sourceTruncated: boolean,
+  assertWriteAllowed?: () => void,
 ): Promise<WebFetchWrappedContent> {
   if (!wrapped.truncated) {
     return sourceTruncated ? { ...wrapped, truncated: true } : wrapped;
@@ -329,6 +330,8 @@ async function spillWebFetchContent(
   // uses this fixed file cap so vanished pages can still be read after truncation.
   const content = truncateUtf16Safe(value, WEB_FETCH_SPILL_MAX_CHARS);
   const spillChars = content.length;
+  // Extraction can yield after acquisition admission. Recheck at the content effect.
+  assertWriteAllowed?.();
   const spillPath = await writePrivateTempFile(
     "openclaw-web-fetch",
     wrapWebContent(content, "web_fetch"),
@@ -430,6 +433,7 @@ async function buildWebFetchPayload(params: {
   extractMode: ExtractMode;
   maxChars: number;
   tookMs: number;
+  assertWriteAllowed?: () => void;
 }): Promise<Record<string, unknown>> {
   const payload = isRecord(params.payload) ? params.payload : {};
   let metadataTruncated = false;
@@ -474,6 +478,7 @@ async function buildWebFetchPayload(params: {
     wrapWebFetchContent(rawText, bodyMaxChars),
     bodyMaxChars,
     payload.truncated === true,
+    params.assertWriteAllowed,
   );
   const providerRawLength =
     resolveOptionalIntegerOption(payload.rawLength, { min: 0 }) ?? wrapped.rawLength;
@@ -797,6 +802,12 @@ async function fetchWebPayload(params: WebFetchRuntimeParams): Promise<Record<st
       extractMode: params.extractMode,
       maxChars: params.maxChars,
       tookMs: Date.now() - start,
+      assertWriteAllowed: params.transport
+        ? () => {
+            throwIfFetchAborted(params.signal);
+            params.transport?.assertInvocationCurrent();
+          }
+        : undefined,
     });
   } finally {
     if (!res.bodyUsed) {

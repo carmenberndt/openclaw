@@ -352,6 +352,8 @@ consumption, stop owned network work, and bound any buffering before returning
 a response. Core separately caps retained response bytes before parsing and
 rejects late results after cancellation or authority revocation. This cap does
 not bound a host transport that buffers the entire response first.
+After asynchronous extraction, core rechecks cancellation and live invocation
+authority immediately before initiating a truncated-content spill write.
 
 User controls remain authoritative: disabled fetch is not constructed, and
 retained tools reject execution when runtime fetch configuration disables it.
