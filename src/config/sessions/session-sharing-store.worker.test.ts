@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { DatabaseSync, StatementSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { initializeSessionReadContext } from "../../gateway/server-methods/sessions-read-cache.test-support.js";
 import { sessionSharingHandlers } from "../../gateway/server-methods/sessions-sharing.js";
@@ -29,6 +29,7 @@ import { sessionChanges, type SessionRowChange } from "../../sessions/session-ro
 import { createDeferredCore } from "../../shared/deferred.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.js";
@@ -53,6 +54,53 @@ import {
 } from "./session-sharing-store.js";
 import { historyLane } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
+
+it.each(["valid", "malformed"] as const)(
+  "retains membership admission but validates fresh foreign rows (%s)",
+  async (change) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const scope = { agentId: "main", sessionKey: "agent:main:member-reader-admission" };
+      await upsertSessionEntryCore(scope, {
+        sessionId: "member-reader-admission",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: "owner" },
+      });
+      await closeOpenClawAgentDatabasesAsync();
+      expect((await readSessionMembersInWorker(scope)).entry?.createdActor?.id).toBe("owner");
+
+      const writer = new DatabaseSync(resolveOpenClawAgentSqlitePath(scope));
+      try {
+        writer
+          .prepare(
+            "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.createdActor.id', ?, '$.sessionId', ?) WHERE session_key = ?",
+          )
+          .run(
+            "replacement-owner",
+            change === "valid" ? "member-reader-admission" : "different-session",
+            scope.sessionKey,
+          );
+        writer
+          .prepare(
+            "INSERT INTO session_members (session_key, identity_id, added_by, added_at) VALUES (?, ?, ?, ?)",
+          )
+          .run(scope.sessionKey, "guest", "replacement-owner", 2);
+      } finally {
+        writer.close();
+      }
+
+      if (change === "valid") {
+        expect(await readSessionMembersInWorker(scope)).toMatchObject({
+          entry: { createdActor: { id: "replacement-owner" } },
+          members: [{ identityId: "guest", addedBy: "replacement-owner", addedAt: 2 }],
+        });
+        await closeOpenClawAgentDatabasesAsync();
+      }
+      await expect(readSessionMembersInWorker(scope)).rejects.toMatchObject({
+        code: "SESSION_CANONICAL_KEY_MIGRATION_REQUIRED",
+      });
+    });
+  },
+);
 
 it("lists current membership evidence while transcript reads wait", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

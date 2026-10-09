@@ -3,6 +3,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "../../infra/kysely-sync.js";
+import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -25,10 +26,12 @@ export function readSessionMembersInDatabase(
   database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   sessionKey: string,
 ): SessionMembersSnapshot {
-  return runSqliteDeferredTransactionSync(database.db, () => ({
-    entry: readSessionEntryRow(database, sessionKey, "list")?.entry,
-    members: listSessionMembersInDatabase(database, sessionKey),
-  }));
+  return withSqlitePostCommitPublications(database.db, () =>
+    runSqliteDeferredTransactionSync(database.db, () => ({
+      entry: readSessionEntryRow(database, sessionKey, "list")?.entry,
+      members: listSessionMembersInDatabase(database, sessionKey),
+    })),
+  );
 }
 
 export function listSessionMembersInDatabase(
