@@ -158,9 +158,6 @@ export function openOpenClawAgentDatabaseReadOnly(
   if (isDeletedAgentDatabasePath(pathname) || !fs.existsSync(pathname)) {
     return { found: false, reason: "database-missing" };
   }
-  // Verified-corrupt generations stay quarantined for reads as well as writes:
-  // the process terminal latch and the persisted generation-aware quarantine
-  // row must both clear before any fresh read-only physical open proceeds.
   assertAgentDatabaseTerminalOpenAllowed(pathname);
   const persistedQuarantine = readOpenClawDatabaseQuarantineFailure("agent", pathname, {
     env: options.env,

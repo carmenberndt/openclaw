@@ -20,6 +20,7 @@ import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
+import { getStateRuntimeSchemaAdmission } from "./openclaw-state-db-admission.js";
 import {
   getOpenClawDatabaseMaintenanceResourceScope,
   getOpenClawDatabaseMaintenanceScope,
@@ -141,12 +142,9 @@ export async function prepareOpenClawStateCurrentReader(
       read(operation) {
         const assertReadCurrent = () => {
           assertCurrent();
-          const integrity = context.stateIntegrity;
           if (
             context.existingSchemaPath !== undefined &&
-            (!integrity ||
-              Atomics.load(new BigInt64Array(integrity.revision), 0) !== integrity.epoch ||
-              Atomics.load(new BigInt64Array(integrity.proof), 0) === -1n)
+            !getStateRuntimeSchemaAdmission(connection.database.db)
           ) {
             throw new Error("Shared-state reader requires current worker integrity proof");
           }
@@ -327,8 +325,7 @@ function runOpenClawStateCurrentReadConnection<T>(
   let result!: T;
   try {
     const previous = currentReaderSchemaAdmissions.get(db);
-    // The schema owner observes foreign commits. Ordinary lease heartbeats keep
-    // these facts; schema changes revoke them before this reader re-admits.
+    // Row freshness remains connection-local; physical schema admission is shared.
     const facts =
       previous && !previous.legacyAdmission
         ? runSqliteReadOperationSync(db, () => getAdmittedSqliteSchemaFacts(db))
@@ -373,8 +370,7 @@ function runOpenClawStateCurrentReadConnection<T>(
       }
       return value;
     });
-    // A foreign schema publication can arrive between admission and the query's
-    // snapshot. Recheck its admitted facts before returning policy rows.
+    // Local migration publication can replace the admitted facts during the read.
     runSqliteReadOperationSync(db, admit);
   } catch (error) {
     errors.push(error);

@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql, type RawBuilder } from "kysely";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
+import { retireSqliteDatabaseAdmissionForPath } from "./sqlite-database-admission.js";
 import { withSqliteNativeOpen } from "./sqlite-error-diagnostics.js";
 
 export const SQLITE_STAGING_TOKEN_FILES = [
@@ -128,6 +129,9 @@ export function acquireSqliteStagingToken(
       execute(sql`ROLLBACK`);
     }
     db.close();
+    if (retiring) {
+      retireSqliteDatabaseAdmissionForPath(location);
+    }
   };
   const token = Object.assign(release, { beginRetirement });
   try {

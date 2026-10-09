@@ -10,6 +10,7 @@ import {
 } from "../infra/bun-sqlite-library.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
 import { captureRuntimeWorkerSource } from "../infra/runtime-worker-generation.js";
+import { acquireSqliteDatabaseAdmissionTurn } from "../infra/sqlite-database-admission-turn.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import {
   createSqliteLifecycleAggregateError,
@@ -328,6 +329,7 @@ function createReadTransport(
   ) => {
     const inContext = AsyncLocalStorage.snapshot();
     let task: ReadTask | undefined;
+    let releaseAdmission: (() => void) | undefined;
     const cleanup: { retire: boolean; error?: Error } = { retire: true };
     const completion = createRetainedOperation<OpenClawStateReadOutcome>(() => inContext(service));
     function service() {
@@ -363,6 +365,8 @@ function createReadTransport(
       } catch (error) {
         outcome = { error };
       }
+      releaseAdmission?.();
+      releaseAdmission = undefined;
       // Native closes and quarantine cleanup can require exit even when the domain read succeeds.
       cleanup.retire = "error" in outcome || cleanup.error !== undefined;
       completion.resolve(outcome);
@@ -386,8 +390,22 @@ function createReadTransport(
       };
       task = readPool(state, ownsAdmission()).startTask(
         () => {
-          authority.assertCurrent();
-          return request;
+          const turn = acquireSqliteDatabaseAdmissionTurn(location);
+          if (!turn) {
+            authority.assertCurrent();
+            return request;
+          }
+          return turn.then((release) => {
+            releaseAdmission = release;
+            try {
+              authority.assertCurrent();
+              return request;
+            } catch (error) {
+              releaseAdmission();
+              releaseAdmission = undefined;
+              throw error;
+            }
+          });
         },
         {
           signal: authority.signal,
@@ -411,6 +429,8 @@ function createReadTransport(
       );
       completion.operation.service();
     } catch (error) {
+      releaseAdmission?.();
+      releaseAdmission = undefined;
       completion.reject(error);
     }
     return { task, operation: completion.operation };

@@ -6,6 +6,7 @@ import {
   type UsageCostWorkerInput,
   type UsageCostWorkerResult,
 } from "../../infra/session-cost-usage-worker.types.js";
+import { runWithSqliteDatabaseAdmissionTurn } from "../../infra/sqlite-database-admission-turn.js";
 import { withSqliteWorkerCleanupFailure } from "../../infra/sqlite-worker-broker-reply.js";
 import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
@@ -249,52 +250,54 @@ export function retainSessionHistoryWorkerDatabase(
       let retirement: Promise<void> | undefined;
       const hostEffects = new Set<Promise<WorkerTaskResponse>>();
       try {
-        const reply = await lane.pool.run(
-          () => {
-            assertCurrent();
-            const input = prepare();
-            assertCurrent();
-            sequence = ++lane.nativeSequence;
-            owned.nativeSequences.set(lane, sequence);
-            return { ...input, database };
-          },
-          {
-            inputBytes,
-            timeoutMs,
-            signal,
-            onRequest: onRequest
-              ? (value, context) => {
-                  const effect = (async () => {
-                    context.signal.throwIfAborted();
-                    assertCurrent();
-                    const response = await onRequest(value);
-                    context.signal.throwIfAborted();
-                    assertCurrent();
-                    if (response) {
-                      return response;
-                    }
-                    const remaining = deadline - performance.now();
-                    if (remaining <= 0) {
-                      throw new WorkerTaskError("worker task timed out", "timeout");
-                    }
-                    return { input: null, timeoutMs: remaining };
-                  })();
-                  hostEffects.add(effect);
-                  owned.hostEffects.add(effect);
-                  const releaseEffect = () => {
-                    hostEffects.delete(effect);
-                    owned.hostEffects.delete(effect);
-                  };
-                  void effect.then(releaseEffect, releaseEffect);
-                  return effect;
-                }
-              : undefined,
-            onExecutionSettled: ({ retired }) => {
-              if (retired) {
-                retirement = rotateDatabaseWorkers(lane);
-              }
+        const reply = await runWithSqliteDatabaseAdmissionTurn([database.path], () =>
+          lane.pool.run(
+            () => {
+              assertCurrent();
+              const input = prepare();
+              assertCurrent();
+              sequence = ++lane.nativeSequence;
+              owned.nativeSequences.set(lane, sequence);
+              return { ...input, database };
             },
-          },
+            {
+              inputBytes,
+              timeoutMs,
+              signal,
+              onRequest: onRequest
+                ? (value, context) => {
+                    const effect = (async () => {
+                      context.signal.throwIfAborted();
+                      assertCurrent();
+                      const response = await onRequest(value);
+                      context.signal.throwIfAborted();
+                      assertCurrent();
+                      if (response) {
+                        return response;
+                      }
+                      const remaining = deadline - performance.now();
+                      if (remaining <= 0) {
+                        throw new WorkerTaskError("worker task timed out", "timeout");
+                      }
+                      return { input: null, timeoutMs: remaining };
+                    })();
+                    hostEffects.add(effect);
+                    owned.hostEffects.add(effect);
+                    const releaseEffect = () => {
+                      hostEffects.delete(effect);
+                      owned.hostEffects.delete(effect);
+                    };
+                    void effect.then(releaseEffect, releaseEffect);
+                    return effect;
+                  }
+                : undefined,
+              onExecutionSettled: ({ retired }) => {
+                if (retired) {
+                  retirement = rotateDatabaseWorkers(lane);
+                }
+              },
+            },
+          ),
         );
         await retirement;
         const received =
@@ -532,52 +535,56 @@ export async function withSessionCostUsageWorkerDatabases<T>(
     let executionSettled = false;
     const task = (async (): Promise<UsageCostWorkerResult> => {
       try {
-        const reply = await lane.pool.run(
-          () => {
-            assertCurrent();
-            signal.throwIfAborted();
-            runOptions.beforeDispatch?.();
-            sequence = ++lane.nativeSequence;
-            custody.nativeThrough = sequence;
-            for (const resource of resources) {
-              resource.nativeSequences.set(lane, sequence);
-            }
-            return { ...input, databases: [...resources].map((resource) => resource.database) };
-          },
-          {
-            ...runOptions,
-            signal,
-            onExecutionSettled: ({ retired }) => {
-              executionSettled = true;
-              if (retired && sequence > 0) {
-                releaseRetiredDatabaseCustody(lane, sequence);
-              }
-            },
-            onRequest: onRequest
-              ? (value, context) => {
-                  const effect = createDeferredCore<WorkerTaskResponse>();
-                  hostEffects.add(effect.promise);
-                  for (const resource of resources) {
-                    resource.hostEffects.add(effect.promise);
-                  }
-                  const releaseEffect = () => {
-                    hostEffects.delete(effect.promise);
-                    for (const resource of resources) {
-                      resource.hostEffects.delete(effect.promise);
-                    }
-                  };
-                  void effect.promise.then(releaseEffect, releaseEffect);
-                  try {
-                    assertCurrent();
-                    context.signal.throwIfAborted();
-                    effect.resolve(onRequest(value, context));
-                  } catch (error) {
-                    effect.reject(error);
-                  }
-                  return effect.promise;
+        const reply = await runWithSqliteDatabaseAdmissionTurn(
+          [...resources].map((resource) => resource.database.path),
+          () =>
+            lane.pool.run(
+              () => {
+                assertCurrent();
+                signal.throwIfAborted();
+                runOptions.beforeDispatch?.();
+                sequence = ++lane.nativeSequence;
+                custody.nativeThrough = sequence;
+                for (const resource of resources) {
+                  resource.nativeSequences.set(lane, sequence);
                 }
-              : undefined,
-          },
+                return { ...input, databases: [...resources].map((resource) => resource.database) };
+              },
+              {
+                ...runOptions,
+                signal,
+                onExecutionSettled: ({ retired }) => {
+                  executionSettled = true;
+                  if (retired && sequence > 0) {
+                    releaseRetiredDatabaseCustody(lane, sequence);
+                  }
+                },
+                onRequest: onRequest
+                  ? (value, context) => {
+                      const effect = createDeferredCore<WorkerTaskResponse>();
+                      hostEffects.add(effect.promise);
+                      for (const resource of resources) {
+                        resource.hostEffects.add(effect.promise);
+                      }
+                      const releaseEffect = () => {
+                        hostEffects.delete(effect.promise);
+                        for (const resource of resources) {
+                          resource.hostEffects.delete(effect.promise);
+                        }
+                      };
+                      void effect.promise.then(releaseEffect, releaseEffect);
+                      try {
+                        assertCurrent();
+                        context.signal.throwIfAborted();
+                        effect.resolve(onRequest(value, context));
+                      } catch (error) {
+                        effect.reject(error);
+                      }
+                      return effect.promise;
+                    }
+                  : undefined,
+              },
+            ),
         );
         if (!reply.ok) {
           throw new UsageCostWorkerReplyError(reply.error);

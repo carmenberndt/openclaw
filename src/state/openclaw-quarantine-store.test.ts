@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -68,7 +69,7 @@ function failReceiptWrite(
   }
 }
 
-it("sets the quarantine lock wait at open while keeping decisions fresh", () => {
+it("reuses admitted quarantine schema while publishing decision changes", () => {
   const fixture = createFixture();
   const open = nodeSqlite.openNodeSqliteDatabase;
   const timeouts: unknown[] = [];
@@ -78,6 +79,11 @@ it("sets the quarantine lock wait at open while keeping decisions fresh", () => 
     if (args[0] === fixture.storePath) {
       timeouts.push(database.prepare("PRAGMA busy_timeout").get()?.timeout);
       const exec = database.exec.bind(database);
+      const prepare = database.prepare.bind(database);
+      vi.spyOn(database, "prepare").mockImplementation((sql) => {
+        statements.push(sql);
+        return prepare(sql);
+      });
       vi.spyOn(database, "exec").mockImplementation((sql) => {
         statements.push(sql);
         exec(sql);
@@ -105,6 +111,114 @@ it("sets the quarantine lock wait at open while keeping decisions fresh", () => 
   ).toBeUndefined();
   expect(timeouts).toEqual([5_000, 5_000, 5_000, 5_000]);
   expect(statements.some((sql) => /\bPRAGMA\s+busy_timeout\s*=/i.test(sql))).toBe(false);
+  expect(statements.filter((sql) => /\bPRAGMA\s+user_version\b|CREATE TABLE/i.test(sql))).toEqual(
+    [],
+  );
+});
+
+it.each(["initialized", "empty"] as const)(
+  "observes quarantine recorded by another process after a clean read of an %s store",
+  (store) => {
+    const fixture = createFixture();
+    if (store === "empty") {
+      fs.renameSync(fixture.storePath, `${fixture.storePath}.initialized`);
+      fs.writeFileSync(fixture.storePath, "");
+    }
+    const read = () =>
+      readOpenClawDatabaseQuarantineFailure("agent", fixture.pathname, { env: fixture.env });
+    expect(read()).toBeUndefined();
+    const identity = fs.statSync(fixture.pathname, { bigint: true });
+    const storeIdentity = fs.statSync(fixture.storePath, { bigint: true });
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { DatabaseSync } from "node:sqlite";
+       const database = new DatabaseSync(process.argv[1]);
+       database.exec("CREATE TABLE IF NOT EXISTS quarantined_databases (path TEXT PRIMARY KEY, kind TEXT NOT NULL, reason TEXT NOT NULL, quarantined_at INTEGER NOT NULL, writer_app_version TEXT NOT NULL, verified_generation TEXT); PRAGMA user_version=2");
+       database.prepare("INSERT INTO quarantined_databases (path, kind, reason, quarantined_at, writer_app_version) VALUES (?, 'agent', 'synthetic external corruption', 1, 'fixture')").run(process.argv[2]);
+       database.close();`,
+        fixture.storePath,
+        fixture.pathname,
+      ],
+      { stdio: "pipe" },
+    );
+    const current = fs.statSync(fixture.pathname, { bigint: true });
+    expect({ dev: current.dev, ino: current.ino }).toEqual({
+      dev: identity.dev,
+      ino: identity.ino,
+    });
+    const currentStore = fs.statSync(fixture.storePath, { bigint: true });
+    expect({ dev: currentStore.dev, ino: currentStore.ino }).toEqual({
+      dev: storeIdentity.dev,
+      ino: storeIdentity.ino,
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(read()).toMatchObject({
+        name: "SqliteIntegrityError",
+        message: expect.stringContaining("synthetic external corruption"),
+      });
+    }
+  },
+);
+
+it("keeps quarantine decisions scoped to their recorded pathname", () => {
+  const fixture = createFixture();
+  const alias = `${fixture.pathname}.alias`;
+  fs.linkSync(fixture.pathname, alias);
+  expect(
+    recordOpenClawDatabaseQuarantine({
+      env: fixture.env,
+      path: fixture.pathname,
+      kind: "agent",
+      reason: "canonical path is quarantined",
+    }),
+  ).toBe(true);
+  const read = (pathname: string) =>
+    readOpenClawDatabaseQuarantineFailure("agent", pathname, { env: fixture.env });
+  expect(read(alias)).toBeUndefined();
+  expect(read(fixture.pathname)).toMatchObject({
+    name: "SqliteIntegrityError",
+    message: expect.stringContaining("canonical path is quarantined"),
+  });
+  expect(clearOpenClawDatabaseQuarantine(alias, { env: fixture.env })).toBe(true);
+  expect(read(fixture.pathname)).toMatchObject({
+    name: "SqliteIntegrityError",
+    message: expect.stringContaining("canonical path is quarantined"),
+  });
+});
+
+it("validates a replaced quarantine store once without repeating its installation DDL", () => {
+  const fixture = createFixture();
+  fs.renameSync(fixture.storePath, `${fixture.storePath}.original`);
+  fs.copyFileSync(`${fixture.storePath}.original`, fixture.storePath);
+  const open = nodeSqlite.openNodeSqliteDatabase;
+  const statements: string[] = [];
+  vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
+    const database = open(...args);
+    if (args[0] === fixture.storePath) {
+      const prepare = database.prepare.bind(database);
+      const exec = database.exec.bind(database);
+      vi.spyOn(database, "prepare").mockImplementation((sql) => {
+        statements.push(sql);
+        return prepare(sql);
+      });
+      vi.spyOn(database, "exec").mockImplementation((sql) => {
+        statements.push(sql);
+        exec(sql);
+      });
+    }
+    return database;
+  });
+  fixture.record();
+  expect(statements.filter((sql) => /\bPRAGMA\s+user_version\b/i.test(sql))).toHaveLength(1);
+  expect(statements.filter((sql) => /CREATE TABLE/i.test(sql))).toHaveLength(1);
+  statements.length = 0;
+  fixture.record();
+  expect(statements.filter((sql) => /\bPRAGMA\s+user_version\b|CREATE TABLE/i.test(sql))).toEqual(
+    [],
+  );
 });
 
 it.each([

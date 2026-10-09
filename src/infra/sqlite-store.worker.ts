@@ -10,6 +10,11 @@ import {
   type OpenClawStateWorkerErrorPayload,
 } from "../state/openclaw-state-worker-error.js";
 import { captureSqliteNativeRuntimeAdmission } from "./node-sqlite.js";
+import {
+  captureSqliteDatabaseAdmissions,
+  createSqliteDatabaseAdmissionCursor,
+  installSqliteDatabaseAdmissions,
+} from "./sqlite-database-admission.js";
 import { withSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 import {
   SQLITE_WORKER_MAX_RESULT_BYTES,
@@ -29,9 +34,11 @@ import {
   SqliteWorkerOpenRefusedError,
   withSqliteWorkerOperationAdmission,
   requestSqliteWorkerOperationAdmission,
+} from "./sqlite-worker-operation-admission.js";
+import {
   settleSqliteWorkerOperationContext,
   type SqliteWorkerOperationContext,
-} from "./sqlite-worker-operation-admission.js";
+} from "./sqlite-worker-operation-settlement.js";
 import {
   runWithSqliteWorkerStateContext,
   type SqliteWorkerStateContext,
@@ -65,6 +72,7 @@ let sourceLoaderRegistered = false;
 let nativeCleanupFailure: OpenClawStateWorkerErrorPayload | undefined;
 let operationAdmission: { actor: number; context: SqliteWorkerOperationContext } | undefined;
 let nativeRuntimeAdmissionSent = false;
+const databaseAdmissionCursor = createSqliteDatabaseAdmissionCursor();
 
 function runWithActorFacts<T>(actor: number, operation: () => T): T {
   const context = stateContexts.get(actor);
@@ -88,6 +96,9 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
   let openNotEntered = false;
   let commandAdmissionRefused = false;
   try {
+    if (request.databaseAdmissions) {
+      installSqliteDatabaseAdmissions(request.databaseAdmissions);
+    }
     let value: unknown;
     let closeReceipt: SqliteWorkerCloseReceipt | undefined;
     if (request.type !== "result-next" && request.type !== "execute-frame") {
@@ -460,6 +471,9 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
     });
   }
   const complete = !reply.ok || (!pendingInput && !pendingResult);
+  if (complete) {
+    reply.databaseAdmissions = captureSqliteDatabaseAdmissions(databaseAdmissionCursor);
+  }
   if (complete && nativeCleanupFailure) {
     reply.cleanupFailure = nativeCleanupFailure;
     nativeCleanupFailure = undefined;

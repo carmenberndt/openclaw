@@ -1,17 +1,25 @@
 import { deserialize, serialize } from "node:v8";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
+import { resolveQuarantineStorePath } from "../state/openclaw-state-db.paths.js";
 import {
   retainOpenClawStateWorkerErrorPayload,
   hydrateOpenClawStateWorkerError,
   type OpenClawStateWorkerErrorPayload,
 } from "../state/openclaw-state-worker-error.js";
+import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
 import {
   acquireStateDatabaseSchemaLease,
   assertStateDatabaseAccessAllowed,
   type StateDatabaseSchemaLease,
 } from "./gateway-state-owner.js";
 import { installSqliteNativeRuntimeAdmission } from "./node-sqlite.js";
+import {
+  captureSqliteDatabaseAdmissions,
+  createSqliteDatabaseAdmissionCursor,
+  installSqliteDatabaseAdmissions,
+  type SqliteDatabaseAdmissionCursor,
+} from "./sqlite-database-admission.js";
 import { retainSqliteWriteAdmissionService } from "./sqlite-transaction.js";
 import { prepareSqliteWorkerActorContext } from "./sqlite-worker-broker-admission.js";
 import type { Actor, Job, Slot } from "./sqlite-worker-broker.types.js";
@@ -31,6 +39,8 @@ import {
   type SqliteWorkerTransferFrame,
   type SqliteWorkerTransferHandle,
 } from "./sqlite-worker-transfer.js";
+
+const databaseAdmissionCursors = new WeakMap<Slot, SqliteDatabaseAdmissionCursor>();
 
 export function dispatchSqliteWorkerJob(
   slot: Slot,
@@ -61,6 +71,12 @@ export function dispatchSqliteWorkerJob(
       assertDispatchable,
       assertCurrentJob,
     );
+    let admissionCursor = databaseAdmissionCursors.get(slot);
+    if (!admissionCursor) {
+      admissionCursor = createSqliteDatabaseAdmissionCursor();
+      databaseAdmissionCursors.set(slot, admissionCursor);
+    }
+    job.request.databaseAdmissions = captureSqliteDatabaseAdmissions(admissionCursor);
     const request = prepareSqliteWorkerRequest(job);
     assertDispatchable();
     job.nativeDispatched = true;
@@ -105,6 +121,19 @@ function prepareSqliteWorkerOperationAdmission(
       };
   try {
     if (databasePath) {
+      // Cold agent preparation also creates its captured shared state and quarantine stores.
+      const creationPaths =
+        job.request.type === "open" && !job.request.existingIdentity
+          ? new Set(
+              [
+                job.request.databasePath,
+                databasePath,
+                ...(job.request.stateContext
+                  ? [resolveQuarantineStorePath(job.request.stateContext.environment)]
+                  : []),
+              ].map(resolveIdentityPathViaExistingAncestorSync),
+            )
+          : undefined;
       let schemaLease: StateDatabaseSchemaLease | undefined;
       const assertAccess = () => {
         assertCurrentJob();
@@ -118,6 +147,18 @@ function prepareSqliteWorkerOperationAdmission(
         databasePath,
         assertRequest: assertDispatchable,
         assertAccess,
+        ...(creationPaths
+          ? {
+              assertCreate(location: string) {
+                if (!creationPaths.has(resolveIdentityPathViaExistingAncestorSync(location))) {
+                  throw new SqliteWorkerError(
+                    "SQLite creation target differs from its captured database",
+                    "closed",
+                  );
+                }
+              },
+            }
+          : {}),
         acquireSchema() {
           assertAccess();
           const acquire = () => acquireStateDatabaseSchemaLease(databasePath);
@@ -303,6 +344,9 @@ export function receiveSqliteWorkerReply(
   if (!job || reply.id !== job.request.id) {
     owner.fail(new Error("SQLite worker returned an unexpected response"));
     return;
+  }
+  if (reply.databaseAdmissions) {
+    installSqliteDatabaseAdmissions(reply.databaseAdmissions);
   }
   if (!reply.ok) {
     if (reply.cleanupFailure && job.nativeDispatched && !reply.retire) {

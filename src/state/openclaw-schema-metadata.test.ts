@@ -1,5 +1,6 @@
 import { DatabaseSync, StatementSync, constants } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
+import { probeSqliteIteratorBehavior } from "../infra/sqlite-native-observer.js";
 import {
   admitSqliteSchema,
   runSqliteReadOperationSync,
@@ -139,7 +140,11 @@ it("keeps absent agent ownership separate from malformed metadata", () => {
 
 it("keeps admitted ownership current through local writes, rollback, and authorizers", () => {
   const database = createMetadata("agent");
-  trackSqliteSchema(database, { DatabaseSync, StatementSync });
+  trackSqliteSchema(database, {
+    DatabaseSync,
+    StatementSync,
+    iteratorBehavior: probeSqliteIteratorBehavior(database.prepare("SELECT 1")),
+  });
   admitSqliteSchema(database);
   const read = () =>
     runSqliteReadOperationSync(database, () => readExistingAgentSchemaMeta(database), "fresh");

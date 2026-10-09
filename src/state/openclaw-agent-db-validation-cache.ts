@@ -4,13 +4,16 @@ import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { registerNodeSqliteDisposeCallback } from "../infra/kysely-sync-cache-state.js";
 import { isPathInside } from "../infra/path-guards.js";
+import {
+  getSqliteDatabaseAdmission,
+  publishSqliteDatabaseAdmission,
+} from "../infra/sqlite-database-admission.js";
 import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
 import {
   adoptSqliteSchemaFacts,
   getAdmittedSqliteSchemaFacts,
   getSqliteReadOperationRevision,
   registerSqliteSchemaMutationListener,
-  type SqliteSchemaFacts,
 } from "../infra/sqlite-schema-facts.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
@@ -32,19 +35,14 @@ import {
   matchesAgentDatabaseReadCandidatePath,
   type OpenClawAgentDatabaseReadCandidateResource,
 } from "./openclaw-agent-db-resources.js";
+import {
+  agentDatabaseValidationKey,
+  readTransferredAgentSchema,
+  type OpenClawAgentDatabaseValidation,
+} from "./openclaw-agent-db-validation-facts.js";
 
-export type OpenClawAgentDatabaseValidation = {
-  agentId: string;
-  identity: string;
-  /** Shared-buffer wrappers change across worker transfers; this identifies the proof instance. */
-  receiptId: string;
-  /** Shared with admitted workers so owner invalidation revokes borrowed proof. */
-  valid: SharedArrayBuffer;
-  /** First full canonical proof; subsequent changes remain visible through the pending table. */
-  canonicalReady: SharedArrayBuffer;
-  /** Canonical admission, separately revoked by local DDL without discarding integrity proof. */
-  schema?: { facts: SqliteSchemaFacts; valid: SharedArrayBuffer };
-};
+export type { OpenClawAgentDatabaseValidation } from "./openclaw-agent-db-validation-facts.js";
+
 type ValidationDatabase = { db: DatabaseSync; path: string; agentId: string };
 type CanonicalValidationDatabase = { db: DatabaseSync; path?: string; agentId: string };
 type ValidationEntry = {
@@ -158,50 +156,6 @@ export function adoptOpenClawAgentDatabaseSchema(
   return adopted;
 }
 
-function readTransferredSchema(value: unknown): OpenClawAgentDatabaseValidation["schema"] {
-  if (!isRecord(value) || !isRecord(value.facts)) {
-    return undefined;
-  }
-  const { facts, valid } = value;
-  if (
-    !(valid instanceof SharedArrayBuffer) ||
-    valid.byteLength !== Int32Array.BYTES_PER_ELEMENT ||
-    typeof facts.revision !== "number" ||
-    typeof facts.userVersion !== "number" ||
-    typeof facts.schemaVersion !== "number" ||
-    !(facts.tables instanceof Set) ||
-    ![...facts.tables].every((table) => typeof table === "string") ||
-    !(facts.tableSql instanceof Map) ||
-    ![...facts.tableSql].every(
-      ([name, sql]) => typeof name === "string" && (sql === null || typeof sql === "string"),
-    ) ||
-    !(facts.indexes instanceof Set) ||
-    ![...facts.indexes].every((index) => typeof index === "string") ||
-    !(facts.triggers instanceof Map) ||
-    ![...facts.triggers].every(
-      ([name, trigger]) =>
-        typeof name === "string" &&
-        isRecord(trigger) &&
-        typeof trigger.table === "string" &&
-        (trigger.sql === null || typeof trigger.sql === "string"),
-    )
-  ) {
-    return undefined;
-  }
-  return {
-    valid,
-    facts: {
-      revision: facts.revision,
-      userVersion: facts.userVersion,
-      schemaVersion: facts.schemaVersion,
-      tables: facts.tables,
-      tableSql: facts.tableSql,
-      indexes: facts.indexes,
-      triggers: facts.triggers,
-    },
-  };
-}
-
 function matchesValidation(
   database: ValidationDatabase,
   validation: OpenClawAgentDatabaseValidation,
@@ -209,6 +163,7 @@ function matchesValidation(
   return (
     validation.agentId === database.agentId &&
     validation.identity === findOpenClawAgentDatabaseIdentity(database)?.identity &&
+    validation.birthtime === findOpenClawAgentDatabaseIdentity(database)?.birthtime &&
     Atomics.load(new Int32Array(validation.valid), 0) === 1
   );
 }
@@ -229,7 +184,19 @@ export function hasRevokedOpenClawAgentDatabaseValidation(
 export function getOpenClawAgentDatabaseValidation(
   database: ValidationDatabase,
 ): OpenClawAgentDatabaseValidation | undefined {
-  const entry = validatedPaths.get(path.resolve(database.path));
+  const pathname = path.resolve(database.path);
+  let entry = validatedPaths.get(pathname);
+  if (
+    !entry?.integrityVerified ||
+    !entry.validation ||
+    !matchesValidation(database, entry.validation)
+  ) {
+    const validation = getSqliteDatabaseAdmission(database.db, agentDatabaseValidationKey);
+    if (validation && matchesValidation(database, validation)) {
+      entry = { validation, integrityVerified: true };
+      validatedPaths.set(pathname, entry);
+    }
+  }
   if (
     !entry?.integrityVerified ||
     !entry.validation ||
@@ -309,6 +276,7 @@ function captureValidationTransfer(
       !isRecord(received) ||
       received.agentId !== database.agentId ||
       received.identity !== identity ||
+      typeof received.birthtime !== "string" ||
       typeof received.receiptId !== "string" ||
       received.receiptId.length === 0 ||
       !(received.valid instanceof SharedArrayBuffer) ||
@@ -318,7 +286,7 @@ function captureValidationTransfer(
     ) {
       return "invalid";
     }
-    const schema = readTransferredSchema(received.schema);
+    const schema = readTransferredAgentSchema(received.schema);
     const valid = Atomics.load(new Int32Array(received.valid), 0);
     const schemaValid = schema && Atomics.load(new Int32Array(schema.valid), 0);
     // A raced capture cannot turn a malformed receipt into a retryable refusal.
@@ -357,6 +325,7 @@ function captureValidationTransfer(
       captured.integrityVerified &&
       captured.validation?.agentId === database.agentId &&
       captured.validation.identity === identity &&
+      captured.validation.birthtime === received.birthtime &&
       Atomics.load(new Int32Array(captured.validation.valid), 0) === 1
     ) {
       const currentSchema = captured.validation.schema;
@@ -380,6 +349,7 @@ function captureValidationTransfer(
     const validation = {
       agentId: database.agentId,
       identity,
+      birthtime: received.birthtime,
       receiptId: received.receiptId,
       valid: received.valid,
       canonicalReady: received.canonicalReady,
@@ -561,7 +531,8 @@ export function adoptOpenClawAgentDatabaseValidation(
 function isOpenClawAgentCanonicalStoreEmpty(database: { db: DatabaseSync }): boolean {
   if (
     database.db.isTransaction ||
-    readSqliteUserVersion(database.db) < CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION
+    (getAdmittedSqliteSchemaFacts(database.db)?.userVersion ?? readSqliteUserVersion(database.db)) <
+      CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION
   ) {
     return false;
   }
@@ -580,13 +551,14 @@ function createValidationReceipt(
   database: ValidationDatabase,
   canonicalReady: boolean,
 ): OpenClawAgentDatabaseValidation {
-  const { identity } = readOpenClawAgentDatabaseIdentity(database);
-  if (typeof identity !== "string") {
+  const { identity, birthtime } = readOpenClawAgentDatabaseIdentity(database);
+  if (typeof identity !== "string" || birthtime === undefined) {
     throw new Error("Only persistent agent databases retain integrity validation");
   }
   const validation = {
     agentId: database.agentId,
     identity,
+    birthtime,
     receiptId: randomUUID(),
     valid: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
     canonicalReady: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
@@ -645,6 +617,7 @@ export function publishOpenClawAgentDatabaseSchema(database: ValidationDatabase)
     const valid = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     Atomics.store(new Int32Array(valid), 0, 1);
     validation.schema = { facts, valid };
+    publishSqliteDatabaseAdmission(database.db, agentDatabaseValidationKey, validation);
   }
 }
 

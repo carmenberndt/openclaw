@@ -22,6 +22,7 @@ import {
 import { agentDatabaseLifecycle } from "../state/openclaw-agent-db-lifecycle.js";
 import { withAgentDatabaseMaintenanceLease } from "../state/openclaw-agent-db-maintenance-lease.js";
 import { assertOpenClawAgentDatabaseOwner } from "../state/openclaw-agent-db-maintenance.js";
+import { migrateOpenClawAgentDatabaseToMediaPrerequisiteSchemaSteps } from "../state/openclaw-agent-db-media-migration.js";
 import {
   registerOpenClawAgentDatabase,
   unregisterOpenClawAgentDatabase,
@@ -30,10 +31,7 @@ import {
   assertOpenClawAgentSchemaContains,
   assertSupportedAgentSchemaVersion,
 } from "../state/openclaw-agent-db-schema-helpers.js";
-import {
-  ensureOpenClawAgentDatabaseSchemaSteps,
-  migrateOpenClawAgentDatabaseToMediaPrerequisiteSchemaSteps,
-} from "../state/openclaw-agent-db-schema.js";
+import { ensureOpenClawAgentDatabaseSchemaSteps } from "../state/openclaw-agent-db-schema.js";
 import { assertSupportedAgentMigrationSchemas } from "../state/openclaw-agent-db-session-migrations.js";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import {
@@ -183,7 +181,10 @@ async function migrateAgentDatabase(params: {
     if (
       indexChanges.length > 0 ||
       agentDatabaseLifecycle.terminal.peek(params.pathname) ||
-      readOpenClawDatabaseQuarantineFailure("agent", params.pathname, { env: params.env })
+      readOpenClawDatabaseQuarantineFailure("agent", params.pathname, {
+        env: params.env,
+        fresh: true,
+      })
     ) {
       runSqliteImmediateTransactionSync(
         database,

@@ -25,6 +25,8 @@ import {
   type OpenClawAgentReadOnlyDatabaseHandle,
 } from "./openclaw-agent-db-readonly-open.js";
 import { registerOpenClawAgentDatabaseSyncResource } from "./openclaw-agent-db-resources.js";
+import { assertAgentDatabaseTerminalOpenAllowed } from "./openclaw-agent-db-terminal.js";
+import { readOpenClawDatabaseQuarantineFailure } from "./openclaw-quarantine-store.js";
 import { observeOpenClawDatabaseMaintenanceResource } from "./openclaw-state-db-async-lifecycle.js";
 
 export type OpenClawAgentDatabaseReadOnlyBehavior = {
@@ -152,6 +154,16 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   private acquire(options: OpenClawAgentDatabaseOptions, snapshot = false) {
     if (this.database && !isOpenClawAgentDatabasePathCurrent(this.database)) {
       this.discardConnection();
+    }
+    if (this.database) {
+      assertAgentDatabaseTerminalOpenAllowed(this.database.path);
+      const failure = readOpenClawDatabaseQuarantineFailure("agent", this.database.path, {
+        env: options.env,
+      });
+      if (failure) {
+        this.discardConnection();
+        throw failure;
+      }
     }
     if (!this.database) {
       let opened: ReturnType<typeof openOpenClawAgentDatabaseReadOnly>;

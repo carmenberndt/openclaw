@@ -16,11 +16,13 @@ import { purgeAgentSessionStoreEntries } from "../config/sessions/cleanup-servic
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { captureSqliteDatabaseAdmissions } from "../infra/sqlite-database-admission.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import * as integrityWorker from "../infra/sqlite-integrity-worker.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { beginAgentDeletionJournal, removeAgentDeletionJournal } from "./agent-deletion-journal.js";
 import { assertNoOpenClawAgentDatabaseLeases } from "./openclaw-agent-db-lease.js";
+import { closeDeletedAgentDatabases, reviveAgentDatabases } from "./openclaw-agent-db-readers.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -81,9 +83,25 @@ describe("agent deletion database cleanup authority", () => {
     const f = fixture();
     const reader = acquireAuthProfileReadDatabase(f.target.path);
     expect(reader.status).toBe("readable");
-    await f.withDeletion(async () => {
+    const admission = captureSqliteDatabaseAdmissions().find(
+      (record) => record.location === f.target.path,
+    )!;
+    await f.withDeletion(async (deletion) => {
       await prepareAgentDeleteDatabases({}, "worker", f.entry.agentDir, { env: f.options.env });
       expect(reader.status === "readable" && reader.db.isOpen).toBe(false);
+      expect(
+        await purgeAgentSessionStoreEntries({}, "worker", {
+          env: f.options.env,
+          runDatabaseCleanup: deletion.runDatabaseCleanup,
+        }),
+      ).toBe(false);
+      expect(() => fs.fstatSync(admission.descriptor)).not.toThrow();
+      try {
+        await closeDeletedAgentDatabases("worker", [f.target.path], deletion);
+        expect(() => fs.fstatSync(admission.descriptor)).toThrow();
+      } finally {
+        await reviveAgentDatabases(["worker"]);
+      }
     });
   });
 

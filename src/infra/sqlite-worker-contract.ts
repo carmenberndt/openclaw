@@ -1,6 +1,7 @@
 import { isNativeError, isProxy } from "node:util/types";
 import type { MessagePort } from "node:worker_threads";
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
+import type { SqliteDatabaseAdmissions } from "./sqlite-database-admission.js";
 import type { SqliteWalCheckpointSnapshot } from "./sqlite-wal-checkpoint.js";
 import type { DatabasePathIdentity } from "./sqlite-worker-identity.js";
 import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js";
@@ -64,6 +65,7 @@ export type SqliteWorkerRequest = {
   stateContext?: SqliteWorkerStateContext;
   operationAdmission?: MessagePort;
   stateDatabasePath?: string;
+  databaseAdmissions?: SqliteDatabaseAdmissions;
 } & (
   | {
       type: "open";
@@ -86,6 +88,7 @@ export type SqliteWorkerRequest = {
 export type SqliteWorkerReply = {
   id: number;
   cleanupFailure?: OpenClawStateWorkerErrorPayload;
+  databaseAdmissions?: SqliteDatabaseAdmissions;
 } & (
   | {
       ok: true;

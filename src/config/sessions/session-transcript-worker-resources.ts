@@ -12,6 +12,7 @@ import {
   type UsageCostWorkerInput,
   type UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
+import { runWithSqliteDatabaseAdmissionTurn } from "../../infra/sqlite-database-admission-turn.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
 import { SESSION_TRANSCRIPT_FOREGROUND_WORKERS } from "../../infra/worker-pool-sizing.js";
 import { WorkerTaskError, WorkerTaskPool } from "../../infra/worker-task-pool.js";
@@ -444,6 +445,12 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     path: physicalPath,
     ...(scope ? { scope } : {}),
   }));
+  const admissionPaths = capturedCandidates
+    .filter((candidate) => !candidate.scope)
+    .map((candidate) => candidate.physicalPath);
+  const admissionFamilies = capturedCandidates
+    .filter((candidate) => candidate.scope === "sibling-family")
+    .map((candidate) => path.dirname(candidate.physicalPath));
   historyClearTimeout(lane.idleTimer);
   lane.pending++;
   refreshDatabaseWorkerPressureSubscription();
@@ -595,14 +602,19 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
           env: captureSessionTranscriptStorageEnvironment(request.env),
           candidates: capturedCandidates,
         };
-        const reply = await lane.pool.run(
-          () => {
-            assertCurrent();
-            dispatched = true;
-            lane.nativeSequence++;
-            return { kind: "session-store-target", request: preparedRequest };
-          },
-          { inputBytes: JSON.stringify(preparedRequest).length * 2, timeoutMs: 60_000 },
+        const reply = await runWithSqliteDatabaseAdmissionTurn(
+          admissionPaths,
+          () =>
+            lane.pool.run(
+              () => {
+                assertCurrent();
+                dispatched = true;
+                lane.nativeSequence++;
+                return { kind: "session-store-target", request: preparedRequest };
+              },
+              { inputBytes: JSON.stringify(preparedRequest).length * 2, timeoutMs: 60_000 },
+            ),
+          admissionFamilies,
         );
         const result = unwrapSessionTranscriptWorkerReply<SessionHistoryWorkerInput["kind"]>(reply);
         if (
@@ -635,17 +647,22 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             env: captureSessionTranscriptStorageEnvironment(request.env),
             candidates: capturedCandidates,
           };
-          const reply = await lane.pool.run(
-            () => {
-              assertCurrent();
-              dispatched = true;
-              lane.nativeSequence++;
-              return { kind: "session-target-inventory", request: preparedRequest };
-            },
-            {
-              inputBytes: measureSessionStoreTargetInventoryInputBytes(preparedRequest),
-              timeoutMs: 60_000,
-            },
+          const reply = await runWithSqliteDatabaseAdmissionTurn(
+            admissionPaths,
+            () =>
+              lane.pool.run(
+                () => {
+                  assertCurrent();
+                  dispatched = true;
+                  lane.nativeSequence++;
+                  return { kind: "session-target-inventory", request: preparedRequest };
+                },
+                {
+                  inputBytes: measureSessionStoreTargetInventoryInputBytes(preparedRequest),
+                  timeoutMs: 60_000,
+                },
+              ),
+            admissionFamilies,
           );
           const result =
             unwrapSessionTranscriptWorkerReply<SessionHistoryWorkerInput["kind"]>(reply);

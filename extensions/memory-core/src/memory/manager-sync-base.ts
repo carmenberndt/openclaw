@@ -15,6 +15,7 @@ import {
   type MemorySyncParams,
   type MemorySyncProgressUpdate,
 } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { tableExists } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import type { MemoryCoreAcquireLocalService } from "./embedding-local-service.js";
 import {
   resolveEmbeddingProviderIndexIdentity,
@@ -41,7 +42,7 @@ import {
   readMemoryIndexMetadata,
 } from "./manager-retrieval-read.js";
 import { MemorySyncOutcomeLedger } from "./manager-sync-outcome.js";
-import { memoryTableExists, requiresMemoryVectorRebuild } from "./manager-vector-rebuild-state.js";
+import { requiresMemoryVectorRebuild } from "./manager-vector-rebuild-state.js";
 import { buildMemorySourceFilter } from "./source-filter.js";
 
 export type MemorySyncProgressState = {
@@ -549,7 +550,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   }
 
   private ensureVectorTable(dimensions: number): void {
-    if (this.vector.dims === dimensions && memoryTableExists(this.db, VECTOR_TABLE)) {
+    if (this.vector.dims === dimensions && tableExists(this.db, VECTOR_TABLE)) {
       return;
     }
     if (!this.dropVectorTable()) {
@@ -565,7 +566,7 @@ export abstract class MemoryManagerSyncBase extends MemoryManagerDatabaseContext
   }
 
   private dropLegacyVectorTable(): boolean {
-    if (!memoryTableExists(this.db, LEGACY_VECTOR_TABLE)) {
+    if (!tableExists(this.db, LEGACY_VECTOR_TABLE)) {
       return false;
     }
     try {
