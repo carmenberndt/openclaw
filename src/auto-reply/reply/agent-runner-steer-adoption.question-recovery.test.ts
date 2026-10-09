@@ -380,7 +380,7 @@ describe("question response custody through reply adoption", () => {
   );
 
   it.each(["accepted", "rejected", "indeterminate"] as const)(
-    "serializes the next native steer after an early ACK and a %s outcome",
+    "injects the next native steer after an early ACK and keeps the first ahead through a %s outcome",
     async (outcome) => {
       const key = "agent:main:steer-outcome-" + outcome;
       const first = createQueueTestRun({ prompt: "first", messageId: "first" });
@@ -447,8 +447,13 @@ describe("question response custody through reply adoption", () => {
           } finally {
             vi.useRealTimers();
           }
-          expect(queueMessage.mock.calls.map(([message]) => message)).toEqual(["first"]);
+          // A native ACK is final FIFO placement: the owner holds the first input ahead
+          // of the next and never replays it. Its commit can depend on later input.
+          expect(queueMessage.mock.calls.map(([message]) => message)).toEqual(["first", "second"]);
           expect(first.controllerInput?.injection?.accepted).toBe(true);
+          expect(first.controllerInput?.phase).toBe("injecting");
+          await expect(secondSteer).resolves.toBe("handled");
+          expect(first.controllerInput?.phase).toBe("injecting");
           if (outcome === "accepted") {
             nativeOutcome.resolve();
           } else {
