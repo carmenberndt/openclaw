@@ -325,7 +325,7 @@ export function createTalkClientAgentConsultRunner(params: {
                 owner.completionClaim = prepareEmbeddedAgentRunCompletionClaim(sessionId, runId);
                 if (owner.requesterFinal) {
                   const requesterFinal = owner.requesterFinal;
-                  const registration = registerRequesterFinalAttachment({
+                  const finalRegistration = registerRequesterFinalAttachment({
                     requesterAgentId: agentId,
                     requesterSessionKey: canonicalKey,
                     requesterSessionId: sessionId,
@@ -335,8 +335,8 @@ export function createTalkClientAgentConsultRunner(params: {
                     append: (text) =>
                       requesterFinal.append(confirmationObservation?.readReply() ?? text),
                   });
-                  owner.requesterFinalRegistration = registration;
-                  requesterFinalRegistration = registration;
+                  owner.requesterFinalRegistration = finalRegistration;
+                  requesterFinalRegistration = finalRegistration;
                 }
                 void owner.completionClaim.registered.then(owner.resolveRegistration);
               }

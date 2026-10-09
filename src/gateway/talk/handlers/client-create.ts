@@ -347,20 +347,20 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
                     ),
                   ),
             flushTranscript: async () => {
-              const target = { agentId, voiceSessionId: activeVoiceSessionId! };
+              const voiceTarget = { agentId, voiceSessionId: activeVoiceSessionId! };
               if (!voiceSessionSource) {
-                return flushClientVoiceSessionWrites(target, null);
+                return flushClientVoiceSessionWrites(voiceTarget, null);
               }
               try {
                 return await withVoiceWriter((writer) =>
-                  flushClientVoiceSessionWrites(target, writer),
+                  flushClientVoiceSessionWrites(voiceTarget, writer),
                 );
               } catch (error) {
                 if (!closing) {
                   throw error;
                 }
                 closingFailure ??= { error };
-                await flushClientVoiceSessionWrites(target, null);
+                await flushClientVoiceSessionWrites(voiceTarget, null);
               }
             },
             closeLogicalSession,

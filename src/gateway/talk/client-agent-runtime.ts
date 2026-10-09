@@ -1,5 +1,6 @@
 import type { OperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { drainAgentRunTerminalWrites } from "../../infra/agent-run-terminal-writes.js";
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import {
   buildRunUserTurnIdempotencyKey,
@@ -95,8 +96,13 @@ export function createTalkClientAgentRuntime(params: {
         }),
       });
     } finally {
-      runParams.abortSignal?.removeEventListener("abort", close);
-      close();
+      // Accepted terminal writes commit under this admission; abort still closes it immediately.
+      try {
+        await drainAgentRunTerminalWrites(operationalRunInstance);
+      } finally {
+        runParams.abortSignal?.removeEventListener("abort", close);
+        close();
+      }
     }
   };
   Object.defineProperty(agentRuntime, "runEmbeddedAgent", {

@@ -1,4 +1,3 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
@@ -23,6 +22,7 @@ import type { SessionMutationAuthorization } from "./server-methods/types.js";
 import { isSessionCreatorProfile } from "./session-creator.js";
 import {
   isAgentRunStartMethod,
+  isSessionArchiveMutation,
   isRequiredSessionTargetMethod,
   isSessionProfileDependentMethod,
 } from "./session-method-policy.js";
@@ -131,13 +131,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
   const authorizesAgentRun = isAgentRunStartMethod(params.method, params.requestParams);
   const authorizesRead =
     resolveSessionMethodScope(params.method, params.requestParams) === "operator.sessions.read";
-  const patch =
-    params.method === "sessions.patchMany" && isRecord(params.requestParams)
-      ? params.requestParams.patch
-      : params.method === "sessions.patch"
-        ? params.requestParams
-        : undefined;
-  const requiresArchiveOwnership = isRecord(patch) && typeof patch.archived === "boolean";
+  const requiresArchiveOwnership = isSessionArchiveMutation(params.method, params.requestParams);
   // Progress belongs to the current conversation, not merely its stable session ID.
   // Capture this boundary for admins too so delayed writes cannot revive a reset card.
   const bindsProgressLifecycle =
@@ -605,6 +599,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
                       return consume();
                     });
                   },
+                  params.preparedSharing?.selection,
                 );
               },
               withPreparedCurrent: <T>(
@@ -700,14 +695,12 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
           );
         },
       };
-      // Native Incognito custody retains its process-local identity and live permission guard.
-      if (!authorizedTargets.some((target) => isIncognitoSessionKey(target.sessionKey))) {
-        authorization.admittedInputAuthority = createSessionSharingInputAuthority(
-          params,
-          authorization,
-          () => consuming.sharing!,
-        );
-      }
+      authorization.admittedInputAuthority = createSessionSharingInputAuthority(
+        params,
+        authorization,
+        () => consuming.sharing!,
+        authorizedTargets,
+      );
       return authorization;
     })(),
   };

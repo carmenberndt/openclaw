@@ -22,6 +22,7 @@ import { assertCapturedSessionEntryReadSource } from "./session-accessor.sqlite-
 import { toDatabaseOptions, type ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
 import type { SessionEntryPatchOperation } from "./session-entry-patch-operation.js";
 import type {
+  SessionEntryPatchCommitObserver,
   SessionEntryPatchGuard,
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
@@ -34,10 +35,12 @@ export type SqliteSessionEntryPatchOptions = SessionEntryPatchOptions & {
   retainedExecution?: OpenClawAgentDatabaseExecution;
   /** Audited internal updaters: no nested writer admission; guards retain only host authority. */
   workerGuard?: SessionEntryPatchGuard;
+  /** A negative current-row selection ends this internal operation before callback preparation. */
+  prepareIf?: { kind: "live-model-switch-pending" };
   /** Recheck owner cancellation after async preparation, immediately before committing. */
   shouldCommit?: () => boolean;
   /** Synchronous owner bookkeeping after COMMIT, before identity observers can cancel the caller. */
-  onCommitted?: (entry: SessionEntry) => void;
+  onCommitted?: SessionEntryPatchCommitObserver;
   /** Exact source acknowledged by the writer; never discover it after the operation yields. */
   onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: SessionEntry) => void;
 };

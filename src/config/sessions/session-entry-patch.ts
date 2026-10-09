@@ -33,6 +33,7 @@ import type { SessionEntryCommitContext } from "./session-accessor.types.js";
 import type {
   SessionEntryPatchCommit,
   SessionEntryPatchCommitted,
+  SessionEntryPatchCommitObserver,
   SessionEntryPatchGuard,
   SessionEntryPatchReduction,
   SessionEntryPatchSelection,
@@ -56,7 +57,7 @@ export async function patchSessionEntryInWorker(params: {
   preparedSource?: PreparedSessionSourceAuthority;
   reduction?: SessionEntryPatchReduction;
   prepare(snapshot: SqliteLifecycleTargetSnapshot): Promise<SessionEntryPatchCommit | undefined>;
-  onCommitted?: (entry: SessionEntry) => void;
+  onCommitted?: SessionEntryPatchCommitObserver;
   onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: SessionEntry) => void;
 }): Promise<{ entry: SessionEntry | null; wrote: boolean }> {
   let source = params.preparedSource;
@@ -150,7 +151,12 @@ export async function patchSessionEntryInWorker(params: {
     async onCommitted(committed, published, identity, _context, fileIdentity) {
       try {
         if (committed.publication && committed.entry) {
-          params.onCommitted?.(structuredClone(committed.entry));
+          const entry = structuredClone(committed.entry);
+          if (committed.transcriptPredicate) {
+            params.onCommitted?.(entry, committed.transcriptPredicate);
+          } else {
+            params.onCommitted?.(entry);
+          }
           params.onCommittedSource?.(
             {
               agentId: params.database.agentId,

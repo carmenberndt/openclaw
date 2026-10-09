@@ -59,8 +59,19 @@ export type SessionEntryPatchCommitted = {
   kind: "session-entry-patch";
   entry: SessionEntry | null;
   publication?: SessionEntryReplacementPublication;
+  /** Guard snapshot before the entry patch, carried only while the session ID is unchanged. */
+  transcriptPredicate?: {
+    sessionId: string;
+    watermark: SessionTranscriptWatermark;
+  };
   refusedSource?: { index: number; facts: SessionSourcePredicateFacts };
 };
+
+export type SessionEntryPatchCommitObserver = (
+  entry: SessionEntry,
+  /** Historical predicate facts from the committed transaction, never current authority. */
+  transcriptPredicate?: SessionEntryPatchCommitted["transcriptPredicate"],
+) => void;
 
 export type SessionEntryPatchReduction = Omit<
   SessionEntryPatchCommit,

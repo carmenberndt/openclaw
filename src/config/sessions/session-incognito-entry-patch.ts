@@ -2,6 +2,7 @@ import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contrac
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
 import type {
   SessionEntryPatchCommit,
+  SessionEntryPatchCommitObserver,
   SessionEntryPatchSelection,
 } from "./session-entry-patch.types.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
@@ -26,7 +27,7 @@ export function patchIncognitoSessionEntry(params: {
   shouldCommit?: () => boolean;
   source?: SessionSourceAssertion;
   prepare(snapshot: SqliteLifecycleTargetSnapshot): Promise<SessionEntryPatchCommit | undefined>;
-  onCommitted?: (entry: InternalSessionEntry) => void;
+  onCommitted?: SessionEntryPatchCommitObserver;
   onCommittedSource?: (source: CapturedSessionEntryReadSource, entry: InternalSessionEntry) => void;
 }): Promise<IncognitoEntryPatchResult> {
   const { actor, sessionKey } = params;
@@ -90,7 +91,12 @@ export function patchIncognitoSessionEntry(params: {
           (result) => {
             if (result.wrote && result.entry) {
               try {
-                params.onCommitted?.(structuredClone(result.entry));
+                const entry = structuredClone(result.entry);
+                if (result.transcriptPredicate) {
+                  params.onCommitted?.(entry, result.transcriptPredicate);
+                } else {
+                  params.onCommitted?.(entry);
+                }
                 params.onCommittedSource?.(
                   {
                     agentId: actor.agentId,

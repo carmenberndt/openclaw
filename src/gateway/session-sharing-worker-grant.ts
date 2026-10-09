@@ -1,5 +1,9 @@
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { assertCapturedSessionEntryReadSource } from "../config/sessions/session-accessor.sqlite-exact-read.js";
+import {
+  captureIncognitoSessionBinding,
+  withIncognitoSessionBinding,
+} from "../config/sessions/session-incognito-binding.js";
 import { hasSessionMemberInDatabase } from "../config/sessions/session-sharing-store.kernel.js";
 import {
   releaseSessionSourceAuthorities,
@@ -33,6 +37,7 @@ import {
   prepareSessionSharingProfiles,
   type PreparedSessionSharingProfiles,
 } from "./session-sharing-read.js";
+import { prepareSessionSharingSource } from "./session-sharing-source.js";
 import { readProjectedSessionMutationTarget } from "./session-sharing-target-read.js";
 
 /** Legacy locators keep exact agent-store authority without rediscovering shared-state ownership. */
@@ -53,6 +58,11 @@ export async function prepareSessionSharingWorkerGrant(params: {
   const targets = params.targets.map((target) => ({
     ...target,
     resolved: target.resolved && { ...target.resolved },
+    binding: captureIncognitoSessionBinding({
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      storePath: target.resolved?.readSource?.path ?? target.resolved?.storePath,
+    }),
   }));
   const changed = (key = targets[0]?.sessionKey ?? "") =>
     sessionMutationTargetChanged(params.request.method, key);
@@ -62,7 +72,7 @@ export async function prepareSessionSharingWorkerGrant(params: {
   const assertRouting = captureSessionMutationRouting(params.sourceConfig, changed);
   const talkAgentId = params.sourceConfig.talk?.agentId;
   let active = true;
-  const releases: Array<{ release: () => void }> = [];
+  const releases: Array<{ release: () => void | Promise<void> }> = [];
   const sourceChecks: Array<() => void> = [];
   let transaction: SessionSourceTransactionGrant | undefined;
   const release = () => {
@@ -70,15 +80,45 @@ export async function prepareSessionSharingWorkerGrant(params: {
     return releaseSessionSourceAuthorities(releases.splice(0));
   };
   try {
-    const reads = targets.map((expected) => {
+    const reads: Array<(profiles: PreparedSessionSharingProfiles) => void> = [];
+    for (const expected of targets) {
       const initialConfig = params.request.context.getRuntimeConfig();
       assertRouting(initialConfig);
+      if (expected.binding) {
+        const target = expected.resolved;
+        if (!target) {
+          throw changed(expected.sessionKey);
+        }
+        const source = await withIncognitoSessionBinding(expected.binding, () =>
+          prepareSessionSharingSource(target, () =>
+            assertRouting(params.request.context.getRuntimeConfig()),
+          ),
+        );
+        releases.push(source);
+        sourceChecks.push(source.assertCurrent);
+        reads.push((profiles) => {
+          source.assertCurrent();
+          params.consume(
+            expected,
+            params.request.context.getRuntimeConfig(),
+            {
+              target: source.target,
+              storageTarget: target,
+              members: [],
+              isMember: (id) => source.members.includes(id),
+              assertCurrent: source.assertCurrent,
+            },
+            profiles,
+          );
+        });
+        continue;
+      }
       const projected =
         !params.transactionFacts && expected.projection
           ? readProjectedSessionMutationTarget(expected, initialConfig, expected.projection)
           : undefined;
       if (projected?.status === "ready") {
-        return (profiles: PreparedSessionSharingProfiles) => {
+        reads.push((profiles) => {
           const cfg = params.request.context.getRuntimeConfig();
           const current = readProjectedSessionMutationTarget(expected, cfg, expected.projection!);
           if (current.status !== "ready") {
@@ -101,7 +141,8 @@ export async function prepareSessionSharingWorkerGrant(params: {
             },
             profiles,
           );
-        };
+        });
+        continue;
       }
       const route = expected.resolved ?? expected.absentTarget;
       const provided = params.transactionSource;
@@ -224,7 +265,7 @@ export async function prepareSessionSharingWorkerGrant(params: {
           },
         };
       }
-      return (profiles: PreparedSessionSharingProfiles) => {
+      reads.push((profiles) => {
         const cfg = params.request.context.getRuntimeConfig();
         assertSource();
         if (retained.database.db.isTransaction) {
@@ -257,8 +298,8 @@ export async function prepareSessionSharingWorkerGrant(params: {
           "fresh",
         );
         assertSource();
-      };
-    });
+      });
+    }
     const profiles =
       params.request.preparedProfiles ??
       (await prepareSessionSharingProfiles(params.request.client));
