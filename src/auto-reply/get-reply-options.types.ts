@@ -109,8 +109,8 @@ export type TurnAdoptionLifecycle = {
   /** Transcript branch leaf from which this turn was admitted. */
   originatingLeafEntryId?: string | null;
   onAdopted: () => void | Promise<void>;
-  /** Return false to reject enqueue; the read-only observer tracks the live steering reservation. */
-  onDeferred?: (isSteering?: () => boolean) => boolean | void;
+  /** Return false to reject followup enqueue. */
+  onDeferred?: () => boolean | void;
   /** Pre-adoption liveness while waiting for reply-lane admission or preflight compaction. */
   onDeferredHeartbeat?: () => void;
   /** Requested cadence for pre-adoption heartbeats. */

@@ -71,7 +71,7 @@ export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
       ? (run.turnAdoptionLifecycle = { admission: "cancel-only", onAdopted: () => {} })
       : undefined);
   if (lifecycle && !enqueuedTurnAdoptionLifecycles.has(lifecycle)) {
-    if (lifecycle.onDeferred?.(() => Boolean(run.steerPending)) === false) {
+    if (lifecycle.onDeferred?.() === false) {
       return false;
     }
     let releaseAuthority: (() => void) | undefined;

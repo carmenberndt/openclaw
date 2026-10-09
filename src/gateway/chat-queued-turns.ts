@@ -9,6 +9,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
+import { hasFollowupSteeringReservation } from "../auto-reply/reply/queue/state.js";
 import { notifyGatewayWorkMetricsChanged } from "../infra/gateway-work-metrics-events.js";
 import {
   resolveChatAbortDiagnosticReason,
@@ -22,8 +23,6 @@ export type QueuedChatTurnEntry = {
   sessionKey: string;
   /** False once collect-mode transfers cancellation to the aggregate owner. */
   abortable?: boolean;
-  /** Parked steering retains cancellation custody without becoming a follow-up. */
-  isSteering?: () => boolean;
   abortListener?: () => void;
   agentId?: string;
   ownerConnId?: string;
@@ -57,7 +56,11 @@ export function isQueuedFollowupChatTurnForSession(
   runId: string,
   scope: Pick<QueuedChatTurnEntry, "sessionId" | "sessionKey" | "agentId">,
 ): boolean {
-  return isQueuedChatTurnForSession(turns, runId, scope) && !turns?.get(runId)?.isSteering?.();
+  const entry = turns?.get(runId);
+  return (
+    isQueuedChatTurnForSession(turns, runId, scope) &&
+    Boolean(entry && !hasFollowupSteeringReservation(entry.sessionKey, entry.controller.signal))
+  );
 }
 
 type RegisterQueuedChatTurnParams = {
@@ -70,7 +73,6 @@ type RegisterQueuedChatTurnParams = {
   ownerConnId?: string;
   ownerDeviceId?: string;
   holdPendingInputWithdrawal?: QueuedChatTurnEntry["holdPendingInputWithdrawal"];
-  isSteering?: QueuedChatTurnEntry["isSteering"];
   /** Record cancellation while the exact queued entry is still current. */
   onAborted?: (reason: ChatAbortDiagnosticReason) => void;
 };
@@ -131,7 +133,6 @@ export function registerQueuedChatTurn(params: RegisterQueuedChatTurnParams): bo
     agentId: normalizeOptionalString(params.agentId)?.toLowerCase(),
     ownerConnId: normalizeOptionalString(params.ownerConnId),
     ownerDeviceId: normalizeOptionalString(params.ownerDeviceId),
-    isSteering: params.isSteering,
     ...(params.holdPendingInputWithdrawal
       ? { holdPendingInputWithdrawal: params.holdPendingInputWithdrawal }
       : {}),
