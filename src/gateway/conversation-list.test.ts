@@ -473,9 +473,9 @@ describe("worker conversation reads", () => {
       await fs.mkdir(directory, { recursive: true });
       const entered = createDeferredCore();
       const release = createDeferredCore();
-      // Missing stores use cold discovery admission for both target and row reads.
-      const run = targetDiscoveryLane.pool.run.bind(targetDiscoveryLane.pool);
-      vi.spyOn(targetDiscoveryLane.pool, "run").mockImplementation(async (...args) => {
+      const lane = targetDiscoveryLane;
+      const run = lane.pool.run.bind(lane.pool);
+      vi.spyOn(lane.pool, "run").mockImplementation(async (...args) => {
         const reply = await run(...args);
         if (
           reply.ok &&

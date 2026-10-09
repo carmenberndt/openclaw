@@ -11,6 +11,7 @@ import {
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
+import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import {
   getSessionEntry,
   patchSessionEntry,
@@ -355,16 +356,12 @@ it.each(["after updater", "final grant"] as const)(
       const f = fixture();
       let current = true;
       const refusal = new Error("patch authority revoked");
-      const createAdmission = admission.createSqliteWorkerOperationAdmission;
-      vi.spyOn(admission, "createSqliteWorkerOperationAdmission").mockImplementation(
-        (callback, attachment) =>
-          createAdmission((request, grant) => {
-            if (phase === "final grant" && request.stage === "commit") {
-              current = false;
-            }
-            callback(request, grant);
-          }, attachment),
-      );
+      probe.admission(admission, (request, grant, callback) => {
+        if (phase === "final grant" && request.stage === "commit") {
+          current = false;
+        }
+        callback(request, grant);
+      });
       const committed = vi.fn();
       await expect(
         patchSessionEntryCore(
