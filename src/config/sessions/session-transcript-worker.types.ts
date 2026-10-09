@@ -98,6 +98,7 @@ import type {
   PendingInputHistorySnapshot,
 } from "./session-pending-input-history.types.js";
 import type * as PendingInputSourceWorker from "./session-pending-input-source.types.js";
+import type { SessionRowDatabaseFacts } from "./session-row-facts.types.js";
 import type {
   SessionMembersWorkerInput,
   SessionMembershipFactsWorkerInput,
@@ -389,11 +390,6 @@ export type SessionExactEntriesWorkerResult = {
 };
 
 export const MAX_SESSION_ROW_FACTS_KEYS = 64;
-
-export type SessionRowDatabaseFacts = SessionEntrySummary & {
-  hasBoard: boolean;
-  activitySummaryWatermark?: SessionTranscriptWatermark;
-};
 
 export type SessionRowFactsWorkerInput = {
   kind: "session-row-facts";
