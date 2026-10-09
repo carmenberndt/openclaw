@@ -176,6 +176,11 @@ export const gatewayDirectStopEntrypoints = {
     sourceWorkerName: "../agents/embedded-agent-runner/runs",
     distWorkerPath: "agents/embedded-agent-runner/runs.js",
   },
+  sessionControllerAdmission: {
+    currentModuleUrl: import.meta.url,
+    sourceWorkerName: "../sessions/session-controller.admission",
+    distWorkerPath: "sessions/session-controller.admission.js",
+  },
   sessionControllerQueries: {
     currentModuleUrl: import.meta.url,
     sourceWorkerName: "../sessions/session-controller.queries",
