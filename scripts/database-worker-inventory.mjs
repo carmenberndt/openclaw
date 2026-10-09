@@ -1019,10 +1019,27 @@ const reviewedOperations = new Map([
     "src/gateway/worker-environments/placement-workspace-reservation.kernel.ts",
     [
       {
+        tier: "T1",
+        operations: ["readWorkspaceReservationAuthority"],
+        evidence:
+          "Native workspace reservation preparation and final publication guard share one current query. Native/SDK and foreign writers prevent cached authority; retirement requires complete revocation publications and foreign-writer custody at the next Plugin SDK major.",
+      },
+      {
         tier: "W",
         operations: ["assertSessionWorkspaceUnreserved"],
         evidence:
           "placement-dispatch-store.worker.ts:39 and placement-turn-claims.ts:93 claim path; claims only invoked at placement-turn-claims.worker.ts:160,175,345. Native placement-store.ts:75,76 selects clear/wait/validate methods.",
+      },
+    ],
+  ],
+  [
+    "src/gateway/worker-environments/placement-read-projection.ts",
+    [
+      {
+        tier: "T1",
+        operations: ["readWorkerPlacementMoveAuthorityInDatabase"],
+        evidence:
+          "placement-store.readCurrentMoveAuthority serves native move-abandon, move-service recovery, and pending-result guards. Retained until native/SDK and foreign-writer revocation is fully owned at the next Plugin SDK major. Other projection operations remain worker-only.",
       },
     ],
   ],
@@ -2044,7 +2061,7 @@ const workerModules = new Set([
   "src/gateway/session-history-worker-reader.ts", // Only session-transcript.worker.ts dispatches history metadata reads.
 
   "src/gateway/worker-environments/inference-store.kernel.ts", // Inference worker dispatcher creates this kernel only.
-  "src/gateway/worker-environments/placement-read-projection.ts", // Shared-state read worker placement projection and recovery dispatchers only.
+  "src/gateway/worker-environments/placement-read-projection.ts", // Worker projection; the retained final move guard has an explicit T1 override.
   "src/gateway/worker-environments/session-attachment-store.ts", // Environment worker kernel and read-worker attachment facts only.
   "src/gateway/worker-environments/store-mutations.ts", // Environment worker kernel, transitions, and initialization only.
   "src/gateway/worker-environments/store-row-codec.ts", // Environment and placement workers plus shared-state read-worker facts only.

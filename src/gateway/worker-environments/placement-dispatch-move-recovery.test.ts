@@ -337,6 +337,8 @@ describe("worker Gateway move recovery", () => {
   it.each([
     "current",
     "replaced",
+    "foreign-generation",
+    "foreign-move",
     "policy-required",
     "policy-activated",
     "policy-at-transaction",
@@ -457,6 +459,32 @@ describe("worker Gateway move recovery", () => {
             ownerEpoch: 9,
           });
         }
+        if (owner === "foreign-generation" || owner === "foreign-move") {
+          const foreign = new DatabaseSync(support.testState.stateDb.path);
+          try {
+            if (owner === "foreign-generation") {
+              foreign
+                .prepare(
+                  `UPDATE worker_session_placements
+                   SET transition_generation = transition_generation + 1 WHERE session_id = ?`,
+                )
+                .run(active.sessionId);
+            } else {
+              foreign
+                .prepare(
+                  "UPDATE worker_session_placement_moves SET operation_id = ? WHERE session_id = ?",
+                )
+                .run("move:v1:foreign-replacement", active.sessionId);
+            }
+          } finally {
+            foreign.close();
+          }
+          // Leave the foreign commit unobserved until the final effect guard.
+          replacement =
+            owner === "foreign-generation"
+              ? { ...reconciling, generation: reconciling.generation + 1 }
+              : reconciling;
+        }
       } finally {
         release.resolve();
         try {
@@ -465,11 +493,16 @@ describe("worker Gateway move recovery", () => {
           restoreAdmission?.();
         }
       }
-      if (owner === "replaced") {
+      if (owner === "replaced" || owner === "foreign-generation" || owner === "foreign-move") {
         await expect(prepareGatewayMove.mock.results[0]?.value).rejects.toThrow(
           "lost its source owner",
         );
         expect(restartedStore.get(active.sessionId)).toEqual(replacement);
+        if (owner === "foreign-move") {
+          expect(restartedStore.getPlacementMove(active.sessionId)?.operationId).toBe(
+            "move:v1:foreign-replacement",
+          );
+        }
         expect(restarted.log).not.toContain("placement:local");
         await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" });
       } else if (
