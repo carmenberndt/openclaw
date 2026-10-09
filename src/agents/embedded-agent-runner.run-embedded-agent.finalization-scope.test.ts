@@ -107,8 +107,15 @@ describe("nested settled-turn finalization ownership", () => {
       ];
       let toolRuns = 0;
       let finalizerRuns = 0;
-      let admittedOperation: Parameters<typeof setActiveEmbeddedRun>[5];
+      // Each attempt, including the tool-free finalizer, must arrive under the child's own turn.
+      const attemptTurns: Array<EmbeddedRunAttemptParams["replyOperation"]> = [];
+      const expectFinalizerBorrowsChildTurn = () => {
+        expect(attemptTurns).toHaveLength(2);
+        expect(attemptTurns[0]).toBeDefined();
+        expect(attemptTurns[1]).toBe(attemptTurns[0]);
+      };
       runAttempt.mockImplementation(async (params: EmbeddedRunAttemptParams) => {
+        attemptTurns.push(params.replyOperation);
         const handle = createEmbeddedRunHandle({
           runId: params.runId,
           toolAuthorityFingerprint: params.toolAuthorityFingerprint,
@@ -119,12 +126,11 @@ describe("nested settled-turn finalization ownership", () => {
           params.sessionKey,
           params.sessionFile,
           params.agentId,
-          params.replyOperation ?? admittedOperation,
+          params.replyOperation,
         );
         if (!attachment) {
           throw new Error("Finalization proof requires an attached embedded run");
         }
-        admittedOperation ??= attachment.operation;
         try {
           const sessionKey = params.sessionTarget?.sessionKey;
           if (!sessionKey) {
@@ -241,6 +247,7 @@ describe("nested settled-turn finalization ownership", () => {
           await expect(child).rejects.toThrow("admitted run authority is no longer active");
           expect(toolRuns).toBe(1);
           expect(finalizerRuns).toBe(1);
+          expectFinalizerBorrowsChildTurn();
           expect(await readMessages(target)).toHaveLength(messages.length);
           return;
         }
@@ -252,6 +259,7 @@ describe("nested settled-turn finalization ownership", () => {
         expect(result?.payloads).toEqual([expect.objectContaining({ text: expected })]);
         expect(toolRuns).toBe(1);
         expect(finalizerRuns).toBe(1);
+        expectFinalizerBorrowsChildTurn();
         const transcript = await readMessages(target);
         expect(transcript).toHaveLength(messages.length + 1);
         expect(transcript.at(-1)?.message).toMatchObject({
