@@ -266,6 +266,7 @@ export type OpenClawStateWorkerOperationOptions = {
   preparation?: OpenClawStateWorkerOpenPreparation;
   runtimePreparation?: SqliteWorkerRuntimePreparation;
   existingOnly?: boolean;
+  signal?: AbortSignal;
   assertCurrent?: (commandType?: PropertyKey) => void;
   createAdmission?: SqliteWorkerAdmissionFactory;
 };
