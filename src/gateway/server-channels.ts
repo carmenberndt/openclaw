@@ -35,7 +35,6 @@ import {
 } from "../infra/channel-runtime-context.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { formatGatewayCrashLoopManualChannelStartHint } from "../infra/gateway-boot-lifecycle.js";
-import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
 import {
   createSubsystemLogger,
@@ -50,7 +49,10 @@ import {
 } from "../plugins/http-registry.js";
 import { runPluginCleanup } from "../plugins/plugin-instance-scope.js";
 import type { PluginRegistry } from "../plugins/registry.js";
-import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import {
+  withPluginRuntimeGatewayContextResolver,
+  withPluginRuntimeRegistryScope,
+} from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginRuntimeChannel } from "../plugins/runtime/types-channel.js";
 import { withPluginServiceScheduler } from "../plugins/service-scheduler-binding.js";
 import type { PluginServiceSchedulerV1 } from "../plugins/service-scheduler.types.js";
@@ -79,9 +81,11 @@ import {
 } from "./server-channel-account-lifetime.js";
 import type {
   ChannelAccountStartOutcome,
+  ChannelManagerOptions,
   ChannelRuntimeSnapshot,
   ChannelRuntimeSnapshotOptions,
   StartChannelOptions,
+  StopChannelOptions,
 } from "./server-channel-runtime.types.js";
 import { pauseChannelStarts, type ChannelStartFence } from "./server-channel-start-fence.js";
 import {
@@ -130,35 +134,6 @@ type ChannelHealthMonitorConfig = HealthMonitorConfig & {
 export type ChannelAutostartSuppression = {
   reason: "crash-loop-breaker";
   message: string;
-};
-
-type GatewayStartupTrace = {
-  measure: <T>(name: string, run: () => T | Promise<T>) => Promise<T>;
-};
-
-type ChannelManagerOptions = {
-  scheduler: GatewayScheduler;
-  getRuntimeConfig: () => OpenClawConfig;
-  getPluginRegistry: () => PluginRegistry;
-  channelLogs: Partial<Record<ChannelId, SubsystemLogger>>;
-  channelRuntimeEnvs: Partial<Record<ChannelId, RuntimeEnv>>;
-  /** Supply the complete createPluginRuntime().channel surface; partial stubs are unsupported. */
-  channelRuntime?: PluginRuntimeChannel;
-  /** Resolve the same complete surface only when a channel account starts. */
-  resolveChannelRuntime?: () => PluginRuntimeChannel | Promise<PluginRuntimeChannel>;
-  startupTrace?: GatewayStartupTrace;
-  deferStartupAccountStartsUntil?: Promise<void>;
-  getNativeApprovalRuntime?: () => GatewayNativeApprovalRuntime | undefined;
-  ambientAutostartSuppressedChannelIds?: ReadonlySet<string>;
-  tryRecoverAutostartSuppression?: () => boolean;
-  isClosing?: () => boolean;
-};
-
-type StopChannelOptions = {
-  manual?: boolean;
-  routeHandoff?: boolean;
-  /** Report unfinished cleanup to the caller after the bounded stop attempt. */
-  strict?: boolean;
 };
 
 type ChannelAccountStopState = (
@@ -1140,7 +1115,11 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
 
   const startChannelInternal: ChannelManager["startChannel"] = (...args) =>
     runChannelAccountStartup(() =>
-      withRegistry((registry) => startChannelProcessOwned(registry, ...args)),
+      withPluginRuntimeGatewayContextResolver(
+        opts.resolveGatewayContext,
+        () => withRegistry((registry) => startChannelProcessOwned(registry, ...args)),
+        { inheritRequestScope: false },
+      ),
     );
 
   const stopChannelInRegistry = async (
