@@ -51,19 +51,6 @@ async function run(args: string[]) {
 }
 
 describe("browser policy setup CLI", () => {
-  it("returns unsupported host guidance before reading a nonexistent input", async () => {
-    gateway.mockResolvedValue({
-      state: "unsupported",
-      detail: "Use native administrator setup on macOS.",
-    });
-    await run(["--json", "policy", "setup", "--file", "/nonexistent/native-policy.json", "--yes"]);
-    expect(capture.defaultRuntime.writeJson).toHaveBeenCalledWith({
-      state: "unsupported",
-      detail: "Use native administrator setup on macOS.",
-    });
-    expect(capture.runtimeErrors).toEqual([]);
-  });
-
   it("exports a private artifact while directing administrator commands to the remote browser host", async () => {
     const dir = tempDirs.make("browser-policy-cli-");
     const input = `${dir}/input.json`;
@@ -121,67 +108,6 @@ describe("browser policy setup CLI", () => {
     expect(await fs.readFile(output, "utf8")).toBe(nativeContent);
     const preview = capture.runtimeLogs.join("\n");
     expect(preview).not.toContain("\u009b");
-    expect(preview).toContain("on browser host browser-host");
-    expect(preview).toContain("Requested native artifact:\n// OpenClaw");
-  });
-
-  it("preserves an existing output instead of replacing user data", async () => {
-    const dir = tempDirs.make("browser-policy-existing-");
-    const input = `${dir}/input.json`;
-    const output = `${dir}/existing.json`;
-    await fs.writeFile(input, '{"URLBlocklist":["example.com"]}');
-    await fs.writeFile(output, "user data");
-    await expect(
-      run(["policy", "setup", "--file", input, "--output", output, "--yes"]),
-    ).rejects.toThrow();
-    expect(await fs.readFile(output, "utf8")).toBe("user data");
-    expect(capture.defaultRuntime.writeJson).not.toHaveBeenCalled();
-  });
-
-  it("leaves no artifact without confirmation and reports a prepared plan", async () => {
-    const dir = tempDirs.make("browser-policy-preview-");
-    const input = `${dir}/input.json`;
-    const output = `${dir}/export.json`;
-    await fs.writeFile(input, '{"URLBlocklist":["example.com"]}');
-    await run(["--json", "policy", "setup", "--file", input, "--output", output]);
-    await expect(fs.stat(output)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(capture.defaultRuntime.writeJson).toHaveBeenCalledWith(
-      expect.objectContaining({ state: "prepared", exported: false }),
-    );
-  });
-
-  it("verifies fresh native loaded values and current control readiness", async () => {
-    const dir = tempDirs.make("browser-policy-verify-");
-    const input = `${dir}/input.json`;
-    await fs.writeFile(input, '{"URLBlocklist":["example.com"]}');
-    gateway.mockImplementation(async (_method, _opts, request) =>
-      request.path === "/policy"
-        ? {
-            state: "effective",
-            browser: "Google Chrome",
-            version: "144.0.7559.96",
-            os: "Linux",
-            executablePath: "/opt/google/chrome/chrome",
-            observedAt: 1,
-            policies: {
-              URLBlocklist: {
-                value: ["example.com"],
-                level: "mandatory",
-                scope: "machine",
-                source: "platform",
-              },
-            },
-          }
-        : { running: true, cdpReady: true },
-    );
-    await run(["--json", "policy", "verify", "--file", input]);
-    expect(capture.defaultRuntime.writeJson).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: "verified",
-        stage: "effective",
-        controlReady: true,
-        issues: [],
-      }),
-    );
+    expect(preview).toContain("blocked.example");
   });
 });

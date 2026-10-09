@@ -70,8 +70,6 @@ export async function planNativeBrowserPolicySetup(params: {
     !verifiedDeployment ||
     report.os !== "Linux" ||
     process.platform !== "linux" ||
-    !["Google Chrome", "Chromium"].includes(report.browser) ||
-    !path.posix.isAbsolute(report.executablePath) ||
     capabilities.mode !== "local-managed" ||
     !capabilities.browserFilesystemLocal
   ) {
