@@ -8,7 +8,10 @@ import { acceptCompactionSuccessor } from "../../agents/embedded-agent-runner/co
 import { withPreparedEmbeddedRunToolAuthority } from "../../agents/harness/tool-authority.runtime.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
-import { projectionLane } from "../../config/sessions/session-transcript-worker-resources.js";
+import {
+  projectionLane,
+  targetDiscoveryLane,
+} from "../../config/sessions/session-transcript-worker-resources.js";
 import * as sessionReaders from "../../gateway/session-utils-store-worker.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
@@ -135,23 +138,22 @@ it.each(["main", "policy", "borrowed"] as const)(
           sessionKey: executionKey,
           sessionId: run.run.sessionId,
         });
-        const runRequest = projectionLane.pool.run.bind(projectionLane.pool);
+        const lane = reader ? projectionLane : targetDiscoveryLane;
+        const runRequest = lane.pool.run.bind(lane.pool);
         let initialEntries = 0;
-        const initialReads = vi
-          .spyOn(projectionLane.pool, "run")
-          .mockImplementation(async (...args) => {
-            const reply = await runRequest(...args);
-            if (
-              reply.ok &&
-              typeof reply.value === "object" &&
-              reply.value !== null &&
-              "kind" in reply.value &&
-              reply.value.kind === "session-exact-entries"
-            ) {
-              initialEntries++;
-            }
-            return reply;
-          });
+        const initialReads = vi.spyOn(lane.pool, "run").mockImplementation(async (...args) => {
+          const reply = await runRequest(...args);
+          if (
+            reply.ok &&
+            typeof reply.value === "object" &&
+            reply.value !== null &&
+            "kind" in reply.value &&
+            reply.value.kind === "session-exact-entries"
+          ) {
+            initialEntries++;
+          }
+          return reply;
+        });
         try {
           await operation.bindToolAuthoritySnapshotAsync(snapshot);
           expect(initialEntries).toBe(1);

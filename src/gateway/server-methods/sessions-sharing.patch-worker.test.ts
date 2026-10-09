@@ -205,6 +205,7 @@ it.each(["caller", "foreign row", "revoked grant", "deleted row", "replaced gene
               if (revoked === "deleted row") {
                 writer.exec("PRAGMA foreign_keys = ON");
               }
+              writer.exec("BEGIN IMMEDIATE");
               const changed =
                 revoked === "foreign row"
                   ? writer
@@ -228,6 +229,13 @@ it.each(["caller", "foreign row", "revoked grant", "deleted row", "replaced gene
                           )
                           .run("replacement-session", "replacement-session", f.scope.sessionKey);
               expect(changed.changes).toBe(1);
+              if (revoked !== "deleted row") {
+                // Complete the foreign writer's canonical row certification.
+                writer
+                  .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
+                  .run(f.scope.sessionKey);
+              }
+              writer.exec("COMMIT");
             } finally {
               writer.close();
             }
@@ -284,11 +292,16 @@ it.each(["session.visibility.set", "session.publicShare.set"] as const)(
             const prepared = await params.prepare(snapshot);
             const writer = new DatabaseSync(database.path);
             try {
+              writer.exec("BEGIN IMMEDIATE");
               writer
                 .prepare(
                   "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.createdActor.id', ?) WHERE session_key = ?",
                 )
                 .run("replacement-owner", f.scope.sessionKey);
+              writer
+                .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
+                .run(f.scope.sessionKey);
+              writer.exec("COMMIT");
               changed = true;
             } finally {
               writer.close();
