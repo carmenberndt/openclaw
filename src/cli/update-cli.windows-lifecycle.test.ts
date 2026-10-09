@@ -2,9 +2,10 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveGatewayTaskScriptPath } from "../daemon/paths.js";
+import * as updateDatabaseRestore from "../infra/update-database-restore.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
@@ -31,6 +32,7 @@ import {
   serviceRestart,
   serviceStart,
   serviceStop,
+  sqliteHostPlatform,
   suspendScheduledTaskAutoStartForUpdate,
   triageAfterFailure,
   triageCommand,
@@ -75,6 +77,12 @@ await vi.hoisted(() => import("./update-cli-mocks.test-support.js"));
 describe("update-cli", () => {
   const nodeExecutable = resolveTestNodeExecPath();
   const fixture = createUpdateCliFixture();
+
+  beforeEach(() => {
+    if (sqliteHostPlatform !== "win32") {
+      vi.stubEnv("FS_SAFE_NATIVE_MODE", "off");
+    }
+  });
 
   registerWindowsTaskAdmissionTests(fixture);
 
@@ -480,6 +488,27 @@ describe("update-cli", () => {
   it("restores package files without re-enabling Windows autostart after interruption", async () => {
     await fixture.useFileBackedConfig();
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const restoreDatabases = updateDatabaseRestore.restoreUpdateDatabaseBackup;
+    vi.spyOn(updateDatabaseRestore, "restoreUpdateDatabaseBackup").mockImplementation(
+      async (params) => {
+        const descriptor = requireValue(
+          Object.getOwnPropertyDescriptor(process, "platform"),
+          "service platform descriptor",
+        );
+        Object.defineProperty(process, "platform", {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          value: sqliteHostPlatform,
+        });
+        try {
+          return await withEnvAsync({ FS_SAFE_NATIVE_MODE: undefined }, () =>
+            restoreDatabases(params),
+          );
+        } finally {
+          Object.defineProperty(process, "platform", descriptor);
+        }
+      },
+    );
     const processOnSpy = vi.spyOn(process, "on");
     const exitCalled = createDeferred();
     const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
