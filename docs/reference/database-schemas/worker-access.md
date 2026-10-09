@@ -599,6 +599,9 @@ Already admitted readers retain their independent read path. The queue reservati
 ends before consumer callbacks run, and the existing request deadline, cancellation,
 and database revocation cover admission waiting. Read-only access never creates a
 missing store; idle agents still have no durable database until their first write.
+Lane selection observes whether a native handle is open without acquiring writable
+admission. Existing-session recovery remains readable while startup preparation is
+pending; the read worker still enforces quarantine, schema, and physical ownership.
 No schema, durability, configuration, or update migration changes are required.
 
 Accepted chat input prepares fresh sharing and exact-row facts again before
