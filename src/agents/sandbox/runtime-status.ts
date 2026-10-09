@@ -14,7 +14,6 @@ import {
 } from "../../config/sessions/paths.js";
 import { loadSessionEntryReadOnlyResultInScope } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import {
-  assertCapturedSessionEntryReadSource,
   loadExactSessionEntryCandidatesReadOnlyBatch,
   resolveSessionEntry,
 } from "../../config/sessions/session-accessor.sqlite-exact-read.js";
@@ -40,6 +39,7 @@ import type {
   PreparedSessionEntryWorkerRead,
   SessionEntryCohortReader,
 } from "../../config/sessions/session-entry-read-runtime.types.js";
+import { assertCapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.js";
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import {
   assertSessionStoreReadCandidate,

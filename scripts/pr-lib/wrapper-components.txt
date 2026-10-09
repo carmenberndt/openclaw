@@ -1888,6 +1888,7 @@ src/config/sessions/session-accessor.sqlite-transcript-incremental-read.ts
 src/config/sessions/session-accessor.sqlite-transcript-metadata-read.ts
 src/config/sessions/session-cold-storage-read.ts
 src/config/sessions/session-entry-read-errors.ts
+src/config/sessions/session-transcript-append-postimage.ts
 src/config/sessions/session-transcript-fts.ts
 src/config/sessions/session-transcript-index.ts
 src/config/sessions/session-transcript-projection-append.ts

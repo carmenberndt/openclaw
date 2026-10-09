@@ -480,7 +480,6 @@ describe("update-cli", () => {
   it("restores package files without re-enabling Windows autostart after interruption", async () => {
     await fixture.useFileBackedConfig();
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    const processOnSpy = vi.spyOn(process, "on");
     const exitCalled = createDeferred();
     const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
       exitCalled.resolve();
@@ -501,16 +500,19 @@ describe("update-cli", () => {
     vi.mocked(runCommandWithTimeout).mockImplementation(async (argv, options) => {
       if (argv[2] === "doctor") {
         await fs.unlink(path.join(root, "dist", "index.js"));
-        const listener = processOnSpy.mock.calls.find(([event]) => event === "SIGINT")?.[1];
-        if (typeof listener !== "function") {
-          throw new Error("missing signal handler");
+        const listeners = process
+          .listeners("SIGINT")
+          .filter((listener) => !priorSigintListeners.has(listener));
+        expect(listeners.length).toBeGreaterThan(0);
+        for (const listener of listeners) {
+          listener();
         }
-        listener();
         throw new Error("interrupted lifecycle");
       }
       return runFixtureCommand(argv, options);
     });
 
+    const priorSigintListeners = new Set(process.listeners("SIGINT"));
     await expect(updateCommand({ yes: true, restart: false })).rejects.toEqual(new ExitError(1));
     await exitCalled.promise;
     expect(processExitSpy).toHaveBeenCalledWith(130);
