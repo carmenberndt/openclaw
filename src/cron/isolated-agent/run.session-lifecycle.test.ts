@@ -36,6 +36,7 @@ import { createDiagnosticEmbeddedRunOwner } from "../../logging/diagnostic-run-a
 import * as diagnostic from "../../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
+  getCurrentSessionControllerOwner,
   interruptSessionControllerEffects,
   isSessionControllerWorkActive,
   runSessionMutation,
@@ -425,7 +426,6 @@ describe("runCronIsolatedAgentTurn session lifecycle", () => {
     await runnerStarted.promise;
     let mutationCommitted = false;
     const mutation = runSessionMutation({
-
       ...admissionScope,
       prepare: async () => {
         await interruptSessionControllerEffects(admissionScope);
@@ -781,6 +781,8 @@ describe("runCronIsolatedAgentTurn terminal lifecycle", () => {
             trigger: runParams.trigger,
             abortSignal: runParams.abortSignal,
             deferTerminalLifecycle: runParams.deferTerminalLifecycle,
+            // The real native runner borrows the admitted cron turn before registration.
+            replyOperation: getCurrentSessionControllerOwner(),
             onAgentEvent: runParams.onAgentEvent,
             admittedRunContext,
             provider,
