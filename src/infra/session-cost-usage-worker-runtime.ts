@@ -515,6 +515,9 @@ async function runPreparedUsageCostWorker(
                   await restoreSessionColdTranscript(
                     { ...request.input, storePath: binding.options.path, env: location.env },
                     assertRequestCurrent,
+                    undefined,
+                    undefined,
+                    context.signal,
                   );
                   output = undefined;
                   break;
@@ -619,7 +622,7 @@ async function runPreparedUsageCostWorker(
                   if (!lock) {
                     throw new Error("Usage report cannot prune cache rows");
                   }
-                  await lock.pruneRows(pruneRows);
+                  await lock.pruneRows(pruneRows, context.signal);
                   pruneRows.length = 0;
                   output = undefined;
                   break;
@@ -627,13 +630,16 @@ async function runPreparedUsageCostWorker(
                   if (!lock) {
                     throw new Error("Usage report cannot write cache rows");
                   }
-                  output = await lock.writeRollup({
-                    rollupId: request.input.key,
-                    previousValueJson: request.input.previousValue,
-                    valueJson: request.input.value,
-                    blob: request.input.blob,
-                    updatedAt: request.input.updatedAt,
-                  });
+                  output = await lock.writeRollup(
+                    {
+                      rollupId: request.input.key,
+                      previousValueJson: request.input.previousValue,
+                      valueJson: request.input.value,
+                      blob: request.input.blob,
+                      updatedAt: request.input.updatedAt,
+                    },
+                    context.signal,
+                  );
                   if (output && failedKeys.has(failureKey(request.input.key))) {
                     await failures
                       .delete(failureKey(request.input.key), {

@@ -26,6 +26,7 @@ import {
 } from "../infra/worker-task-capacity.js";
 import { createOwnedWorkerTaskPool, WorkerTaskError } from "../infra/worker-task-pool.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { assertStoreWriterReleased } from "../shared/store-writer-queue.js";
 import {
   registerOpenClawStateDatabaseAsyncResource,
   registerOpenClawStateDatabaseLifecycleListener,
@@ -161,6 +162,19 @@ function readPool(state: ReadRuntime, admitted: boolean): ReadPool {
       },
       { retainedTransport: true, nativeSource: state.nativeSource },
     );
+    if (process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development") {
+      const pool = state.pool;
+      const closeResources = pool.closeResources;
+      const rotate = pool.rotate;
+      pool.closeResources = (key) => {
+        assertStoreWriterReleased("close shared-state reader resources");
+        return closeResources(key);
+      };
+      pool.rotate = () => {
+        assertStoreWriterReleased("rotate shared-state readers");
+        return rotate();
+      };
+    }
   }
   return state.pool;
 }

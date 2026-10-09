@@ -180,6 +180,15 @@ history. Ordered reads still retain the database writer FIFO and revalidate thei
 physical source and current permissions. Transcript queries retain their selected
 worker owner; schemas, stored data, configuration, and update behavior are unchanged.
 
+Usage refresh retains its single-worker limit independently of the shared compute
+budget: its host writes must not occupy the last compute slot while an admitted
+writer waits for a memory reader. Host cache writes and cold restoration carry the
+request's cancellation through queued admission; already admitted writes still
+settle before releasing custody. Development and test runtimes reject writer-held
+cleanup of independent transcript, usage, and shared-state reader pools. Reserved target discovery
+keeps its separate lane and reentrant host-write contract. These scheduling changes
+require no schema, stored-data, configuration, or update migration.
+
 Worker read-only agent connections load existing file-bound canonical validation receipts
 at admission, before a read transaction begins. Reopening a reader then validates
 pending keys without repeating a complete session inventory. Copied or replaced
