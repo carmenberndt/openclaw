@@ -34,7 +34,6 @@ import {
   isSubagentSessionKey,
   parseCronRunScopeSuffix,
 } from "../sessions/session-key-utils.js";
-import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { ASSISTANT_DISPLAY_CONTENT_FIELD } from "../shared/assistant-display-content.js";
 import { resolveAssistantEventPhase } from "../shared/chat-message-content.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
@@ -222,7 +221,7 @@ export type AgentEventHandlerOptions = {
 };
 
 type AgentEventHandler = ((event: AgentEventPayload) => void | Promise<void>) & {
-  retireTranscript: (event: InternalSessionTranscriptUpdate, publication?: Promise<void>) => void;
+  retireTranscript: ReturnType<typeof createChatTranscriptPublication>["retireTranscript"];
   dispose: () => Promise<void>;
 };
 
@@ -664,29 +663,23 @@ export function createAgentEventHandler({
       firstAssistantTimingEntry?: ChatRunEntry;
       isHeartbeat?: boolean;
     },
-  ) => {
+  ): Extract<ChatEvent, { state: "delta" }> | undefined => {
     cancelPendingChatDeltaFlush(clientRunId);
     const run = chatRunState.getOrCreate(clientRunId);
-    if (
-      transcriptPublication.holdDelta(clientRunId, () =>
-        flushBufferedChatDeltaIfNeeded(
-          sessionKey,
-          agentId,
-          clientRunId,
-          sourceRunId,
-          agentRunSeq.get(sourceRunId) ?? seq,
-          opts,
-        ),
-      )
-    ) {
-      return;
-    }
-    const broadcastDelta = chatRunState.takeBufferDelta(clientRunId, text);
-    if (!broadcastDelta) {
+    const preparedDelta = transcriptPublication.prepareDelta(clientRunId, text, () =>
+      flushBufferedChatDeltaIfNeeded(
+        sessionKey,
+        agentId,
+        clientRunId,
+        sourceRunId,
+        agentRunSeq.get(sourceRunId) ?? seq,
+        opts,
+      ),
+    );
+    if (!preparedDelta.delta) {
       return;
     }
     const now = Date.now();
-    run.deltaSentAt = now;
     const spawnedBy = resolveSpawnedBy(sessionKey);
     const deliveryKey = JSON.stringify([
       "chat",
@@ -702,12 +695,16 @@ export function createAgentEventHandler({
       ...(spawnedBy && { spawnedBy }),
       seq,
       state: "delta" as const,
-      ...broadcastDelta,
+      ...preparedDelta.delta,
       message: appendChatCanvasBlocksToMessage(
         { role: "assistant", content: [{ type: "text", text }], timestamp: now },
         canvasBlocks ?? [],
       ),
     };
+    if (preparedDelta.held) {
+      return payload;
+    }
+    run.deltaSentAt = now;
     emitFirstAssistantChatSendTiming(
       opts?.firstAssistantTimingEntry ?? chatRunState.registry.peek(sourceRunId),
     );
@@ -718,7 +715,7 @@ export function createAgentEventHandler({
       liveText: liveTextDelivery(
         chatRunState,
         clientRunId,
-        broadcastDelta.replace
+        preparedDelta.delta.replace
           ? undefined
           : {
               key: deliveryKey,
@@ -730,10 +727,11 @@ export function createAgentEventHandler({
           text,
           now,
           canvasBlocks,
-          replace: broadcastDelta.replace,
+          replace: preparedDelta.delta.replace,
         }),
       ),
     });
+    return;
   };
 
   const emitChatDelta = (
@@ -799,7 +797,7 @@ export function createAgentEventHandler({
       firstAssistantTimingEntry?: ChatRunEntry;
       isHeartbeat?: boolean;
     },
-  ) => {
+  ): Extract<ChatEvent, { state: "delta" }> | undefined => {
     cancelPendingChatDeltaFlush(clientRunId);
     const { text, suppress } = chatRunState.resolveBuffer(clientRunId);
     const shouldSuppressHeartbeatStreaming = shouldHideHeartbeatChatOutput(
@@ -814,7 +812,7 @@ export function createAgentEventHandler({
     // Suppression replaces a prior visible snapshot; omission would leave the UI
     // materializing stale text at a message-less final. Empty untouched runs no-op.
     const mergedText = suppress ? "" : text;
-    broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, opts);
+    return broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, opts);
   };
 
   const transcriptPublication = createChatTranscriptPublication({

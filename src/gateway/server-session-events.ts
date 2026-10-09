@@ -24,6 +24,7 @@ import type {
   SessionEventSubscriberRegistry,
   SessionMessageSubscriberRegistry,
 } from "./server-chat-state.js";
+import type { TranscriptChatStreamReplacement } from "./server-chat-transcript-publication.js";
 import { resolveVisibleActiveSessionRunState } from "./server-methods/session-active-runs.js";
 import { hasSessionChangeReceivers } from "./session-change-receivers.js";
 import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
@@ -84,7 +85,10 @@ export function createTranscriptUpdateBroadcastHandler(params: {
     }
   >();
   const unresolvedQueueKeys = new Set<string>();
-  return (update: InternalSessionTranscriptUpdate): Promise<void> => {
+  return (
+    update: InternalSessionTranscriptUpdate,
+    chatStreamReplacement?: TranscriptChatStreamReplacement,
+  ): Promise<void> => {
     const projection = params.getSessionRowProjection?.();
     // Capture legacy ownership before the async queue can cross a same-id reset;
     // committed producer ownership always wins over a later session-store read.
@@ -205,6 +209,7 @@ export function createTranscriptUpdateBroadcastHandler(params: {
           projection,
           markerCaptured,
           markerObservation,
+          chatStreamReplacement,
           sessionKey ? undefined : joinQueue,
         );
       } finally {
@@ -256,6 +261,7 @@ async function handleTranscriptUpdateBroadcast(
   projection: SessionRowProjection | undefined,
   markerCaptured: ReturnType<SessionRowProjection["capture"]>,
   markerObservation: GenerationObservation | undefined,
+  chatStreamReplacement?: TranscriptChatStreamReplacement,
   joinQueue?: (key: string) => Promise<void>,
 ): Promise<void> {
   const legacyMarker = parseSqliteSessionFileMarker(update.sessionFile);
@@ -553,7 +559,13 @@ async function handleTranscriptUpdateBroadcast(
         return;
       }
       if (projected?.payload) {
-        params.broadcastToConnIds("session.message", projected.payload, connIds, broadcastOptions);
+        const chatStream = chatStreamReplacement?.();
+        params.broadcastToConnIds(
+          "session.message",
+          chatStream ? { ...projected.payload, chatStream } : projected.payload,
+          connIds,
+          broadcastOptions,
+        );
         return;
       }
 

@@ -32,7 +32,15 @@ export function registerTranscriptPublicationTests(fixture: {
   warn: ReturnType<typeof createSubscriptionTestFixture>["warn"];
 }): void {
   const { createParams, start, transcriptBroadcastMocks, warn } = fixture;
-  it.for(["streaming", "paced", "terminal", "replacement", "disposed", "queued"] as const)(
+  it.for([
+    "streaming",
+    "paced",
+    "terminal",
+    "replacement",
+    "disposed",
+    "queued",
+    "overlapping",
+  ] as const)(
     "keeps the assistant visible through delayed transcript publication (%s)",
     async (mode, { signal }) => {
       const actual = await vi.importActual<typeof import("./server-chat.js")>("./server-chat.js");
@@ -55,6 +63,7 @@ export function registerTranscriptPublicationTests(fixture: {
       const readEntered = createDeferred();
       const releaseRead = createDeferred();
       const continued = createDeferred();
+      const continuationRetired = createDeferred();
       const ended = createDeferred();
       const delivered: Array<{ event: string; payload: unknown }> = [];
       params.broadcast = (event, payload) => {
@@ -73,15 +82,27 @@ export function registerTranscriptPublicationTests(fixture: {
       fixture.installHandlerFactory((options) => {
         const handler = actual.createAgentEventHandler(options);
         disposeHandler = handler.dispose;
-        return Object.assign(async (event: Parameters<typeof handler>[0]) => {
-          await handler(event);
-          if (event.data.itemId === "continued-item") {
-            continued.resolve();
-          }
-          if (event.stream === "lifecycle" && event.data.phase === "end") {
-            ended.resolve();
-          }
-        }, handler);
+        return Object.assign(
+          async (event: Parameters<typeof handler>[0]) => {
+            await handler(event);
+            if (event.data.itemId === "continued-item") {
+              continued.resolve();
+            }
+            if (event.stream === "lifecycle" && event.data.phase === "end") {
+              ended.resolve();
+            }
+          },
+          handler,
+          {
+            retireTranscript: (...args: Parameters<typeof handler.retireTranscript>) => {
+              const replacement = handler.retireTranscript(...args);
+              if (args[0].messageId === "continued-message") {
+                continuationRetired.resolve();
+              }
+              return replacement;
+            },
+          },
+        );
       });
       const storedMessage = {
         role: "assistant",
@@ -95,6 +116,16 @@ export function registerTranscriptPublicationTests(fixture: {
         return { found: true, oversized: false, seq: 1, message: storedMessage };
       });
       const unsubs = start(params);
+      const emitContinuation = () =>
+        emitAgentEvent({
+          runId,
+          stream: "assistant",
+          data: {
+            itemId: "continued-item",
+            text: "Unpersisted continuation.",
+            ...(mode === "paced" ? {} : { replace: true }),
+          },
+        });
       let shutdown: Promise<void> | undefined;
       let handlerShutdown: Promise<void> | undefined;
       try {
@@ -104,6 +135,10 @@ export function registerTranscriptPublicationTests(fixture: {
           data: { itemId: "committed-item", text: "Visible before persistence." },
         });
         await withinTest(firstText.promise, signal);
+        if (mode === "overlapping") {
+          emitContinuation();
+          await withinTest(continued.promise, signal);
+        }
         emitSessionTranscriptUpdate({
           sessionKey,
           messageId: "committed-message",
@@ -116,7 +151,32 @@ export function registerTranscriptPublicationTests(fixture: {
           },
         });
         await withinTest(readEntered.promise, signal);
-        expect(delivered).toHaveLength(1);
+        expect(delivered).toHaveLength(mode === "overlapping" ? 2 : 1);
+        if (mode === "overlapping") {
+          const continuedMessage = {
+            ...storedMessage,
+            idempotencyKey: "continued-item",
+            content: [{ type: "text", text: "Unpersisted continuation." }],
+          };
+          transcriptBroadcastMocks.readMessageById.mockResolvedValueOnce({
+            found: true,
+            oversized: false,
+            seq: 2,
+            message: continuedMessage,
+          });
+          emitSessionTranscriptUpdate({
+            sessionKey,
+            messageId: "continued-message",
+            message: continuedMessage,
+            target: {
+              agentId: "main",
+              sessionId,
+              sessionKey,
+              storePath: "/tmp/openclaw-delayed-transcript.sqlite",
+            },
+          });
+          await withinTest(continuationRetired.promise, signal);
+        }
         if (mode === "replacement") {
           clearAgentRunContext(runId);
           params.chatRunState.clearRun(runId);
@@ -125,17 +185,7 @@ export function registerTranscriptPublicationTests(fixture: {
         if (mode === "disposed") {
           handlerShutdown = disposeHandler?.();
         }
-        const emitContinuation = () =>
-          emitAgentEvent({
-            runId,
-            stream: "assistant",
-            data: {
-              itemId: "continued-item",
-              text: "Unpersisted continuation.",
-              ...(mode === "paced" ? {} : { replace: true }),
-            },
-          });
-        if (mode !== "queued") {
+        if (mode !== "queued" && mode !== "overlapping") {
           emitContinuation();
           await withinTest(continued.promise, signal);
           expect(params.chatRunState.resolveBuffer(runId).text).toBe(
@@ -158,7 +208,9 @@ export function registerTranscriptPublicationTests(fixture: {
             state: "delta",
           });
         }
-        expect(delivered).toHaveLength(mode === "replacement" ? 3 : mode === "queued" ? 2 : 1);
+        expect(delivered).toHaveLength(
+          mode === "replacement" ? 3 : mode === "queued" || mode === "overlapping" ? 2 : 1,
+        );
         shutdown = unsubs.agentUnsub();
         releaseRead.resolve();
         await withinTest(shutdown, signal);
@@ -168,8 +220,31 @@ export function registerTranscriptPublicationTests(fixture: {
             ? ["chat", "chat", "chat", "session.message"]
             : mode === "queued"
               ? ["chat", "chat", "session.message", "chat"]
-              : ["chat", "session.message", "chat"],
+              : mode === "overlapping"
+                ? ["chat", "chat", "session.message", "session.message", "chat"]
+                : ["chat", "session.message", "chat"],
         );
+        const durable = delivered.find(({ event }) => event === "session.message")?.payload;
+        if (mode === "replacement") {
+          expect(durable).not.toHaveProperty("chatStream");
+        } else {
+          const text = mode === "overlapping" ? "Unpersisted continuation." : "";
+          expect(durable).toMatchObject({
+            chatStream: {
+              runId,
+              sessionKey,
+              state: "delta",
+              deltaText: text,
+              replace: true,
+              message: { content: [{ type: "text", text }] },
+            },
+          });
+        }
+        if (mode === "overlapping") {
+          expect(
+            delivered.findLast(({ event }) => event === "session.message")?.payload,
+          ).toMatchObject({ chatStream: { deltaText: "", replace: true } });
+        }
         expect(delivered.findLast(({ event }) => event === "chat")?.payload).toMatchObject({
           runId,
           state: terminal ? "final" : "delta",
@@ -186,7 +261,10 @@ export function registerTranscriptPublicationTests(fixture: {
                     content: [
                       {
                         type: "text",
-                        text: mode === "disposed" ? "" : "Unpersisted continuation.",
+                        text:
+                          mode === "disposed" || mode === "overlapping"
+                            ? ""
+                            : "Unpersisted continuation.",
                       },
                     ],
                   },

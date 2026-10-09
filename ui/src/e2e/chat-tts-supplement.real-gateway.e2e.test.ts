@@ -8,10 +8,12 @@ import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "../../../test/helpers/openclaw-test-instance.ts";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.ts";
 import type { ChatPageHost } from "../pages/chat/chat-state-host.ts";
 import { resolveChatSnapshotKey } from "../pages/chat/session-snapshot-key.ts";
 import type { SessionSnapshotStore } from "../pages/chat/session-snapshot-store.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
+import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { enterControlUiSession } from "../test-helpers/control-ui-session-entry.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -26,10 +28,17 @@ type ProviderRequest = {
 };
 type HistoryFrame = {
   type: string;
+  event?: string;
   id?: string;
   method?: string;
   params?: { sessionKey?: string; cursor?: string };
-  payload?: { deltaCursor?: string; messages?: unknown[] };
+  payload?: {
+    deltaCursor?: string;
+    messages?: unknown[];
+    sessionKey?: string;
+    messageId?: string;
+    message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+  };
 };
 
 function speechWav() {
@@ -255,6 +264,41 @@ suite.define(() => {
           await suite.withPage(
             { locale: "en-US", serviceWorkers: "block", viewport: { width: 1280, height: 900 } },
             async ({ page }) => {
+              const textOnlyPublished = createDeferred<string>();
+              let releaseRetirement: (() => void) | undefined;
+              await page.routeWebSocket(`ws://127.0.0.1:${instance.port}/**`, (socket) => {
+                const server = socket.connectToServer();
+                const pending: Array<string | Buffer> = [];
+                let held = false;
+                server.onMessage((message) => {
+                  if (held) {
+                    pending.push(message);
+                    return;
+                  }
+                  const frame: HistoryFrame = JSON.parse(message.toString());
+                  socket.send(message);
+                  if (
+                    !releaseRetirement &&
+                    frame.event === "session.message" &&
+                    frame.payload?.sessionKey === sessionKey &&
+                    typeof frame.payload.messageId === "string" &&
+                    frame.payload.messageId.length > 0 &&
+                    frame.payload.message?.role === "assistant" &&
+                    frame.payload.message.content?.some(
+                      (block) => block.type === "text" && block.text === replies[2],
+                    )
+                  ) {
+                    held = true;
+                    releaseRetirement = () => {
+                      held = false;
+                      for (const buffered of pending.splice(0)) {
+                        socket.send(buffered);
+                      }
+                    };
+                    textOnlyPublished.resolve(frame.payload.messageId);
+                  }
+                });
+              });
               let historyConnection = 0;
               const history: Array<{
                 connection: number;
@@ -449,7 +493,19 @@ suite.define(() => {
               await send("/tts chat off");
               await page.locator(".chat-bubble").getByText("TTS disabled for this chat.").waitFor();
               await send("Please give a text-only answer.");
+              const persistedAnswerId = await withinTest(textOnlyPublished.promise, context.signal);
+              await page
+                .locator(`.chat-bubble[data-entry-id=${JSON.stringify(persistedAnswerId)}]`)
+                .waitFor();
               await answer(replies[2]).waitFor();
+              const handoff = await takeControlUiScreenshotFrame(
+                page,
+                page.locator(".chat-pane-cache__pane--active"),
+                [answer(replies[2])],
+                { animations: "disabled", elements: [answer(replies[2])] },
+              );
+              await writeFile(path.join(suite.artifactDir, "text-only-handoff.png"), handoff.png);
+              releaseRetirement?.();
               await page
                 .getByRole("button", { name: "Stop generating", exact: true })
                 .waitFor({ state: "detached" });

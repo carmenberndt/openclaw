@@ -13,7 +13,7 @@ type RequestClient = {
 /** One browser connection reconstructs wire text before its local listeners share it. */
 export class GatewayChatEvents {
   private readonly stream = new GatewayChatStreamProjection();
-  private readonly projectedEvents = new WeakMap<EventFrame, EventFrame | null>();
+  private readonly projectedEvents = new WeakMap<EventFrame, readonly EventFrame[]>();
   private generation = 0;
 
   constructor(private readonly reconnect: (reason: string) => void) {}
@@ -50,21 +50,44 @@ export class GatewayChatEvents {
   }
 
   dispatch(event: EventFrame, listener?: (event: EventFrame) => void): void {
-    const projected = this.project(event);
-    if (projected) {
+    for (const projected of this.project(event)) {
       listener?.(projected);
     }
   }
 
-  private project(event: EventFrame): EventFrame | null {
-    if (event.event !== "chat") {
-      return event;
-    }
+  private project(event: EventFrame): readonly EventFrame[] {
     if (this.projectedEvents.has(event)) {
-      return this.projectedEvents.get(event) ?? null;
+      return this.projectedEvents.get(event) ?? [];
+    }
+    if (event.event === "session.message") {
+      const payload = asNullableRecord(event.payload);
+      const chatStream = asNullableRecord(payload?.chatStream);
+      const owner = (scope: Record<string, unknown> | null) =>
+        scope?.agentId ??
+        (typeof scope?.sessionKey === "string"
+          ? parseAgentSessionKeyParts(scope.sessionKey)?.agentId
+          : undefined);
+      if (
+        chatStream?.state === "delta" &&
+        chatStream.replace === true &&
+        typeof chatStream.deltaText === "string" &&
+        typeof chatStream.runId === "string" &&
+        chatStream.runId.length > 0 &&
+        typeof chatStream.sessionKey === "string" &&
+        chatStream.sessionKey === payload?.sessionKey &&
+        owner(chatStream) === owner(payload)
+      ) {
+        const replacement = this.stream.project({ ...event, event: "chat", payload: chatStream });
+        const projected = [replacement.event, event];
+        this.projectedEvents.set(event, projected);
+        return projected;
+      }
+    }
+    if (event.event !== "chat") {
+      return [event];
     }
     const result = this.stream.project(event);
-    const projected = result.missingBaseline ? null : result.event;
+    const projected = result.missingBaseline ? [] : [result.event];
     if (result.missingBaseline) {
       this.reconnect("chat stream baseline missing");
     }

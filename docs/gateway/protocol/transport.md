@@ -88,6 +88,13 @@ captured interval with `occurrenceId`. Unidentified text remains in the
 live tail until it gains an identity-bearing commit or the run terminates;
 equal durable text alone cannot hide it.
 
+A live `session.message` can carry `chatStream`, a complete existing `chat`
+delta with `replace: true`, captured when that exact committed source retires.
+Apply the replacement and durable row together, before yielding to rendering.
+The replacement has the same session and agent scope as its envelope; unrelated
+runs and unidentified source text retain their existing ownership. The ordinary
+subsequent chat replacement or terminal still follows for other consumers.
+
 Clients that share one connection among several views must keep reconstruction
 with their local stream owner. A new local listener may join after the wire
 snapshot was delivered to another view. Seed it from that owner's current state,

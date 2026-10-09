@@ -1,3 +1,4 @@
+import type { ChatEvent } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { getTranscriptMessageRole } from "../agents/embedded-agent-runner/message-visibility.js";
 import { readAgentAssistantSource } from "../infra/agent-events.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
@@ -17,6 +18,10 @@ type PendingPublication = {
   terminal?: () => void;
 };
 
+export type TranscriptChatStreamReplacement = () =>
+  | Extract<ChatEvent, { state: "delta" }>
+  | undefined;
+
 /** Retire committed source bytes immediately, then hand their wire display to durable history. */
 export function createChatTranscriptPublication(params: {
   chatRunState: ChatRunState;
@@ -28,7 +33,7 @@ export function createChatTranscriptPublication(params: {
     sourceRunId: string,
     seq: number,
     options: { controlUiVisible?: boolean; isHeartbeat?: boolean },
-  ) => void;
+  ) => Extract<ChatEvent, { state: "delta" }> | undefined;
 }) {
   const { chatRunState, agentRunSeq } = params;
   const publications = new Set<Promise<void>>();
@@ -42,10 +47,14 @@ export function createChatTranscriptPublication(params: {
     return pending;
   };
   return {
-    holdDelta: (runId: string, publish: () => void): boolean => {
+    prepareDelta: (
+      runId: string,
+      text: string,
+      publish: () => void,
+    ): { held: boolean; delta: ReturnType<ChatRunState["takeBufferDelta"]> } => {
       const pending = currentPublication(runId);
       if (!pending) {
-        return false;
+        return { held: false, delta: chatRunState.takeBufferDelta(runId, text) };
       }
       const run = chatRunState.runs.get(runId);
       pending.delta = () => {
@@ -53,7 +62,7 @@ export function createChatTranscriptPublication(params: {
           publish();
         }
       };
-      return true;
+      return { held: true, delta: { deltaText: text, replace: true } };
     },
     holdTerminal: (runId: string, publish: () => void): boolean => {
       const pending = currentPublication(runId);
@@ -68,7 +77,10 @@ export function createChatTranscriptPublication(params: {
     drain: async () => {
       await Promise.allSettled(publications);
     },
-    retireTranscript: (event: InternalSessionTranscriptUpdate, publication?: Promise<void>) => {
+    retireTranscript: (
+      event: InternalSessionTranscriptUpdate,
+      publication?: Promise<void>,
+    ): TranscriptChatStreamReplacement | undefined => {
       const sourceRunId = readSessionTranscriptRunId(event.message);
       if (!sourceRunId || getTranscriptMessageRole(event.message) !== "assistant") {
         return;
@@ -88,30 +100,30 @@ export function createChatTranscriptPublication(params: {
       ) {
         return;
       }
+      const isCurrent = () => {
+        const currentContext = getAgentRunContext(sourceRunId);
+        const currentLink = chatRunState.registry.peek(sourceRunId);
+        const queuedSuccessor =
+          currentLink !== undefined &&
+          currentLink.clientRunId !== clientRunId &&
+          currentLink.sessionKey === sessionKey &&
+          (currentLink.agentId ?? currentContext?.agentId ?? event.agentId) === event.agentId;
+        return (
+          (!currentContext ||
+            currentContext === context ||
+            (queuedSuccessor &&
+              event.sessionId !== undefined &&
+              currentContext.sessionId === event.sessionId)) &&
+          (!currentLink || currentLink === link || queuedSuccessor)
+        );
+      };
+      let publicationOwner: PendingPublication | undefined;
       if (publication) {
         const pending: PendingPublication = currentPublication(clientRunId) ?? {
           pending: 0,
-          isCurrent: () => {
-            const currentContext = getAgentRunContext(sourceRunId);
-            const currentLink = chatRunState.registry.peek(sourceRunId);
-            const queuedSuccessor =
-              currentLink !== undefined &&
-              currentLink.clientRunId !== clientRunId &&
-              currentLink.sessionKey === sessionKey &&
-              (currentLink.agentId ?? currentContext?.agentId ?? event.agentId) === event.agentId;
-            // Completion removes these owners; replacement must leave the old
-            // gate before accepting its callbacks. A queued successor has its
-            // own wire run; shifting the head must not release the finishing run.
-            return (
-              (!currentContext ||
-                currentContext === context ||
-                (queuedSuccessor &&
-                  event.sessionId !== undefined &&
-                  currentContext.sessionId === event.sessionId)) &&
-              (!currentLink || currentLink === link || queuedSuccessor)
-            );
-          },
+          isCurrent,
         };
+        publicationOwner = pending;
         pending.pending += 1;
         pendingByRun.set(clientRunId, pending);
         const release = () => {
@@ -146,7 +158,7 @@ export function createChatTranscriptPublication(params: {
         return;
       }
       run.liveTextEpoch = {};
-      params.flush(
+      const replacement = params.flush(
         sessionKey,
         link?.agentId ?? context?.agentId,
         clientRunId,
@@ -154,6 +166,9 @@ export function createChatTranscriptPublication(params: {
         agentRunSeq.get(sourceRunId) ?? 0,
         { controlUiVisible: context?.isControlUiVisible, isHeartbeat: context?.isHeartbeat },
       );
+      return publicationOwner && replacement
+        ? () => (currentPublication(clientRunId) === publicationOwner ? replacement : undefined)
+        : undefined;
     },
   };
 }

@@ -67,21 +67,41 @@ describe("GatewayBrowserClient chat delivery", () => {
 
       ws.emitMessage({
         type: "event",
-        event: "chat",
-        payload: { ...payload, deltaText: "", replace: true },
+        event: "session.message",
+        payload: {
+          sessionKey: payload.sessionKey,
+          agentId: "main",
+          messageId: "committed-answer",
+          message: snapshot,
+          chatStream: { ...payload, deltaText: "", replace: true },
+        },
       });
-      expect(secondPane.mock.lastCall?.[0].payload.message).toEqual({
+      const replacement = secondPane.mock.calls.at(-2)?.[0];
+      expect(replacement.event).toBe("chat");
+      expect(replacement.payload.message).toEqual({
         ...snapshot,
         content: [{ type: "text", text: "" }, canvas],
+      });
+      expect(secondPane.mock.lastCall?.[0].event).toBe("session.message");
+      expect(firstPane.mock.calls.at(-2)?.[0]).toBe(replacement);
+      expect(onEvent.mock.calls.at(-2)?.[0]).toBe(replacement);
+      ws.emitMessage({
+        type: "event",
+        event: "session.message",
+        payload: {
+          sessionKey: payload.sessionKey,
+          agentId: "other",
+          chatStream: { ...payload, deltaText: "Wrong owner", replace: true },
+        },
       });
       ws.emitMessage({
         type: "event",
         event: "chat",
-        payload: { ...payload, deltaText: "New answer" },
+        payload: { ...payload, deltaText: "Hello" },
       });
       expect(secondPane.mock.lastCall?.[0].payload.message).toEqual({
         ...snapshot,
-        content: [{ type: "text", text: "New answer" }, canvas],
+        content: [{ type: "text", text: "Hello" }, canvas],
       });
     } finally {
       client.stop();
