@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SqliteCommittedFact } from "../infra/sqlite-commit-receipt.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
-import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { pluginStatePublication } from "./plugin-state-publication.js";
 import {
@@ -14,6 +17,7 @@ import {
 import type { PluginStateRow } from "./plugin-state-store.kernel.js";
 import { seedPluginStateEntriesForTests } from "./plugin-state-store.test-helpers.js";
 import { sweepExpiredPluginStateEntriesInWorker } from "./plugin-state-worker-client.js";
+import { executePluginStateCommand } from "./plugin-state.worker.js";
 
 type PluginStateChange = Parameters<Parameters<typeof pluginStatePublication.subscribe>[0]>[0];
 
@@ -40,6 +44,77 @@ function observe() {
 }
 
 describe("plugin state committed facts", () => {
+  it("delivers empty sweep receipts at settlement and changed sweeps immediately", async () => {
+    await withOpenClawTestState({ label: "plugin-state-empty-sweep-delivery" }, async ({ env }) => {
+      const database = openOpenClawStateDatabase({ env });
+      for (const changed of [false, true]) {
+        if (changed) {
+          seedPluginStateEntriesForTests([
+            {
+              pluginId: "receipt-test",
+              namespace: "receipts",
+              key: "expired",
+              value: true,
+              expiresAt: 1,
+            },
+          ]);
+        }
+        const transport = admission.createSqliteWorkerOperationAdmission((_request, grant) =>
+          grant(),
+        );
+        const owner: admission.SqliteWorkerOperationContext = { port: transport.port };
+        const published = vi.fn();
+        admission.observeSqliteWorkerCommittedFacts(transport, published);
+        const postMessage = transport.port.postMessage.bind(transport.port);
+        const sent = vi
+          .spyOn(transport.port, "postMessage")
+          .mockImplementation((message, transfers) => {
+            postMessage(message, transfers);
+            // Service real admission requests synchronously; receipt frames remain queued for inspection.
+            if (message.decision) {
+              transport.service();
+            }
+          });
+        try {
+          const result = admission.withSqliteWorkerOperationAdmission(owner, () =>
+            executePluginStateCommand(
+              { type: "pluginState.sweep", input: undefined },
+              { path: database.path, env },
+              () => database,
+              true,
+            ),
+          );
+          expect(result).toEqual({ ok: true, value: Number(changed) });
+          expect(
+            database.db.prepare("SELECT count(*) AS count FROM plugin_state_entries").get(),
+          ).toEqual({ count: 0 });
+          expect(owner.committed?.facts).toMatchObject({
+            domain: "plugin-state",
+            facts: expect.any(Map),
+          });
+          expect(
+            sent.mock.calls.filter(([message]) => message.kind === "native-commit"),
+          ).toHaveLength(Number(changed));
+          transport.service();
+          expect(published).toHaveBeenCalledTimes(Number(changed));
+          if (!changed) {
+            expect(transport.committed).toBeUndefined();
+          }
+          admission.settleSqliteWorkerOperationContext(owner, "completed");
+          expect(transport.waitForSettlement(performance.now())).toMatchObject({
+            kind: "completed",
+            committed: { facts: { domain: "plugin-state", facts: expect.any(Map) } },
+          });
+          expect(published).toHaveBeenCalledOnce();
+          expect(published.mock.calls[0]?.[0].facts.facts.size).toBe(Number(changed));
+        } finally {
+          sent.mockRestore();
+          transport.finish();
+        }
+      }
+    });
+  });
+
   it("installs every native transaction fact before observers and discards savepoint rollback", async () => {
     await withOpenClawTestState({ label: "plugin-state-native-receipt" }, async ({ env }) => {
       const store = createPluginStateSyncKeyedStore("receipt-test", {

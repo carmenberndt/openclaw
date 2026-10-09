@@ -66,6 +66,10 @@ carry the committed transaction's facts before their reply; pending operations
 and unknown settlement invalidate coverage, and a late receipt cannot restore a
 newer native deletion. An oversized receipt retires coverage instead of failing
 an otherwise valid write. Receipt values are private, never log payloads.
+Empty plugin-state receipts travel with native settlement instead of an additional
+early commit frame. They remain recorded at COMMIT and install before the operation
+completes. Nonempty and unknown-coverage receipts still publish immediately after
+COMMIT.
 
 Catalogue and binding receipts use the same overflow rule, including large
 expiry batches whose ordinary result is empty. Private fact subscribers only

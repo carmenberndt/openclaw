@@ -163,6 +163,7 @@ export function withPluginStateWorkerReceipt<T>(db: DatabaseSync, write: () => T
       serialize(receipt).byteLength <= SQLITE_WORKER_MAX_MESSAGE_BYTES
         ? receipt
         : { kind: "unknown", identity: receipt.source.identity },
+      facts.size === 0 ? "settlement" : "commit",
     );
     return result;
   });
