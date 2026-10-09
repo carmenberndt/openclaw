@@ -2811,6 +2811,11 @@ describe("openclaw test instance", () => {
           token: "hook-token",
           path: "/hooks",
         },
+        models: {
+          catalogRefresh: {
+            enabled: false,
+          },
+        },
       });
     } finally {
       await inst.cleanup();

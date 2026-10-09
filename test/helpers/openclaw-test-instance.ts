@@ -911,6 +911,10 @@ export async function createOpenClawTestInstance(
             controlUi: { enabled: false },
           },
           hooks: { enabled: true, token: hookToken, path: "/hooks" },
+          // The startup check otherwise downloads the hosted catalog. When it is newer than
+          // dist/build-info.json, adoption publishes a new model-runtime generation while
+          // the first turn is still being admitted. Tests opt in to exercise refresh.
+          models: { catalogRefresh: { enabled: false } },
         },
         options.config,
       ),
