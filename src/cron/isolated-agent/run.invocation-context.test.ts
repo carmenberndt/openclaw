@@ -232,26 +232,28 @@ describe("runCronIsolatedAgentTurn invocation ownership", () => {
     expect(getAgentRunContext("test-session-id")).toBeUndefined();
   });
 
-  it("releases overlapping persistent-session invocation contexts independently", async () => {
-    // Exercise process-local ownership without the persistent session admission
-    // that serializes real turns on one key.
+  it("serializes overlapping persistent-session invocations and releases their contexts independently", async () => {
     process.env.OPENCLAW_TEST_FAST = "1";
     mockRunCronFallbackPassthrough();
     resolveCronSessionMock.mockImplementation(() => makeCronSession());
     const invocationRunIds: string[] = [];
+    const runnerEvents: string[] = [];
     const firstStarted = createDeferred();
     const secondStarted = createDeferred();
     const firstBlocked = createDeferred();
     const secondBlocked = createDeferred();
     runEmbeddedAgentMock.mockImplementation(async (runParams) => {
       invocationRunIds.push(expectCronInvocationContext(runParams));
-      if (invocationRunIds.length === 1) {
+      const first = invocationRunIds.length === 1;
+      runnerEvents.push(first ? "first started" : "second started");
+      if (first) {
         firstStarted.resolve();
         await firstBlocked.promise;
       } else {
         secondStarted.resolve();
         await secondBlocked.promise;
       }
+      runnerEvents.push(first ? "first returned" : "second returned");
       return { payloads: [{ text: "test output" }], meta: { agentMeta: {} } };
     });
     const sessionKey = "agent:default:messagechat:direct:123";
@@ -259,18 +261,21 @@ describe("runCronIsolatedAgentTurn invocation ownership", () => {
 
     const firstRun = runCronIsolatedAgentTurn(runParams);
     await firstStarted.promise;
+    // The second invocation claims its own context, then waits for the session
+    // controller to finish the first turn on the same persistent session key.
     const secondRun = runCronIsolatedAgentTurn(runParams);
+    firstBlocked.resolve();
     await secondStarted.promise;
 
+    expect(runnerEvents).toEqual(["first started", "first returned", "second started"]);
     expect(invocationRunIds).toHaveLength(2);
     const [firstRunId, secondRunId] = invocationRunIds;
     assert(firstRunId && secondRunId);
     expect(firstRunId).not.toBe(secondRunId);
-    expect(getAgentRunContext(firstRunId)).toBeDefined();
     expect(getAgentRunContext(secondRunId)).toBeDefined();
     expect(getAgentRunContext("test-session-id")).toBeUndefined();
 
-    firstBlocked.resolve();
+    // The first invocation's cleanup runs while the second still owns its context.
     expect((await firstRun).status).toBe("ok");
     expect(getAgentRunContext(firstRunId)).toBeUndefined();
     expect(getAgentRunContext(secondRunId)).toBeDefined();
