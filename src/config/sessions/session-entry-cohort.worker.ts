@@ -56,7 +56,10 @@ function readSessionColdTranscripts(
 }
 
 /** Captured cohorts retain their native handle and snapshot; standalone reads keep admission. */
-export function createSessionEntryReadScope(capturedDatabase?: OpenClawAgentReadOnlyDatabase) {
+export function createSessionEntryReadScope(
+  capturedDatabase: OpenClawAgentReadOnlyDatabase | undefined,
+  admitSnapshot: boolean,
+) {
   return {
     assertCanonicalRead: (
       database: OpenClawAgentReadOnlyDatabase,
@@ -76,9 +79,9 @@ export function createSessionEntryReadScope(capturedDatabase?: OpenClawAgentRead
     ) =>
       capturedDatabase
         ? { found: true as const, value: read(capturedDatabase) }
-        : withOpenClawAgentDatabaseReadOnly(read, options),
+        : withOpenClawAgentDatabaseReadOnly(read, options, { snapshot: admitSnapshot }),
     snapshot: <T>(database: OpenClawAgentReadOnlyDatabase, read: () => T) =>
-      capturedDatabase?.db === database.db && database.db.isTransaction
+      (admitSnapshot || capturedDatabase?.db === database.db) && database.db.isTransaction
         ? read()
         : runSqliteDeferredTransactionSync(database.db, read),
   };

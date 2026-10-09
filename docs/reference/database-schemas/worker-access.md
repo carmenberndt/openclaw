@@ -119,6 +119,13 @@ history. Ordered reads still retain the database writer FIFO and revalidate thei
 physical source and current permissions. Transcript queries retain their selected
 worker owner; schemas, stored data, configuration, and update behavior are unchanged.
 
+Exact entry snapshots and row-fact reads admit the retained reader inside their
+existing read transaction, sharing its one freshness observation with the read
+kernels. Each new unpinned use still observes foreign commits. Canonical admission
+publishes only after commit; failed snapshots discard it. Transferred canonical
+continuations retain admission before their transaction, and manual compaction
+prepares foreign source readers before entering the target snapshot.
+
 Worker read-only agent connections load existing file-bound canonical validation receipts
 at admission, before a read transaction begins. Reopening a reader then validates
 pending keys without repeating a complete session inventory. Copied or replaced

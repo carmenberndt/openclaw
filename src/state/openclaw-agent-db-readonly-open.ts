@@ -5,6 +5,7 @@ import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { isDeletedAgentDatabasePath } from "../infra/agent-database-readers.js";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync-cache-state.js";
 import { sqlitePrimaryResultCode } from "../infra/sqlite-error-diagnostics.js";
+import { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
 import {
   admitSqliteSchema,
   getAdmittedSqliteSchemaFacts,
@@ -124,14 +125,16 @@ export function readOpenClawAgentDatabaseSnapshot<T>(
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   let result: OpenClawAgentDatabaseReadOnlyResult<T> = { found: false, reason: "schema-missing" };
-  runSqliteDeferredTransactionSync(database.db, () => {
-    if (hasAdmittedAgentReadOnlySchema(database)) {
-      result = readOpenClawAgentDatabase(database, operation);
-      // Return the callback value so the transaction owner rejects asynchronous kernels.
-      return result.value;
-    }
-    return undefined;
-  });
+  withSqlitePostCommitPublications(database.db, () =>
+    runSqliteDeferredTransactionSync(database.db, () => {
+      if (hasAdmittedAgentReadOnlySchema(database)) {
+        result = readOpenClawAgentDatabase(database, operation);
+        // Return the callback value so the transaction owner rejects asynchronous kernels.
+        return result.value;
+      }
+      return undefined;
+    }),
+  );
   return result;
 }
 

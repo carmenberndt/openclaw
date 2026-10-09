@@ -336,8 +336,11 @@ export function readExactSessionEntriesWithLifecycle(
   request: SessionExactEntriesWorkerInput,
   capturedDatabase?: OpenClawAgentReadOnlyDatabase,
 ): SessionExactEntriesWorkerResult {
-  const { readDatabase, snapshot, assertCanonicalRead } =
-    createSessionEntryReadScope(capturedDatabase);
+  const { readDatabase, snapshot, assertCanonicalRead } = createSessionEntryReadScope(
+    capturedDatabase,
+    // Cold-source preparation opens foreign readers before entering the target snapshot.
+    request.projection !== "list" && !request.manualCompact,
+  );
   if (request.projection === "exact" || request.projection === "worktree") {
     // Logical accessors validate only their candidates; unrelated rows are not listing admission.
     let source: SessionExactEntriesWorkerResult["source"];
@@ -686,6 +689,8 @@ export function readSessionRowDatabaseFacts(
         );
       }),
     { ...request.database, env: request.env },
+    // Transferred canonical admission must be installed before its transaction begins.
+    { snapshot: !request.continuation },
   );
   if (result.found) {
     return result.value;

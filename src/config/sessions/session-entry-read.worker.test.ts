@@ -93,16 +93,25 @@ it("hydrates only requested snapshots while retaining exact-read lifecycle and a
           });
         // Admit the physical file before measuring the requested row payload.
         expect(read().entries[0]?.entry).toMatchObject(entry);
-        const payloads = trackSqliteStatementExecutions(opened.value.db, ["entry"], (sql) =>
-          isSessionNodePayloadSelect(sql) ||
-          (sql.includes('from "session_nodes"') && sql.includes('"entry_json"'))
-            ? "entry"
-            : null,
+        const payloads = trackSqliteStatementExecutions(
+          opened.value.db,
+          ["entry", "freshness"],
+          (sql) => {
+            if (/pragma_data_version|PRAGMA data_version/iu.test(sql)) {
+              return "freshness";
+            }
+            return isSessionNodePayloadSelect(sql) ||
+              (sql.includes('from "session_nodes"') && sql.includes('"entry_json"'))
+              ? "entry"
+              : null;
+          },
         );
         try {
           for (const fields of [[], ["systemPromptReport"], ["sessionDiffBaseline"]] as const) {
             payloads.textBytes.entry = 0;
+            payloads.counts.freshness = 0;
             const selected = read(fields);
+            expect(payloads.counts.freshness).toBe(1);
             expect(selected.entries).toHaveLength(1);
             expect(selected.databaseIdentity?.identity).toBeTypeOf("string");
             expect(selected.lifecycleTimestamps.sessionStartedAt).toBe(1);
@@ -119,6 +128,7 @@ it("hydrates only requested snapshots while retaining exact-read lifecycle and a
             }
             expect(payloads.textBytes.entry).toBeLessThan(2048);
             expect(read(fields, true).entries).toEqual(selected.entries);
+            expect(payloads.counts.freshness).toBe(2);
           }
           expect(read().entries[0]?.entry).toMatchObject(entry);
         } finally {
@@ -358,8 +368,11 @@ it.each([false, true])("reads row metadata (continuation: %s)", async (useContin
         const exec = vi.spyOn(opened.value.db, "exec");
         const queries = trackSqliteStatementExecutions(
           opened.value.db,
-          ["boards", "entries"],
+          ["boards", "entries", "freshness"],
           (sql) => {
+            if (/pragma_data_version|PRAGMA data_version/iu.test(sql)) {
+              return "freshness";
+            }
             if (/\bfrom "session_nodes"/iu.test(sql) && sql.includes('"entry_json"')) {
               return "entries";
             }
@@ -388,6 +401,9 @@ it.each([false, true])("reads row metadata (continuation: %s)", async (useContin
               continuation: continuation?.receipt,
             });
           const first = read();
+          if (!useContinuation) {
+            expect(queries.counts.freshness).toBe(1);
+          }
           expect(first.rows).toHaveLength(64);
           expect(queries.counts.boards).toBe(0);
           expect(queries.counts.entries).toBe(1);
@@ -419,6 +435,9 @@ it.each([false, true])("reads row metadata (continuation: %s)", async (useContin
           });
           expect(queries.counts.boards).toBe(0);
           expect(queries.counts.entries).toBe(2);
+          if (!useContinuation) {
+            expect(queries.counts.freshness).toBe(2);
+          }
           expect(entryParseCount()).toBe(128);
           expect(
             exec.mock.calls
