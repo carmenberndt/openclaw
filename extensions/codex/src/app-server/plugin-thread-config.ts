@@ -167,6 +167,28 @@ export async function buildCodexPluginThreadConfig(
         ? { ...requestParams, threadId: params.threadId }
         : requestParams,
     );
+  // Rebuilding app readiness must not reread every plugin manifest inside the
+  // same startup budget. Keep these reads local to this build, and discard them
+  // before activation can change the installed plugin state.
+  const pluginDetailReads = new Map<string, Promise<unknown>>();
+  const inventoryRequest: CodexPluginRuntimeRequest = (method, requestParams) => {
+    if (method !== "plugin/read") {
+      return threadRequest(method, requestParams);
+    }
+    const key = JSON.stringify(requestParams ?? null);
+    const existing = pluginDetailReads.get(key);
+    if (existing) {
+      return existing;
+    }
+    const pending = threadRequest(method, requestParams);
+    pluginDetailReads.set(key, pending);
+    void pending.catch(() => {
+      if (pluginDetailReads.get(key) === pending) {
+        pluginDetailReads.delete(key);
+      }
+    });
+    return pending;
+  };
   let inputFingerprint = buildCodexPluginThreadConfigInputFingerprint({
     pluginConfig: params.pluginConfig,
     appCacheKey: params.appCacheKey,
@@ -185,7 +207,7 @@ export async function buildCodexPluginThreadConfig(
       ? await readCodexPluginInventory({
           pluginConfig: params.pluginConfig,
           policy,
-          request: threadRequest,
+          request: inventoryRequest,
           appCache,
           appCacheKey: threadAppCacheKey,
           configCwd: params.configCwd,
@@ -209,7 +231,7 @@ export async function buildCodexPluginThreadConfig(
     inventory = await readCodexPluginInventory({
       pluginConfig: params.pluginConfig,
       policy,
-      request: threadRequest,
+      request: inventoryRequest,
       appCache,
       appCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
@@ -227,6 +249,7 @@ export async function buildCodexPluginThreadConfig(
     if (!record.activationRequired) {
       continue;
     }
+    pluginDetailReads.clear();
     const activation = await ensureCodexPluginActivation({
       identity: record.policy,
       request: threadRequest,
@@ -264,7 +287,7 @@ export async function buildCodexPluginThreadConfig(
     inventory = await readCodexPluginInventory({
       pluginConfig: params.pluginConfig,
       policy,
-      request: threadRequest,
+      request: inventoryRequest,
       appCache,
       appCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
@@ -285,7 +308,7 @@ export async function buildCodexPluginThreadConfig(
     inventory = await readCodexPluginInventory({
       pluginConfig: params.pluginConfig,
       policy,
-      request: threadRequest,
+      request: inventoryRequest,
       appCache,
       appCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,

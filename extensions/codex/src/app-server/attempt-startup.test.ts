@@ -180,7 +180,7 @@ describe("startCodexAttemptThread", () => {
         buildAttemptParams: () => ({ ...createAttemptParams(paths), chatType, trigger }),
       });
       await answerInitialize(harness);
-      const threadStart = await waitForThreadStart(harness);
+      const threadStart = await waitForRequest(harness, "thread/start");
       const request = threadStart.params as { config: Record<string, unknown> };
       expect(request.config["features.auth_elicitation"]).toBe(expected);
       harness.send({ id: threadStart.id, result: threadStartResult() });
