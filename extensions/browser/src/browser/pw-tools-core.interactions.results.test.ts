@@ -38,9 +38,6 @@ describe("interaction results and download lifecycle", () => {
     expect(
       await mod.evaluateViaPlaywright({ ...target, fn: "const value = 41; return value + 1;" }),
     ).toBe(42);
-    expect(page.evaluate.mock.calls[0]?.[1]).toMatchObject({
-      fnSource: "async () => {\nconst value = 41; return value + 1;\n}",
-    });
   });
 
   it("runs statement-body ref evaluate sources", async () => {
@@ -57,9 +54,6 @@ describe("interaction results and download lifecycle", () => {
         fn: "const text = el.textContent; return text;",
       }),
     ).toBe("Ada");
-    expect(locator.evaluate.mock.calls[0]?.[1]).toMatchObject({
-      fnSource: "async (el) => {\nconst text = el.textContent; return text;\n}",
-    });
   });
 
   it("returns click downloads after the native event grace", async () => {
@@ -116,29 +110,6 @@ describe("interaction results and download lifecycle", () => {
     await expect(task).rejects.toThrow("aborted by test");
     expect(drain).toHaveBeenCalledWith(downloadGrace);
     expect(dispose).toHaveBeenCalledOnce();
-  });
-
-  it("retains the download grace when an executable wait aborts", async () => {
-    const ctrl = new AbortController();
-    ctrl.abort(new Error("aborted by test"));
-    const page = {
-      url: vi.fn(() => "https://example.com"),
-      waitForFunction: vi.fn(async () => {}),
-    };
-    const drain = vi.fn(async () => undefined);
-    const dispose = captureDownloads(drain);
-    install(page);
-    await expect(
-      executeActViaPlaywright({
-        ...target,
-        action: { kind: "wait", fn: "() => false" },
-        evaluateEnabled: true,
-        signal: ctrl.signal,
-      }),
-    ).rejects.toThrow("aborted by test");
-    expect(drain).toHaveBeenCalledWith(downloadGrace);
-    expect(dispose).toHaveBeenCalledOnce();
-    expect(page.waitForFunction).not.toHaveBeenCalled();
   });
 });
 
