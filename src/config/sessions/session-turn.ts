@@ -175,9 +175,9 @@ export async function appendSessionTurnInWorker(
             if (!source) {
               throw new Error("Session turn omitted its fresh-message authority");
             }
-            // SAFETY: The paired worker read these source facts from the current transaction.
             acceptSessionSourceValidation(
               source,
+              // SAFETY: The paired worker read these facts in the current transaction.
               facts.sourceValidation as SessionSourceValidation,
             );
             source.assertCurrent();

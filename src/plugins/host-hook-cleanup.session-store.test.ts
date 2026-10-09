@@ -237,11 +237,19 @@ describe("plugin host cleanup session stores", () => {
       );
       await entered.promise;
       const queued = createDeferredCore();
+      let cleanupAdmitted = false;
       const admit = agentWriteAdmission.runOpenClawAgentWriteAdmission;
       const admission = vi
         .spyOn(agentWriteAdmission, "runOpenClawAgentWriteAdmission")
-        .mockImplementation((...args) => {
-          const result = admit(...args);
+        .mockImplementation((options, run, ...rest) => {
+          const result = admit(
+            options,
+            (...args) => {
+              cleanupAdmitted = true;
+              return run(...args);
+            },
+            ...rest,
+          );
           queued.resolve();
           return result;
         });
@@ -269,12 +277,7 @@ describe("plugin host cleanup session stores", () => {
             throw new Error("Cleanup completed before writer admission");
           }),
         ]);
-        expect(
-          [...agentWriteAdmission.SQLITE_SESSION_WRITER_QUEUES.values()].reduce(
-            (count, queue) => count + queue.pending.length,
-            0,
-          ),
-        ).toBe(1);
+        expect(cleanupAdmitted).toBe(false);
         current = mode !== "cancelled" && mode !== "revoked";
         release.resolve();
         const [blockedWrite, result] = await settled;

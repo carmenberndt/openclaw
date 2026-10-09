@@ -128,6 +128,11 @@ export type SessionEntryProjectionFacts = {
   activitySummaryWatermark: SessionTranscriptWatermark | undefined;
 };
 
+export type SessionEntryReplacementPostimage = { entry: SessionEntry } & (
+  | { projection: SessionEntryProjectionFacts; participantProjectionUnavailable?: never }
+  | { projection?: never; participantProjectionUnavailable: true }
+);
+
 export type SessionEntryReplacementPublication = {
   kind: "session-entry-replacements";
   pendingArchiveRecovery: boolean;
@@ -142,6 +147,11 @@ export type SessionEntryReplacementPublication = {
   membershipInvalidatedKeys: string[];
   sharingUnchangedKeys: string[];
   generationUnchangedKeys: string[];
+  /** Scoped receipt; raw writers and other session domains remain incomplete. */
+  receipt?: import("../../infra/sqlite-commit-receipt.js").SqliteCommitReceipt<
+    SessionEntryReplacementPostimage,
+    SessionEntryPublicationSource
+  >;
 };
 
 export type CreationDatabase =

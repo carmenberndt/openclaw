@@ -40,6 +40,7 @@ import type {
   SessionEntryReadSourcePreparation,
   SessionEntryCohortReader,
 } from "./session-entry-read-runtime.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionEntryListWorkerInput } from "./session-entry-read.types.js";
 import {
   captureIncognitoSessionBinding,
@@ -72,6 +73,7 @@ export type SessionEntryReadWorkerOwner = {
   assertCurrent: () => void;
   scope?: SessionEntryReadOnlyWorkerScope;
   selectedStore?: Readonly<Pick<SessionStoreReadCandidate, "path" | "physicalPath">>;
+  readSource?: CapturedSessionEntryReadSource & { databaseIdentity: string };
   onRegistryChange?: (change: AgentDatabaseRegistryChange) => void;
   refreshBeforeDispatch?: (assertRetainedTarget: () => void) => Promise<void>;
   revalidateTarget?: () => Promise<void>;
@@ -141,7 +143,12 @@ export async function withSessionEntryReadOnlyInWorker<T>(
       };
       const read = await reader.readEntryResult({ scope: readScope, continuation });
       owner.assertCurrent();
-      const value = await consumeRead(read, { ...owner, kind: "file", scope: readScope });
+      const value = await consumeRead(read, {
+        ...owner,
+        kind: "file",
+        scope: readScope,
+        readSource: read.source,
+      });
       owner.assertCurrent();
       return value;
     },
