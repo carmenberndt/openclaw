@@ -154,6 +154,27 @@ export async function buildCodexPluginThreadConfig(
         ? { ...requestParams, threadId: params.threadId }
         : requestParams,
     );
+  // App inventory refreshes do not change plugin ownership during one build.
+  // Keep this local so a later startup always observes updated manifests.
+  const pluginDetailReads = new Map<string, Promise<unknown>>();
+  const inventoryRequest: CodexPluginRuntimeRequest = (method, requestParams) => {
+    if (method !== "plugin/read") {
+      return threadRequest(method, requestParams);
+    }
+    const key = JSON.stringify(requestParams ?? {});
+    const cached = pluginDetailReads.get(key);
+    if (cached) {
+      return cached;
+    }
+    const pending = threadRequest(method, requestParams).catch((error: unknown) => {
+      if (pluginDetailReads.get(key) === pending) {
+        pluginDetailReads.delete(key);
+      }
+      throw error;
+    });
+    pluginDetailReads.set(key, pending);
+    return pending;
+  };
   let inputFingerprint = buildCodexPluginThreadConfigInputFingerprint({
     pluginConfig: params.pluginConfig,
     appCacheKey: params.appCacheKey,
@@ -171,7 +192,7 @@ export async function buildCodexPluginThreadConfig(
     readCodexPluginInventory({
       pluginConfig: params.pluginConfig,
       policy,
-      request: threadRequest,
+      request: inventoryRequest,
       appCache,
       appCacheKey: params.appCacheKey,
       appInventoryCacheKey: threadAppCacheKey,
@@ -214,6 +235,8 @@ export async function buildCodexPluginThreadConfig(
     if (!record.activationRequired) {
       continue;
     }
+    // Activation can change the installed manifest; its next inventory must be fresh.
+    pluginDetailReads.clear();
     const activation = await ensureCodexPluginActivation({
       identity: record.policy,
       request: threadRequest,
