@@ -149,6 +149,15 @@ export function readOpenClawAgentDatabaseSnapshot<T>(
 export function withFreshOpenClawAgentDatabaseReadOnly<T>(
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
   options: OpenClawAgentDatabaseOptions,
+  behavior: { allowExtension?: boolean; snapshot?: boolean } = {},
+): OpenClawAgentDatabaseReadOnlyResult<T> {
+  return readFreshOpenClawAgentDatabase(operation, options, behavior);
+}
+
+/** Internal snapshot modes share the fresh handle's existing close owner. */
+export function readFreshOpenClawAgentDatabase<T>(
+  operation: (database: OpenClawAgentReadOnlyDatabase) => T,
+  options: OpenClawAgentDatabaseOptions,
   behavior: { allowExtension?: boolean; snapshot?: false | OpenClawAgentReadSnapshot } = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   const opened = openOpenClawAgentDatabaseReadOnly(options, behavior);

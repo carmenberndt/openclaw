@@ -19,7 +19,7 @@ import {
   openOpenClawAgentDatabaseReadOnly,
   readOpenClawAgentDatabase,
   readOpenClawAgentDatabaseSnapshot,
-  withFreshOpenClawAgentDatabaseReadOnly,
+  readFreshOpenClawAgentDatabase,
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
   type OpenClawAgentReadOnlyDatabaseHandle,
@@ -288,7 +288,7 @@ export class OpenClawAgentDatabaseReadOnlyScope {
   ): OpenClawAgentDatabaseReadOnlyResult<T> {
     this.assertUsable();
     if (this.database?.db.isOpen && this.database.db.isTransaction) {
-      return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+      return readFreshOpenClawAgentDatabase(operation, options, behavior);
     }
     let result: OpenClawAgentDatabaseReadOnlyResult<T> = {
       found: false,
@@ -356,7 +356,7 @@ export function withScopedOpenClawAgentDatabaseReadOnly<T>(
   behavior: OpenClawAgentDatabaseReadOnlySnapshotBehavior = {},
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   if (behavior.allowExtension) {
-    return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+    return readFreshOpenClawAgentDatabase(operation, options, behavior);
   }
   const scope = readOnlyScope.getStore();
   return (scope?.matches(options.agentId, options.path) ? scope : cachedScope(options)).read(

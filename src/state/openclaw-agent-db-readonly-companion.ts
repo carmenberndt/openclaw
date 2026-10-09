@@ -17,7 +17,7 @@ import {
   openOpenClawAgentDatabaseReadOnly,
   readOpenClawAgentDatabase,
   readOpenClawAgentDatabaseSnapshot,
-  withFreshOpenClawAgentDatabaseReadOnly,
+  readFreshOpenClawAgentDatabase,
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
   type OpenClawAgentReadOnlyDatabaseHandle,
@@ -56,7 +56,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
   let companion = companions.get(writer.db);
   // Nested operations keep their own statement/transaction window and cleanup.
   if (companion?.active) {
-    return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+    return readFreshOpenClawAgentDatabase(operation, options, behavior);
   }
   if (
     companion &&
@@ -66,7 +66,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
     companion = undefined;
   }
   if (!companion && !isOpenClawAgentDatabasePathCurrent(writer)) {
-    return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+    return readFreshOpenClawAgentDatabase(operation, options, behavior);
   }
   if (!companion) {
     const opened = openOpenClawAgentDatabaseReadOnly(options);

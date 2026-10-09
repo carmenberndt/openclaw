@@ -15,7 +15,7 @@ import {
   openOpenClawAgentDatabaseReadOnly,
   readOpenClawAgentDatabase,
   readOpenClawAgentDatabaseSnapshot,
-  withFreshOpenClawAgentDatabaseReadOnly,
+  readFreshOpenClawAgentDatabase,
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
 } from "./openclaw-agent-db-readonly-open.js";
@@ -115,7 +115,7 @@ function readAgentDatabase<T>(
   const agentId = normalizeAgentId(options.agentId);
   const pathname = resolveOpenClawAgentSqlitePath({ ...options, agentId });
   if (isArtifactPreservingStateRead("agent", pathname)) {
-    return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+    return readFreshOpenClawAgentDatabase(operation, options, behavior);
   }
   if (isIncognitoOpenClawAgentSqlitePath(pathname, { agentId, env: options.env })) {
     // Read-only misses must not create process-lifetime handles; only creation and
