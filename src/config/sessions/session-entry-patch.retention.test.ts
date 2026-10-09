@@ -1,3 +1,4 @@
+import "./session-entry-patch-delivery.test-support.js";
 import { MessageChannel } from "node:worker_threads";
 import { expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
@@ -21,7 +22,7 @@ import {
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
-import { createSessionEntryPatchFixture as fixture } from "./session-entry-patch.test-support.js";
+import { createSessionCompoundWorkerFixture as fixture } from "./session-compound-worker.test-support.js";
 import { commitSessionEntryPatch } from "./session-entry-patch.worker.js";
 
 it.each([

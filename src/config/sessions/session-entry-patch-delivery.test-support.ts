@@ -1,7 +1,4 @@
 import { afterEach, vi } from "vitest";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
-import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 
 // mock-isolation: Entry assertions exclude the maintenance owner's background writes and timers.
 vi.mock("./session-accessor.sqlite-maintenance-kick.js", () => ({
@@ -63,21 +60,6 @@ afterEach(() => {
   delivery.commands = [];
   vi.restoreAllMocks();
 });
-
-export function createSessionEntryPatchFixture() {
-  const database = openOpenClawAgentDatabase({ agentId: "main" });
-  const scope = {
-    agentId: "main",
-    storePath: database.path,
-    sessionKey: "agent:main:patch-worker",
-  };
-  replaceSessionEntrySync(scope, { sessionId: "original", updatedAt: 1, label: "initial" });
-  return {
-    database,
-    scope,
-    read: () => readExactSessionEntryRow(database, scope.sessionKey)?.entry,
-  };
-}
 
 export function getSessionEntryPatchDelivery() {
   return delivery;

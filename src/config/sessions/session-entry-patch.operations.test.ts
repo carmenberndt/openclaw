@@ -1,4 +1,4 @@
-import "./session-entry-patch.test-support.js";
+import "./session-entry-patch-delivery.test-support.js";
 import { expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -10,11 +10,12 @@ import {
   replaceSessionEntrySync,
   updateSessionLastRouteInScope,
 } from "./session-accessor.sqlite-entry.js";
+import { createSessionCompoundWorkerFixture as fixture } from "./session-compound-worker.test-support.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
 import type { SessionEntry } from "./types.js";
 
-const { createSessionEntryPatchFixture: fixture, getSessionEntryPatchDelivery } =
-  await import("./session-entry-patch.test-support.js");
+const { getSessionEntryPatchDelivery } =
+  await import("./session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
 
 it("reduces a fixed patch against the current row in one worker request without losing foreign metadata", async () => {

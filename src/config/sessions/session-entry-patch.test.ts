@@ -1,4 +1,4 @@
-import "./session-entry-patch.test-support.js";
+import "./session-entry-patch-delivery.test-support.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { deserialize, serialize } from "node:v8";
 import { MessageChannel } from "node:worker_threads";
@@ -41,6 +41,7 @@ import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { appendExpectedSessionTranscriptTurn } from "./session-accessor.sqlite-transcript-turn.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
+import { createSessionCompoundWorkerFixture as fixture } from "./session-compound-worker.test-support.js";
 import { commitSessionEntryPatch } from "./session-entry-patch.worker.js";
 import { readSessionEntryInWorker } from "./session-entry-read-runtime.js";
 import { captureSessionEntrySourceAssertion } from "./session-entry-source-authority.js";
@@ -53,8 +54,8 @@ import { markSessionTranscriptIndexDirtyInTransaction } from "./session-transcri
 import * as reconcile from "./session-transcript-reconcile.js";
 import type { SessionEntry } from "./types.js";
 
-const { createSessionEntryPatchFixture: fixture, getSessionEntryPatchDelivery } =
-  await import("./session-entry-patch.test-support.js");
+const { getSessionEntryPatchDelivery } =
+  await import("./session-entry-patch-delivery.test-support.js");
 const delivery = getSessionEntryPatchDelivery();
 
 function patchSessionEntryCore(
